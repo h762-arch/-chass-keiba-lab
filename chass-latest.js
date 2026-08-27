@@ -7,7 +7,7 @@
 */
 (() => {
   'use strict';
-  const VERSION='7.8';
+  const VERSION='7.10';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
   const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -138,7 +138,7 @@
 */
 (() => {
   'use strict';
-  const VERSION='7.9';
+  const VERSION='7.10';
   const $79=id=>document.getElementById(id);
   const q79=(s,r=document)=>r.querySelector(s);
   const qa79=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -360,4 +360,80 @@
   }
 
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot79);else boot79();
+})();
+
+
+/* CHASS KEIBA LAB Ver.7.10
+   DASHBOARD SWITCH RESTORE
+   - Ver.7.8の #predictionView{display:flex} が非active時にも残る問題を修正
+   - 予想入力 / 検証ダッシュボード の切替を最終層で安定化
+   - レース後検証の独立表示 / NAR結果取込はVer.7.9仕様を維持
+*/
+(() => {
+  'use strict';
+  const VERSION='7.10';
+  const $10=id=>document.getElementById(id);
+  const qa10=(s,r=document)=>[...r.querySelectorAll(s)];
+
+  function setVersion10(){
+    document.title=document.title.replace(/Ver\.\d+(?:\.\d+)?/g,`Ver.${VERSION}`);
+    const span=document.querySelector('.topbar h1 span');
+    if(span)span.textContent=`Ver.${VERSION}`;
+  }
+
+  function injectViewFix10(){
+    if($10('chass710ViewFix'))return;
+    const st=document.createElement('style');
+    st.id='chass710ViewFix';
+    st.textContent=`
+      #predictionView.view:not(.active),
+      #dashboardView.view:not(.active){display:none!important;}
+      #predictionView.view.active{display:flex!important;flex-direction:column;}
+      #dashboardView.view.active{display:block!important;}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function switchView10(id){
+    qa10('.view').forEach(v=>v.classList.toggle('active',v.id===id));
+    qa10('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===id));
+    if(id==='dashboardView'){
+      try{ if(typeof renderDashboard==='function')renderDashboard(); }catch(e){console.warn('dashboard render',e);}
+      try{ if(typeof renderDashboardExtras==='function')renderDashboardExtras(); }catch{}
+      // レンダリング後にモバイル用ラベル付与などの後処理を待つ。
+      setTimeout(()=>{
+        try{ if(typeof attachTableLabels76==='function')attachTableLabels76($10('dashboardView')||document); }catch{}
+      },0);
+    }
+    setVersion10();
+    window.scrollTo({top:0,behavior:'auto'});
+  }
+
+  function bindTabs10(){
+    qa10('.tab').forEach(tab=>{
+      if(tab.dataset.chass710Bound==='1')return;
+      tab.dataset.chass710Bound='1';
+      tab.addEventListener('click',e=>{
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        switchView10(tab.dataset.view);
+      },true);
+    });
+  }
+
+  function boot10(){
+    injectViewFix10();
+    bindTabs10();
+    setVersion10();
+
+    // 古いパッチの再描画でVer.7.8へ戻されるケースも最後に補正。
+    let timer;
+    new MutationObserver(()=>{
+      clearTimeout(timer);
+      timer=setTimeout(()=>{bindTabs10();setVersion10();},80);
+    }).observe(document.body,{childList:true,subtree:true});
+  }
+
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot10);
+  else boot10();
 })();
