@@ -3,15 +3,15 @@ const PUBLIC_PATHS = new Set(["/","/index.html","/app.js","/styles.css","/manife
 
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}});}
 function fmtDate(date){return String(date||"").replaceAll("-","/");}
-function cleanText(html=""){return String(html).replace(/<script[\\s\\S]*?<\\/script>/gi," ").replace(/<style[\\s\\S]*?<\\/style>/gi," ").replace(/<br\\s*\\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/\\s+/g," ").trim();}
-function tableRows(html=""){return [...String(html).matchAll(/<tr\\b[^>]*>([\\s\\S]*?)<\\/tr>/gi)].map(m=>{const cells=[...m[1].matchAll(/<t[dh]\\b[^>]*>([\\s\\S]*?)<\\/t[dh]>/gi)].map(x=>cleanText(x[1]));return {cells,text:cells.join(" ").replace(/\\s+/g," ").trim()};});}
+function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/\s+/g," ").trim();}
+function tableRows(html=""){return [...String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>{const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>cleanText(x[1]));return {cells,text:cells.join(" ").replace(/\s+/g," ").trim()};});}
 async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (compatible; ChassKeibaLab/7.3; +https://www.keiba.go.jp/)","accept":"text/html,application/xhtml+xml","accept-language":"ja,en;q=0.8"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text();}
 
 function parseFinishOrderFromRefund(html){
   const t=cleanText(html);
-  let m=t.match(/三連単\\s*([0-9]+)\\s*[-－]\\s*([0-9]+)\\s*[-－]\\s*([0-9]+)/);
+  let m=t.match(/三連単\s*([0-9]+)\s*[-－]\s*([0-9]+)\s*[-－]\s*([0-9]+)/);
   if(m)return [m[1],m[2],m[3]];
-  m=t.match(/複勝\\s*([0-9]+)\\s+([0-9]+)\\s+([0-9]+)/);
+  m=t.match(/複勝\s*([0-9]+)\s+([0-9]+)\s+([0-9]+)/);
   return m?[m[1],m[2],m[3]]:[];
 }
 
@@ -19,21 +19,21 @@ function parseRaceResult(html){
   const finishOrder=[],actualTimes={};
   for(const row of tableRows(html)){
     const c=row.cells;if(c.length<4)continue;
-    const pos=String(c[0]||"").match(/^(\\d{1,2})$/);if(!pos)continue;
+    const pos=String(c[0]||"").match(/^(\d{1,2})$/);if(!pos)continue;
     const nums=[];
-    for(let i=1;i<Math.min(c.length,6);i++){const m=String(c[i]||"").match(/^(\\d{1,2})$/);if(m&&Number(m[1])>=1&&Number(m[1])<=18)nums.push(m[1]);}
+    for(let i=1;i<Math.min(c.length,6);i++){const m=String(c[i]||"").match(/^(\d{1,2})$/);if(m&&Number(m[1])>=1&&Number(m[1])<=18)nums.push(m[1]);}
     const horseNo=nums.length>=2?nums[1]:nums[0];if(!horseNo)continue;
     const p=Number(pos[1]);if(p>=1&&p<=3)finishOrder[p-1]=horseNo;
-    const tm=row.text.match(/\\b(\\d+):([0-5]\\d(?:\\.\\d+)?)\\b/);if(tm)actualTimes[horseNo]=tm[0];
+    const tm=row.text.match(/\b(\d+):([0-5]\d(?:\.\d+)?)\b/);if(tm)actualTimes[horseNo]=tm[0];
   }
   return {finishOrder:finishOrder.filter(Boolean),actualTimes};
 }
 
 function parseTanFuku(html){
   const rows=[],text=cleanText(html);
-  const checked=(text.match(/（\\s*(\\d{1,2}:\\d{2}\\s*現在|最終)\\s*）/)||[])[1]||(text.includes("最終")?"最終":"NAR公式");
+  const checked=(text.match(/（\s*(\d{1,2}:\d{2}\s*現在|最終)\s*）/)||[])[1]||(text.includes("最終")?"最終":"NAR公式");
   for(const row of tableRows(html)){
-    let m=row.text.match(/^\\s*(\\d+)\\s+(\\d+)\\s+(.+?)\\s+(\\d+(?:\\.\\d+)?)\\s+/);
+    let m=row.text.match(/^\s*(\d+)\s+(\d+)\s+(.+?)\s+(\d+(?:\.\d+)?)\s+/);
     if(!m||Number(m[2])>18)continue;
     rows.push({frameNo:Number(m[1]),horseNo:String(Number(m[2])),horseName:m[3].trim(),winOdds:Number(m[4]),popularity:null});
   }
