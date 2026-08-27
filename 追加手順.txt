@@ -1,0 +1,10 @@
+チャス競馬研究所 Cloudflare追加ファイル Ver.7.2
+
+GitHubリポジトリのルート（app.js / index.html / styles.css と同じ階層）へ、
+wrangler.jsonc と worker.js の2ファイルを追加してください。
+
+既存ファイルは削除しません。
+Cloudflare側:
+- ビルドコマンド: 空欄
+- デプロイコマンド: npx wrangler deploy
+- パス: /
