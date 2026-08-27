@@ -1,29 +1,35 @@
-チャス競馬研究所 Ver.7.6 完全統合版
+チャス競馬研究所 Ver.8.0 完成統合版
 
-【構成】
+この版は Ver.7.x の追加パッチ方式を廃止し、Ver.8.0 単体で動作するように一本化しています。
+
+ファイル:
 - index.html
-- app.js          Ver.7.4 / 7.5 / 7.6 機能を統合済み
+- app.js
 - styles.css
+- worker.js
 - manifest.webmanifest
-- worker.js       NAR公式連携 API Ver.7.3
-- wrangler.jsonc
 
-【重要】
-index.html から読み込むJavaScriptは app.js だけです。
-今後、chass-v7.4-patch.js / chass-v7.5-patch.js / chass-v7.6-patch.js を
-個別に追加する必要はありません。
+主な改善:
+- JSON読込後にレース情報が初期化される問題を解消
+- 予想TIMEが0頭でもAI勝率・複勝率を計算
+- TIMEは根拠がない場合に捏造せず「—」
+- 生タイム指数と0〜10内部スコアを分離
+- 最高・5走平均・距離・コース・近走指数を統合
+- 斤量kgをスコアとして直接扱わない
+- 実オッズ/予想オッズを分離
+- AIフェア倍率と期待回収率を分離
+- 💎/💎💎💎/⚠️を自動判定
+- レースID YYYY-MM-DD|競馬場|R で完全分離
+- NAR結果/最終オッズ取得
+- 検証ダッシュボード
+- iPhone向けUI
 
-【GitHubへの更新】
-この6ファイルをリポジトリ直下へアップロードし、同名ファイルを置き換えてください。
-その後Cloudflareのデプロイ完了を確認してください。
+導入:
+Cloudflare Workers Static Assets のプロジェクトで、既存の index.html / app.js / styles.css / worker.js / manifest.webmanifest をこの5ファイルへ置き換えてください。
+古い chass-v7.x-patch.js / chass-v8.0-patch.js は index.html から読み込まないでください。
 
-【主なVer.7.6統合内容】
-- AIフェアオッズ / 実オッズ / 期待回収率を分離
-- 実オッズ確認時のみ期待回収率を確定表示
-- レース単位の市場スナップショット保存
-- 初回市場 / 最終市場の保存
-- CHASS FINAL
-- モデル別トップ評価の保存・検証
-- 穴馬 / 人気馬リスク / 回収率の検証
-- モバイル向けダッシュボード表表示
-- NAR同一Worker API連携
+重要:
+worker.js は env.ASSETS へ静的ファイルをそのまま渡す方式なので、PUBLIC_PATHSの追加は不要です。
+
+確認:
+デプロイ後に画面上部が「Ver.8.0」になれば新バージョンが反映されています。

@@ -3,241 +3,139 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b1020" />
-  <title>チャス競馬研究所 Ver.7.6</title>
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css" />
+  <meta name="theme-color" content="#07101f" />
+  <title>チャス競馬研究所 Ver.8.0</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.7.6</span></h1></div>
-    <button id="themeToggle" class="ghost">表示切替</button>
-  </header>
+<header class="topbar">
+  <div>
+    <p class="eyebrow">CHASS KEIBA LAB</p>
+    <h1>チャス競馬研究所 <span>Ver.8.0</span></h1>
+  </div>
+  <button id="themeToggle" class="ghost">表示切替</button>
+</header>
 
-  <main class="wrap">
-    <nav class="tabs" aria-label="画面切替">
-      <button class="tab active" data-view="predictionView">予想入力</button>
-      <button class="tab" data-view="dashboardView">検証ダッシュボード</button>
-    </nav>
+<main class="wrap">
+  <nav class="tabs">
+    <button class="tab active" data-view="predictionView">予想入力</button>
+    <button class="tab" data-view="dashboardView">検証ダッシュボード</button>
+  </nav>
 
-    <div id="predictionView" class="view active">
-      <section class="card hero race-overview-card">
-        <div class="race-overview-main">
-          <div>
-            <p class="eyebrow">RACE</p>
-            <div id="raceOverviewTitle" class="race-overview-title">レース情報未入力</div>
-            <div id="raceOverviewMeta" class="race-overview-meta">ファイルを読み込むと自動表示します。</div>
-          </div>
-          <div class="race-overview-badges">
-            <span id="raceChaosBadge" class="badge">波乱度 —</span>
-            <span id="racePaceBadge" class="badge">展開 —</span>
-          </div>
+  <section id="predictionView" class="view active">
+    <section class="card hero">
+      <p class="eyebrow">RACE</p>
+      <div class="race-head">
+        <div>
+          <h2 id="raceTitle">レース情報未入力</h2>
+          <p id="raceMeta" class="muted">予想データファイルを読み込むと自動表示します。</p>
         </div>
-        <div id="raceOverviewBias" class="race-overview-note">馬場：—</div>
-        <div class="race-inline-import">
-          <label class="file-button primary race-inline-file">予想データファイルを選択<input id="raceImportFile" type="file" accept=".csv,text/csv,.json,application/json" hidden /></label>
-          <div id="importStatus" class="race-inline-status muted" aria-live="polite">ファイル未選択</div>
+        <div class="chips">
+          <span id="chaosBadge" class="badge">波乱度 —</span>
+          <span id="paceBadge" class="badge">展開 —</span>
         </div>
-        <details class="race-edit-panel">
-          <summary>レース情報を確認・修正</summary>
-          <div class="grid three race-edit-grid">
-            <label>競馬区分<select id="category"><option>中央競馬</option><option>地方競馬</option></select></label>
-            <label>日付<input id="raceDate" type="date" /></label>
-            <label>競馬場<input id="track" placeholder="例：船橋 / 新潟" /></label>
-            <label>レース<input id="raceNo" type="number" min="1" max="12" placeholder="例：11" /></label>
-            <label>距離（m）<input id="distance" type="number" min="800" step="100" placeholder="例：1200" /></label>
-            <label>波乱度（%）<input id="chaos" type="number" min="0" max="100" value="50" /></label>
-            <label>馬場傾向<input id="bias" placeholder="例：前残り / 外差し" /></label>
-            <label>展開予測<input id="pace" placeholder="例：ハイペース" /></label>
-          </div>
-        </details>
-      </section>
-
-
-      <div class="legacy-import-tools" hidden aria-hidden="true">
-        <input id="chassJsonFile" type="file" accept=".json,application/json" />
-        <button id="downloadCsvTemplate" type="button">CSVひな形</button>
-        <button id="autoScoreCurrent" type="button">現在の入力を自動採点</button>
-        <button id="oneTapAnalyze" type="button">自動採点＋6,000回</button>
-        <textarea id="raceJsonPaste"></textarea>
-        <button id="validatePastedJson" type="button">JSONを事前チェック</button>
-        <button id="importPastedJson" type="button">貼り付けJSONを取込</button>
-        <input id="autoRunAfterImport" type="checkbox" checked />
       </div>
+      <div id="biasText" class="note">馬場：—</div>
+      <label class="file-button primary">予想データファイルを選択
+        <input id="raceImportFile" type="file" accept=".json,application/json" hidden />
+      </label>
+      <div id="importStatus" class="muted status-line">ファイル未選択</div>
 
-      <section class="card quick-card">
-        <div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div><span class="badge">馬番つき</span></div>
-        <div id="quickCompare" class="table-wrap"><p class="muted">馬データを入力すると一覧表示します。</p></div>
-      </section>
-
-      <section class="card market-card" id="marketCard" hidden>
-        <div class="section-head"><div><p class="eyebrow">MARKET VALUE</p><h2>市場評価・期待値</h2></div><span class="badge" id="marketStatus">オッズ未入力</span></div>
+      <details class="editor">
+        <summary>レース情報を確認・修正</summary>
         <div class="grid two">
-          <label>オッズ種別（自動判定）
-            <input id="oddsType" type="hidden" value="オッズなし" />
-            <div id="oddsTypeDisplay" class="auto-odds-type">オッズなし</div>
-          </label>
-          <label>オッズ確認時刻<input id="oddsCheckedAt" type="text" placeholder="データに時刻があれば自動反映" readonly /></label>
-        </div>
-        <p class="hint">オッズ種別は取込データのメタ情報・列名から自動判定します。根拠がない場合は「種別不明」と表示し、実オッズとは扱いません。</p>
-        <div id="valueRanking" class="value-ranking"><p class="muted">オッズ・人気を入力して6,000回シミュレーションを実行してください。</p></div>
-      </section>
-
-      <section class="sim-hidden-engine" aria-hidden="true">
-        <button id="runSimulation" type="button">6,000回シミュレーション</button>
-        <input id="simNormal" type="number" min="0" max="100" value="50" />
-        <input id="simHigh" type="number" min="0" max="100" value="25" />
-        <input id="simSlow" type="number" min="0" max="100" value="25" />
-        <div id="simulationSummary">まだ実行されていません。</div>
-      </section>
-
-      <section class="card">
-        <div class="section-head"><div><p class="eyebrow">HORSE DETAILS</p><h2>各馬詳細</h2></div><button id="addHorse" class="ghost compact-add">＋ 馬を追加</button></div>
-        <div id="horseList"></div>
-      </section>
-
-
-      <details class="card ops-panel">
-        <summary><span>運用・レース後検証</span><small>結果入力・メモ・保存履歴</small></summary>
-        <div class="ops-panel-body">
-      <section class="card">
-        <div class="section-head"><div><p class="eyebrow">NOTES</p><h2>分析メモ</h2></div></div>
-        <div class="grid two">
-          <label>穴馬の根拠<textarea id="valueNotes" rows="5" placeholder="走破理論、展開、タイム指数、位置取り、斤量、調教など"></textarea></label>
-          <label>人気馬リスク<textarea id="riskNotes" rows="5" placeholder="過剰人気、不利な枠、展開不向き、距離不安など"></textarea></label>
-        </div>
-        <label>総合コメント<textarea id="summary" rows="4" placeholder="レース全体の見立て"></textarea></label>
-      </section>
-
-      <section class="card">
-        <div class="section-head"><div><p class="eyebrow">RESULT</p><h2>レース後検証</h2></div></div>
-        <div class="grid three">
-          <label>1着 馬番<input id="result1" type="number" min="1" max="18" placeholder="例：3" /></label>
-          <label>2着 馬番<input id="result2" type="number" min="1" max="18" placeholder="例：5" /></label>
-          <label>3着 馬番<input id="result3" type="number" min="1" max="18" placeholder="例：9" /></label>
-        </div>
-        <p class="hint">着順は馬番だけ入力します。各馬の実走タイムも入力すると、予想走破タイム誤差を自動集計します。</p>
-        <label>検証メモ<textarea id="review" rows="4" placeholder="展開誤差、予想タイム誤差、穴馬評価の良否など"></textarea></label>
-      </section>
-
-      <section class="actions">
-        <button id="saveRace" class="primary big">この予想を保存</button>
-        <button id="exportData" class="ghost big">JSONを書き出し</button>
-        <label class="file-button ghost big">JSONを読み込み<input id="importData" type="file" accept="application/json" hidden /></label>
-        <button id="clearForm" class="danger big">入力をクリア</button>
-      </section>
-
-      <section class="card">
-        <div class="section-head"><div><p class="eyebrow">ARCHIVE</p><h2>保存済み予想</h2></div><span id="saveCount" class="badge">0件</span></div>
-        <div id="archive" class="archive"></div>
-      </section>
+          <label>競馬区分<select id="category"><option>地方競馬</option><option>中央競馬</option></select></label>
+          <label>日付<input id="raceDate" type="date"></label>
+          <label>競馬場<input id="track" placeholder="船橋"></label>
+          <label>レース番号<input id="raceNo" type="number" min="1" max="12"></label>
+          <label>距離<input id="distance" type="number"></label>
+          <label>馬場<select id="trackCondition"><option>不明</option><option>良</option><option>稍重</option><option>重</option><option>不良</option></select></label>
+          <label>波乱度<input id="chaos" type="number" min="0" max="100"></label>
+          <label>展開<input id="pace" placeholder="標準"></label>
         </div>
       </details>
+    </section>
 
+    <section id="integrityCard" class="card">
+      <p class="eyebrow">DATA INTEGRITY</p>
+      <h2>データ整合性</h2>
+      <div id="integrityGrid" class="integrity-grid"></div>
+    </section>
+
+    <section id="finalCard" class="card final-card">
+      <div class="section-head">
+        <div><p class="eyebrow">CHASS FINAL</p><h2>最終判断</h2></div>
+        <span id="marketStatus" class="badge">市場待ち</span>
+      </div>
+      <div id="finalBody" class="empty">予想データを読み込むと自動表示します。</div>
+    </section>
+
+    <section class="card">
+      <div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div></div>
+      <div id="quickList" class="quick-list empty">馬データを入力すると一覧表示します。</div>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <div><p class="eyebrow">HORSE DETAILS</p><h2>各馬詳細</h2></div>
+      </div>
+      <div id="horseList"></div>
+    </section>
+
+    <section class="card result-card">
+      <p class="eyebrow">RESULT</p>
+      <h2>レース後検証</h2>
+      <button id="narSync" class="primary wide">NAR公式から結果・最終オッズを取得</button>
+      <p id="narStatus" class="muted"></p>
+      <div class="grid three">
+        <label>1着 馬番<input id="finish1" type="number"></label>
+        <label>2着 馬番<input id="finish2" type="number"></label>
+        <label>3着 馬番<input id="finish3" type="number"></label>
+      </div>
+      <label>検証メモ<textarea id="memo" rows="4" placeholder="展開誤差、予想タイム誤差、穴馬評価の良否など"></textarea></label>
+      <button id="saveValidation" class="ghost wide">結果を保存・再集計</button>
+    </section>
+  </section>
+
+  <section id="dashboardView" class="view">
+    <section class="card">
+      <div class="section-head">
+        <div><p class="eyebrow">VALIDATION</p><h2>予想検証ダッシュボード</h2></div>
+        <button id="recalcDash" class="primary">再集計</button>
+      </div>
+      <p class="muted">保存済みレースから自動集計します。</p>
+      <div id="dashKpis" class="kpi-grid"></div>
+      <div id="dashModels"></div>
+      <div id="dashRaces"></div>
+    </section>
+  </section>
+</main>
+
+<template id="horseTpl">
+  <article class="horse-row">
+    <div class="horse-head">
+      <div class="horse-no"></div>
+      <div><strong class="horse-mark-name"></strong><small class="muted horse-sub"></small></div>
+      <div class="score-pill overall-pill"></div>
     </div>
-
-    <div id="dashboardView" class="view">
-      <section class="card dashboard-head">
-        <div><p class="eyebrow">VALIDATION</p><h2>予想検証ダッシュボード</h2><p class="muted">保存済みレースの結果から自動集計。結果未入力レースは的中率計算から除外します。</p></div>
-        <button id="refreshDashboard" class="primary">再集計</button>
-      </section>
-
-      <section id="kpiGrid" class="kpi-grid"></section>
-
-      <section class="card dash-data-section" id="dashMarks">
-        <div class="section-head"><div><p class="eyebrow">MARKS</p><h2>印・穴馬・危険馬の成績</h2></div></div>
-        <div class="table-wrap"><table><thead><tr><th>評価</th><th>対象数</th><th>勝利</th><th>複勝</th><th>勝率</th><th>複勝率</th></tr></thead><tbody id="markStats"></tbody></table></div>
-      </section>
-
-      <section class="card dash-data-section" id="dashCalibration">
-        <div class="section-head"><div><p class="eyebrow">CALIBRATION</p><h2>AI確率の較正</h2></div></div>
-        <div class="grid two">
-          <div><h3>AI勝率</h3><div id="winCalibration" class="bars"></div></div>
-          <div><h3>AI複勝率</h3><div id="placeCalibration" class="bars"></div></div>
-        </div>
-      </section>
-
-      <section class="card dash-data-section" id="dashLogic">
-        <div class="section-head"><div><p class="eyebrow">LOGIC VALIDATION</p><h2>予想ロジック有効度</h2></div></div>
-        <p class="muted">各理論を0〜10点で記録し、高評価（7点以上）だった馬の実績を自動検証します。</p>
-        <div class="table-wrap"><table><thead><tr><th>評価項目</th><th>高評価数</th><th>勝率</th><th>複勝率</th><th>全体差</th></tr></thead><tbody id="logicStats"></tbody></table></div>
-      </section>
-
-      <section class="card dash-data-section" id="dashTime">
-        <div class="section-head"><div><p class="eyebrow">TIME</p><h2>予想走破タイム誤差</h2></div></div>
-        <div id="timeStats"></div>
-      </section>
-
-      <section class="card dash-data-section" id="dashSegments">
-        <div class="section-head"><div><p class="eyebrow">SEGMENTS</p><h2>条件別成績</h2></div></div>
-        <div class="grid two">
-          <div><h3>競馬場別</h3><div id="trackStats" class="mini-list"></div></div>
-          <div><h3>距離別</h3><div id="distanceStats" class="mini-list"></div></div>
-          <div><h3>人気帯別</h3><div id="popStats" class="mini-list"></div></div>
-          <div><h3>波乱度別</h3><div id="chaosStats" class="mini-list"></div></div>
-          <div><h3>データ信頼度別</h3><div id="confidenceStats" class="mini-list"></div></div>
-        </div>
-      </section>
+    <div class="horse-metrics">
+      <div><span>AI勝率</span><strong class="m-win">—</strong></div>
+      <div><span>複勝率</span><strong class="m-place">—</strong></div>
+      <div><span>TIME</span><strong class="m-time">—</strong></div>
+      <div><span>総合</span><strong class="m-overall">—</strong></div>
     </div>
-  </main>
-
-  <template id="horseTemplate">
-    <article class="horse-row">
-      <div class="horse-top compact-horse-top">
-        <label class="horse-no-wrap"><span>馬番</span><input class="horse-no" type="number" min="1" max="18" placeholder="#" /></label>
-        <select class="mark"><option>◎</option><option>○</option><option>▲</option><option>△</option><option>☆</option><option>💎</option><option>💎💎💎</option><option>⚠️</option></select>
-        <input class="horse-name" placeholder="馬名" />
-        <button class="remove ghost" type="button">削除</button>
+    <details class="horse-details">
+      <summary>詳細分析を見る</summary>
+      <div class="horse-details-body">
+        <div class="facts"></div>
+        <div class="logic"></div>
+        <p class="reason"></p>
       </div>
-      <div class="horse-compact-summary">
-        <div><span>勝率</span><strong class="quick-win">—</strong></div>
-        <div><span>複勝</span><strong class="quick-place">—</strong></div>
-        <div><span>TIME</span><strong class="quick-time">—</strong></div>
-        <div><span>総合</span><strong class="quick-score">—</strong></div>
-      </div>
-      <details class="horse-input-panel">
-        <summary>入力詳細を開く</summary>
-        <div class="horse-grid">
-        <label>AI勝率 %<input class="win" type="number" min="0" max="100" step="0.1" /></label>
-        <label>複勝率 %<input class="place" type="number" min="0" max="100" step="0.1" /></label>
-        <label>期待値 %<input class="ev" type="number" min="0" step="0.1" /></label>
-        <label>予想走破タイム<input class="time" placeholder="例 1:52.8" /></label>
-        <label>想定人気<input class="pop" type="number" min="1" /></label>
-        <label>オッズ<input class="odds" type="number" min="1" step="0.1" /></label>
-        <label>脚質<select class="running-style"><option>先行</option><option>逃げ</option><option>差し</option><option>追込</option></select></label>
-        <label>ブレ幅 %<input class="variance" type="number" min="0.3" max="8" step="0.1" value="2.0" /></label>
-        <label>位置取り失敗率 %<input class="position-fail" type="number" min="0" max="100" step="1" value="12" /></label>
-        <label>実走タイム<input class="actual-time" placeholder="例 1:52.4" /></label>
-        <label>データ信頼度 %<input class="data-confidence" type="number" min="0" max="100" step="1" placeholder="自動算出" /></label>
-        </div>
-      </details>
-      <div class="sim-result">シミュレーション未実行</div>
-      <div class="fact-summary"><div><b>＋材料</b><span class="fact-plus">—</span></div><div><b>−材料</b><span class="fact-minus">—</span></div><div><b>不明</b><span class="fact-unknown">—</span></div></div>
-      <details class="ai-panel"><summary>AI評価内訳・予測根拠</summary><div class="ai-breakdown"><p class="muted">入力すると評価内訳を表示します。</p></div></details>
-      <textarea class="reason" rows="2" placeholder="根拠：走破理論、ラップ、指数、馬場、展開、叩き効果など"></textarea>
-      <details class="logic-panel">
-        <summary>分析ロジックを採点（0〜10） <span class="logic-average">平均 —</span></summary>
-        <div class="logic-grid">
-          <label>走破理論<input class="logic-score" data-logic="runTheory" type="number" min="0" max="10" step="1" /></label>
-          <label>タイム指数<input class="logic-score" data-logic="timeIndex" type="number" min="0" max="10" step="1" /></label>
-          <label>展開適性<input class="logic-score" data-logic="paceFit" type="number" min="0" max="10" step="1" /></label>
-          <label>馬場適性<input class="logic-score" data-logic="trackFit" type="number" min="0" max="10" step="1" /></label>
-          <label>距離適性<input class="logic-score" data-logic="distanceFit" type="number" min="0" max="10" step="1" /></label>
-          <label>コース適性<input class="logic-score" data-logic="courseFit" type="number" min="0" max="10" step="1" /></label>
-          <label>叩き効果<input class="logic-score" data-logic="bounce" type="number" min="0" max="10" step="1" /></label>
-          <label>前走記憶<input class="logic-score" data-logic="lastRaceMemory" type="number" min="0" max="10" step="1" /></label>
-          <label>5・7・9H負荷<input class="logic-score" data-logic="loadLap" type="number" min="0" max="10" step="1" /></label>
-          <label>調教<input class="logic-score" data-logic="training" type="number" min="0" max="10" step="1" /></label>
-          <label>枠<input class="logic-score" data-logic="draw" type="number" min="0" max="10" step="1" /></label>
-          <label>斤量<input class="logic-score" data-logic="weight" type="number" min="0" max="10" step="1" /></label>
-          <label>騎手<input class="logic-score" data-logic="jockey" type="number" min="0" max="10" step="1" /></label>
-        </div>
-      </details>
-    </article>
-  </template>
+    </details>
+  </article>
+</template>
 
-  <script src="app.js"></script>
-<script src="/chass-loader.js"></script>
-  <script src="/chass-v8.0-patch.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>

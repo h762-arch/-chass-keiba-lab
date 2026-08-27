@@ -1,9 +1,9 @@
 {
-  "name":"チャス競馬研究所",
-  "short_name":"競馬研究所",
-  "start_url":"./",
-  "display":"standalone",
-  "background_color":"#07101f",
-  "theme_color":"#07101f",
-  "lang":"ja"
+  "name": "チャス競馬研究所",
+  "short_name": "チャス競馬",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07101f",
+  "theme_color": "#07101f",
+  "lang": "ja"
 }
