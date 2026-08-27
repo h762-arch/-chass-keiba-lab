@@ -748,14 +748,14 @@ function refreshResultAutoReview(){
 ['result1','result2','result3','review'].forEach(id=>{const e=$(id);if(e){e.addEventListener('input',autoPersistResult);e.addEventListener('change',autoPersistResult);}});
 document.addEventListener('input',e=>{if(e.target?.classList?.contains('actual-time'))autoPersistResult();});
 
-// === Ver.7.0: split NAR API worker + static frontend ===
+// === Ver.7.3: NAR official sync + static frontend ===
 
 const NAR_API_STORAGE_KEY='chass_nar_api_base_v1';
 function normalizedApiBase(v){return String(v||'').trim().replace(/\/+$/,'');}
 function getNarApiBase(){return normalizedApiBase(localStorage.getItem(NAR_API_STORAGE_KEY)||'');}
 function saveNarApiBase(v){const x=normalizedApiBase(v); if(x)localStorage.setItem(NAR_API_STORAGE_KEY,x); else localStorage.removeItem(NAR_API_STORAGE_KEY); return x;}
 function narApiUrl(path){const base=getNarApiBase(); return base ? base+path : path;}
-const NAR_TRACK_CODES = {'門別':'36','船橋':'19','笠松':'22','園田':'27','姫路':'28'};
+const NAR_TRACK_CODES = {'園田':'27','姫路':'28'};
 function narTrackCode(){
   const track=String($('track')?.value||'').trim();
   const savedCode=String(window.__narCode||'').trim();
@@ -791,7 +791,7 @@ function applyOfficialResult(data){
     const no=String(r.querySelector('.horse-no')?.value||'').trim(), t=times[no];
     if(t && r.querySelector('.actual-time'))r.querySelector('.actual-time').value=t;
   });
-  if(order.length)autoPersistOutcome();
+  if(order.length)autoPersistResult();
   return order.length;
 }
 async function fetchOfficialNar({silent=false}={}){
@@ -799,7 +799,7 @@ async function fetchOfficialNar({silent=false}={}){
   if(!code||!date||!race){if(!silent)setOfficialStatus('NAR競馬場コード・日付・Rが不足しています。','warn');return false;}
   try{
     setOfficialStatus('NAR公式を確認中…');
-    const res=await fetch(narApiUrl('/api/nar/sync?'+currentRaceApiParams().toString()),{headers:{'accept':'application/json'}});
+    const base=getNarApiBase(); if(!base)throw new Error('NAR連携先未設定'); const res=await fetch(narApiUrl('/api/nar/sync?'+currentRaceApiParams().toString()),{headers:{'accept':'application/json'}});
     if(!res.ok)throw new Error(res.status===404?'公式取得APIが未導入です':'HTTP '+res.status);
     const data=await res.json();
     const on=applyOfficialOdds(data), rn=applyOfficialResult(data);
@@ -809,7 +809,7 @@ async function fetchOfficialNar({silent=false}={}){
     return true;
   }catch(e){
     const msg=String(e?.message||e);
-    setOfficialStatus(`公式取得失敗：${msg}`,'warn');
+    setOfficialStatus(msg.includes('未設定')?'NAR連携先が未設定です。「NAR自動連携設定」からWorker URLを1回保存してください。':`公式取得失敗：${msg}`,'warn');
     return false;
   }
 }
