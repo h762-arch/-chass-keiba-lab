@@ -16,7 +16,7 @@ function updateLogicAverage(row){
 function addHorse(data={}){
   const node=tpl.content.cloneNode(true);
   const row=node.querySelector('.horse-row');
-  const map={'horse-no':'',mark:'','horse-name':'',win:'',place:'',ev:'',time:'',pop:'',odds:'','running-style':'先行',variance:'2.0','position-fail':'12','actual-time':'','data-confidence':'',reason:''};
+  const map={'horse-no':'',mark:'◎','horse-name':'',win:'',place:'',ev:'',time:'',pop:'',odds:'','running-style':'先行',variance:'2.0','position-fail':'12','actual-time':'','data-confidence':'',reason:''};
   Object.entries(map).forEach(([cls,def])=>{ const el=row.querySelector('.'+cls); if(el) el.value=data[cls] ?? def; });
   const logic=data.logic||{};
   row.querySelectorAll('.logic-score').forEach(el=>{el.value=logic[el.dataset.logic] ?? ''; el.addEventListener('input',()=>updateLogicAverage(row));});
@@ -63,6 +63,7 @@ function consolidateHorseDetails(row){
 function horseFromRow(r){
   return {
     'horse-no':r.querySelector('.horse-no')?.value ?? '',
+    'horse-no':r.querySelector('.horse-no')?.value ?? '',
     mark:r.querySelector('.mark').value,
     'horse-name':r.querySelector('.horse-name').value.trim(),
     win:r.querySelector('.win').value, place:r.querySelector('.place').value,
@@ -101,15 +102,9 @@ function saveAll(v){localStorage.setItem(KEY,JSON.stringify(v));}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
 function pct(a,b){return b?((a/b)*100).toFixed(1)+'%':'—';}
 function num(v){const n=parseFloat(v);return Number.isFinite(n)?n:null;}
-function resultEntries(r){return [r.result1,r.result2,r.result3].map(x=>String(x||'').trim()).filter(Boolean);}
-function isComplete(r){return resultEntries(r).length>0;}
-function horsePosition(r,h){
-  const results=resultEntries(r);
-  const no=String(h['horse-no']||'').trim(), name=(h['horse-name']||'').trim();
-  let i=no?results.indexOf(no):-1;
-  if(i<0 && name)i=results.indexOf(name); // Ver.6.0以前の馬名保存データも互換
-  return i>=0?i+1:null;
-}
+function resultNames(r){return [r.result1,r.result2,r.result3].map(x=>(x||'').trim()).filter(Boolean);}
+function isComplete(r){return resultNames(r).length>0;}
+function horsePosition(r,h){const n=(h['horse-name']||'').trim(); if(!n)return null; const i=resultNames(r).indexOf(n); return i>=0?i+1:null;}
 
 function renderArchive(){
   const all=loadAll(); $('saveCount').textContent=all.length+'件';
@@ -265,7 +260,7 @@ function renderAiBreakdown(row,allHorses){
   const el=row.querySelector('.ai-breakdown'); if(!el)return;
   const strongest=[...b.items].sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>`${x[0]} ${x[1].toFixed(0)}`).join(' / ');
   const weakest=[...b.items].sort((a,b)=>a[1]-b[1]).slice(0,2).map(x=>`${x[0]} ${x[1].toFixed(0)}`).join(' / ');
-  el.innerHTML=`<div class="ai-score-head"><div><span>AI総合評価</span><strong>${b.overall.toFixed(0)}/100</strong></div><div><span>Sim勝率</span><strong>${win===null?'—':win.toFixed(1)+'%'}</strong></div><div><span>信頼度</span><strong>${derivedConfidence(h).toFixed(0)}%</strong></div></div><p class="ai-key"><strong>主なプラス:</strong> ${esc(strongest)}<br><strong>要確認:</strong> ${esc(weakest)}</p><details class="ai-score-details"><summary>分析スコア詳細（13項目）</summary><div class="ai-bars">${b.items.map(([label,val,note])=>`<div class="ai-bar-row" title="${esc(note)}"><div><span>${esc(label)}</span><em>${val.toFixed(0)}</em></div><div class="ai-bar-track"><i style="width:${clamp(val)}%"></i></div></div>`).join('')}</div><p class="hint">総合評価は入力要素の見える化スコアです。Sim勝率そのものは6,000回シミュレーション結果で、同じ意味ではありません。</p></details>`;
+  el.innerHTML=`<div class="ai-score-head"><div><span>AI総合評価</span><strong>${b.overall.toFixed(0)}/100</strong></div><div><span>Sim勝率</span><strong>${win===null?'—':win.toFixed(1)+'%'}</strong></div><div><span>信頼度</span><strong>${derivedConfidence(h).toFixed(0)}%</strong></div></div><div class="ai-bars">${b.items.map(([label,val,note])=>`<div class="ai-bar-row" title="${esc(note)}"><div><span>${esc(label)}</span><em>${val.toFixed(0)}</em></div><div class="ai-bar-track"><i style="width:${clamp(val)}%"></i></div></div>`).join('')}</div><p class="ai-key"><strong>主なプラス:</strong> ${esc(strongest)}<br><strong>要確認:</strong> ${esc(weakest)}</p><p class="hint">総合評価は入力要素の見える化スコアです。Sim勝率そのものは6,000回シミュレーション結果で、同じ意味ではありません。</p>`;
 }
 function refreshCompactSummary(row,allHorses){
   const h=horseFromRow(row), b=aiBreakdown(h,allHorses);
@@ -279,56 +274,15 @@ function refreshCompactSummary(row,allHorses){
 }
 function renderQuickCompare(){
   const el=$('quickCompare'); if(!el)return;
-  const marketOverview=$('quickMarketStatus');
-  try{
-    const horseRows=[...document.querySelectorAll('.horse-row')];
-    const hs=horseRows.map(horseFromRow).filter(h=>String(h['horse-name']||'').trim());
-    if(!hs.length){
-      if(marketOverview)marketOverview.textContent='市場データ：未取得';
-      el.innerHTML='<p class="muted">馬データを入力すると一覧表示します。</p>';return;
-    }
-    const ability=[...hs].sort((a,b)=>(num(b.win)??-1)-(num(a.win)??-1));
-    const rankMap=new Map(ability.map((h,i)=>[h,i+1]));
-    const rows=hs.map((h,i)=>{
-      let score=50; try{score=aiBreakdown(h,hs)?.overall ?? 50;}catch{}
-      const conf=derivedConfidence(h);
-      let v={ev:null,fair:fairOddsFromWin(num(h.win)),badge:'—',tone:''};
-      try{v=valueAssessment(num(h.win),num(h.place),num(h.odds),num(h.pop),rankMap.get(h)||null,derivedConfidence(h))||v;}catch{}
-      return {
-        no:h['horse-no']||String(i+1), mark:h.mark||'', name:h['horse-name'],
-        win:num(h.win), place:num(h.place), score:Number(score)||50, conf:Number(conf)||0, time:h.time||'',
-        odds:num(h.odds), pop:num(h.pop), ...v
-      };
-    }).sort((a,b)=>(b.win??-1)-(a.win??-1));
-
-    const oddsCount=rows.filter(x=>x.odds&&x.odds>0).length;
-    const oddsType=$('oddsType')?.value||'';
-    const checked=$('oddsCheckedAt')?.value||'';
-    if(marketOverview){
-      marketOverview.classList.toggle('has-market',oddsCount>0);
-      marketOverview.textContent=oddsCount>0
-        ? `市場データ：${oddsType&&oddsType!=='オッズなし'?oddsType:'取得済み'} ${oddsCount}/${rows.length}頭${checked?' ｜ '+checked:''}`
-        : '市場データ：未取得 ｜ AIフェアオッズのみ表示';
-    }
-
-    el.innerHTML=`<div class="quick-mobile-list">${rows.map(x=>{
-      const valueText=x.ev!==null?`期待 ${x.ev.toFixed(0)}%`:(x.fair?`AIフェア ${x.fair.toFixed(1)}倍`:'AIフェア —');
-      const marketText=x.odds?`実 ${x.odds.toFixed(1)}倍${x.pop?' / '+x.pop+'人気':''}`:'';
-      const badge=x.badge&&x.badge!=='—'?`<span class="quick-value-badge ${esc(x.tone||'')}">${esc(x.badge)}</span>`:'';
-      return `<article class="quick-mobile-row">
-        <div class="quick-mobile-head"><strong class="horse-number-badge">${esc(x.no)}</strong><span class="quick-mark">${esc(x.mark||'')}</span><strong class="quick-name">${esc(x.name)}</strong>${badge}</div>
-        <div class="quick-mobile-stats"><div><span>勝</span><strong>${x.win===null?'—':x.win.toFixed(1)+'%'}</strong></div><div><span>複</span><strong>${x.place===null?'—':x.place.toFixed(1)+'%'}</strong></div><div><span>TIME</span><strong>${esc(x.time||'—')}</strong></div></div>
-        <div class="quick-judgement-row">${marketText?`<span>${marketText}</span>`:'<span>実オッズ —</span>'}<span class="${x.ev!==null&&x.ev>=100?'positive':''}">${valueText}</span></div>
-      </article>`;
-    }).join('')}</div>`;
-  }catch(err){
-    console.error('quick compare render failed',err);
-    const fallback=[...document.querySelectorAll('.horse-row')].map(horseFromRow).filter(h=>h['horse-name']);
-    if(marketOverview)marketOverview.textContent='市場データ：確認中';
-    if(fallback.length){el.innerHTML=`<div class="quick-mobile-list">${fallback.map((h,i)=>`<article class="quick-mobile-row"><div class="quick-mobile-head"><strong class="horse-number-badge">${esc(h['horse-no']||i+1)}</strong><span class="quick-mark">${esc(h.mark||'')}</span><strong class="quick-name">${esc(h['horse-name'])}</strong></div><div class="quick-mobile-stats"><div><span>勝</span><strong>${num(h.win)===null?'—':num(h.win).toFixed(1)+'%'}</strong></div><div><span>複</span><strong>${num(h.place)===null?'—':num(h.place).toFixed(1)+'%'}</strong></div><div><span>TIME</span><strong>${esc(h.time||'—')}</strong></div></div></article>`).join('')}</div>`;}
-  }
+  const rows=[...document.querySelectorAll('.horse-row')].map((r,i)=>{
+    const h=horseFromRow(r); if(!h['horse-name'])return null;
+    const b=aiBreakdown(h,[...document.querySelectorAll('.horse-row')].map(horseFromRow));
+    return {no:h['horse-no']||String(i+1),mark:h.mark,name:h['horse-name'],win:num(h.win),place:num(h.place),score:b.overall,time:h.time||''};
+  }).filter(Boolean);
+  if(!rows.length){el.innerHTML='<p class="muted">馬データを入力すると一覧表示します。</p>';return;}
+  rows.sort((a,b)=>(b.win??-1)-(a.win??-1));
+  el.innerHTML=`<table class="quick-table"><thead><tr><th>馬番</th><th>印</th><th>馬名</th><th>勝率</th><th>複勝</th><th>総合</th><th>TIME</th></tr></thead><tbody>${rows.map(x=>`<tr><td><strong class="horse-number-badge">${esc(x.no)}</strong></td><td>${esc(x.mark)}</td><td><strong>${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong></td><td>${x.win===null?'—':x.win.toFixed(1)+'%'}</td><td>${x.place===null?'—':x.place.toFixed(1)+'%'}</td><td>${x.score.toFixed(0)}</td><td>${esc(x.time||'—')}</td></tr>`).join('')}</tbody></table>`;
 }
-
 function renderAllAiBreakdowns(){
   const rows=[...document.querySelectorAll('.horse-row')], hs=rows.map(horseFromRow);
   rows.forEach(r=>{consolidateHorseDetails(r);renderAiBreakdown(r,hs);refreshCompactSummary(r,hs);});
@@ -337,58 +291,7 @@ function renderAllAiBreakdowns(){
 function normalRand(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
 function logicAvgHorse(h){const vals=Object.values(h.logic||{}).map(num).filter(v=>v!==null);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:5;}
 function scenarioAdjustment(style,sc){const m={normal:{逃げ:0,先行:0,差し:0,追込:0},high:{逃げ:.7,先行:.25,差し:-.25,追込:-.15},slow:{逃げ:-.4,先行:-.2,差し:.3,追込:.55}};return m[sc]?.[style]??0;}
-function fairOddsFromWin(win){const w=num(win);return w&&w>0?100/w:null;}
-function derivePopularityFromOdds(){
-  const rows=[...document.querySelectorAll('.horse-row')];
-  const priced=rows.map(r=>({r,o:num(r.querySelector('.odds')?.value)})).filter(x=>x.o&&x.o>0).sort((a,b)=>a.o-b.o);
-  priced.forEach((x,i)=>{const p=x.r.querySelector('.pop');if(p&&!num(p.value))p.value=String(i+1);});
-}
-function autoAssignMarks(){
-  const rows=[...document.querySelectorAll('.horse-row')].filter(r=>r.querySelector('.horse-name')?.value.trim());
-  rows.forEach(r=>{const m=r.querySelector('.mark');if(m)m.value='';});
-  const ability=rows.map(r=>{const h=horseFromRow(r);return {r,h,w:num(h.win)||-1,conf:derivedConfidence(h),pop:num(h.pop),odds:num(h.odds)};}).sort((a,b)=>b.w-a.w);
-  let used=0;
-  for(const x of ability){
-    // 低信頼馬は市場の裏付けが無い限り主要印を自動付与しない。
-    // ただし実オッズで3人気以内なら「未知の人気馬」として印対象に戻す。
-    const marketBacked=x.odds&&x.pop&&x.pop<=3;
-    if(x.conf<55&&!marketBacked)continue;
-    const marks=['◎','○','▲']; if(used>=marks.length)break;
-    x.r.querySelector('.mark').value=marks[used++];
-  }
-}
 function simBadge(ev,pop,place){if(ev>=135&&pop>=10&&place>=18)return '💎💎💎';if(ev>=115&&pop>=4&&place>=20)return '💎';if(ev<75&&pop>0&&pop<=3)return '⚠️';return '—';}
-function confidenceRaceFactor(h){
-  // Ver.6.6: 低信頼=弱い、とは置かない。
-  // 園田1Rの初出走馬勝利を踏まえ、信頼度は能力ペナルティではなく不確実性に反映する。
-  return 1;
-}
-function effectiveVariance(h){
-  const base=Math.max(.20,num(h.variance)||2), c=derivedConfidence(h);
-  // 低信頼ほど分布を広げる。能力平均そのものは下げない。
-  return base*(1+Math.max(0,60-c)/100*1.35);
-}
-function marketBlendProbabilities(valid, raw){
-  const priced=valid.map((x,i)=>({x,i,o:num(x.h.odds),conf:derivedConfidence(x.h)})).filter(z=>z.o&&z.o>0);
-  if(priced.length<Math.max(3,Math.ceil(valid.length*.60)))return raw;
-  const inv=priced.reduce((a,z)=>a+1/z.o,0); if(!inv)return raw;
-  const market=new Map(priced.map(z=>[z.i,(1/z.o)/inv*100]));
-  let wins=raw.map((r,i)=>{
-    if(!market.has(i))return r.wp;
-    const c=priced.find(z=>z.i===i)?.conf??60;
-    // 高信頼モデルはAI寄り、低信頼モデルは市場寄り。最低でもAI25%は残す。
-    const modelW=Math.max(.25,Math.min(.85,.25+(c/100)*.67));
-    return r.wp*modelW+market.get(i)*(1-modelW);
-  });
-  const sw=wins.reduce((a,b)=>a+b,0)||100; wins=wins.map(v=>v/sw*100);
-  let places=raw.map((r,i)=>{
-    const ratio=r.wp>0?wins[i]/r.wp:1;
-    return Math.max(0,Math.min(100,r.pp*Math.sqrt(Math.max(.25,ratio))));
-  });
-  const sp=places.reduce((a,b)=>a+b,0)||300; const target=Math.min(300,100*valid.length);
-  places=places.map(v=>Math.min(100,v/sp*target));
-  return raw.map((r,i)=>({...r,wp:wins[i],pp:places[i],marketBlended:market.has(i)}));
-}
 function runSimulation(){
   const rows=[...document.querySelectorAll('.horse-row')]; if(rows.length<2){alert('2頭以上入力してください');return false;}
   const probs=[num($('simNormal').value)||0,num($('simHigh').value)||0,num($('simSlow').value)||0], sum=probs.reduce((a,b)=>a+b,0); if(sum<=0){alert('展開確率を入力してください');return false;}
@@ -400,16 +303,13 @@ function runSimulation(){
   const N=6000, names=['normal','high','slow'];
   for(let k=0;k<N;k++){
     let z=Math.random()*sum, sc=names[0]; if(z<probs[0])sc='normal'; else if(z<probs[0]+probs[1])sc='high'; else sc='slow';
-    const scores=valid.map(x=>{const fail=Math.random()<((num(x.h['position-fail'])||0)/100); const vr=Math.max(.002,effectiveVariance(x.h)/100); const base=x.base; const confFactor=confidenceRaceFactor(x.h); const logicAdj=(5-x.logic)*0.12; const scen=scenarioAdjustment(x.h['running-style'],sc); const noise=normalRand()*base*vr; const failPenalty=fail?base*.012:0; const t=base*confFactor+logicAdj+scen+noise+failPenalty; x.totalTime+=t;x.countTime++;return {x,t};}).sort((a,b)=>a.t-b.t);
+    const scores=valid.map(x=>{const fail=Math.random()<((num(x.h['position-fail'])||0)/100); const vr=Math.max(.002,(num(x.h.variance)||2)/100); const base=x.base; const logicAdj=(5-x.logic)*0.12; const scen=scenarioAdjustment(x.h['running-style'],sc); const noise=normalRand()*base*vr; const failPenalty=fail?base*.012:0; const t=base+logicAdj+scen+noise+failPenalty; x.totalTime+=t;x.countTime++;return {x,t};}).sort((a,b)=>a.t-b.t);
     scores[0].x.wins++; scores.slice(0,Math.min(3,scores.length)).forEach(y=>y.x.places++);
   }
   let totalWin=0,totalPlace=0;
-  const raw=valid.map(x=>({wp:x.wins/N*100,pp:x.places/N*100,avg:x.totalTime/x.countTime}));
-  derivePopularityFromOdds();
-  const calibrated=marketBlendProbabilities(valid,raw);
-  valid.forEach((x,i)=>{const {wp,pp,avg,marketBlended}=calibrated[i]; totalWin+=wp;totalPlace+=pp; x.r.querySelector('.win').value=wp.toFixed(1); x.r.querySelector('.place').value=pp.toFixed(1); const tag=marketBlended?'市場融合AI':'純Sim'; x.r.querySelector('.sim-result').innerHTML=`<strong>${tag}勝率 ${wp.toFixed(1)}% / 複勝率 ${pp.toFixed(1)}%</strong><span>平均 ${formatRaceTime(avg)} / AIフェア ${fairOddsFromWin(wp).toFixed(1)}倍</span>`;}); renderValueRanking(); autoAssignMarks(); renderValueRanking(); renderAllAiBreakdowns();
+  valid.forEach(x=>{const wp=x.wins/N*100, pp=x.places/N*100, avg=x.totalTime/x.countTime, odds=num(x.h.odds), ev=odds?wp*odds:null, pop=num(x.h.pop)||0, badge=simBadge(ev??0,pop,pp); totalWin+=wp;totalPlace+=pp; x.r.querySelector('.win').value=wp.toFixed(1); x.r.querySelector('.place').value=pp.toFixed(1); x.r.querySelector('.ev').value=ev!==null?ev.toFixed(1):''; x.r.querySelector('.sim-result').innerHTML=`<strong>${badge} Sim勝率 ${wp.toFixed(1)}% / 複勝率 ${pp.toFixed(1)}%</strong><span>平均 ${formatRaceTime(avg)}${ev!==null?` / 期待回収率 ${ev.toFixed(1)}%`:''}</span>`;}); renderValueRanking(); renderAllAiBreakdowns();
   const now=new Date().toISOString(); const el=$('simulationSummary');
-  el.textContent=`6,000回実行済み・市場データ取得時は信頼度連動で融合｜勝率合計 ${totalWin.toFixed(1)}%・複勝率合計 ${totalPlace.toFixed(1)}%｜標準 ${(probs[0]/sum*100).toFixed(0)}%・ハイ ${(probs[1]/sum*100).toFixed(0)}%・スロー ${(probs[2]/sum*100).toFixed(0)}%`;
+  el.textContent=`6,000回実行済み｜勝率合計 ${totalWin.toFixed(1)}%・複勝率合計 ${totalPlace.toFixed(1)}%｜標準 ${(probs[0]/sum*100).toFixed(0)}%・ハイ ${(probs[1]/sum*100).toFixed(0)}%・スロー ${(probs[2]/sum*100).toFixed(0)}%`;
   Object.assign(el.dataset,{runs:'6000',executedAt:now,normal:String(probs[0]/sum*100),high:String(probs[1]/sum*100),slow:String(probs[2]/sum*100)});
   return true;
 }
@@ -419,53 +319,43 @@ function formatRaceTime(s){if(!Number.isFinite(s))return '—';const m=Math.floo
 function impliedProbability(odds){
   const o=num(odds); return o&&o>0?100/o:null;
 }
-function valueAssessment(win,place,odds,pop,aiRank=null,confidence=null){
-  const o=num(odds), p=num(pop), w=num(win), pl=num(place), conf=num(confidence);
+function valueAssessment(win,place,odds,pop){
+  const o=num(odds), p=num(pop), w=num(win), pl=num(place);
   const implied=o&&o>0?100/o:null;
-  const fair=fairOddsFromWin(w);
   const ev=(o&&w!==null)?w*o:null;
   const gap=(implied!==null&&w!==null)?w-implied:null;
-  const rankGap=(p!==null&&aiRank!==null)?p-aiRank:null;
-  let badge='—', tone='neutral', reason=fair?`AIフェアオッズ ${fair.toFixed(1)}倍 / 市場オッズ待ち`:'勝率未計算';
+  let badge='—', tone='neutral', reason='オッズまたは人気未設定';
   if(o&&w!==null){
-    badge='適正圏'; reason=`期待回収率 ${ev.toFixed(1)}% / AIフェア ${fair.toFixed(1)}倍`;
-    if(p!==null && p>=8 && pl!==null && pl>=18 && ev>=125){badge='💎💎💎 大穴';tone='diamond3';reason=`${p}人気・複勝率${pl.toFixed(1)}%・期待${ev.toFixed(1)}%・市場${o.toFixed(1)}倍`;}
-    else if(p!==null && ((p>=4&&pl!==null&&pl>=25&&ev>=110)||(p>=5&&pl!==null&&pl>=18&&(ev>=108||(gap!==null&&gap>=2.5))))){badge='💎 穴馬';tone='diamond';reason=`${p}人気・複勝率${pl.toFixed(1)}%・期待${ev.toFixed(1)}%・市場差${gap>=0?'+':''}${gap.toFixed(1)}pt`;}
-    else if(p!==null && p>=6 && aiRank!==null && rankGap>=2 && pl!==null && pl>=20 && ev>=95){badge='💎 穴候補';tone='diamond';reason=`能力${aiRank}位に対し市場${p}人気・複勝率${pl.toFixed(1)}%・期待${ev.toFixed(1)}%`;}
-    else if(conf!==null && conf<45 && p!==null && p<=2){badge='🧩 未知の人気馬';tone='candidate';reason=`データ信頼${conf.toFixed(0)}%だが市場${p}人気。能力断定せず市場情報を強めに融合`;}
-    if(p!==null && p<=3 && ((gap!==null&&gap<=-5)||ev<82)){
-      let n=1; if((gap!==null&&gap<=-12)||ev<62)n=3; else if((gap!==null&&gap<=-8)||ev<72)n=2;
+    badge='適正圏'; reason=`期待回収率 ${ev.toFixed(1)}%`;
+    if(p!==null && p>=10 && pl!==null && pl>=25 && ev>=115){badge='💎💎💎 大穴';tone='diamond3';reason=`${p}人気想定・複勝率${pl.toFixed(1)}%・期待${ev.toFixed(1)}%`;}
+    else if(p!==null && p>=7 && pl!==null && pl>=22 && ev>=110){badge='💎 穴馬';tone='diamond';reason=`${p}人気想定・複勝率${pl.toFixed(1)}%・期待${ev.toFixed(1)}%`;}
+    if(p!==null && p<=3 && ((gap!==null&&gap<=-8)||ev<80)){
+      let n=1; if((gap!==null&&gap<=-15)||ev<60)n=3; else if((gap!==null&&gap<=-10)||ev<70)n=2;
       badge='⚠️'.repeat(n)+' 人気馬注意'; tone='warning'; reason=`市場勝率${implied.toFixed(1)}%に対しAI${w.toFixed(1)}% / 期待${ev.toFixed(1)}%`;
     }
-  } else if(p!==null && aiRank!==null && p>=6 && rankGap>=2 && pl!==null && pl>=22){
-    badge='◇ 能力穴候補'; tone='candidate'; reason=`能力${aiRank}位に対し${p}人気想定・複勝率${pl.toFixed(1)}%（実オッズ未確認）`;
   }
-  return {ev,implied,fair,gap,rankGap,badge,tone,reason};
+  return {ev,implied,gap,badge,tone,reason};
 }
 function renderValueRanking(){
-  derivePopularityFromOdds();
-  const base=[...document.querySelectorAll('.horse-row')].map(r=>{
-    const name=r.querySelector('.horse-name').value.trim(); if(!name)return null;
-    const h=horseFromRow(r); return {r,no:r.querySelector('.horse-no')?.value||'',name,win:num(r.querySelector('.win').value),place:num(r.querySelector('.place').value),odds:num(r.querySelector('.odds').value),pop:num(r.querySelector('.pop').value),conf:derivedConfidence(h)};
-  }).filter(Boolean);
-  const sortedAbility=[...base].filter(x=>x.win!==null).sort((a,b)=>b.win-a.win); const rankMap=new Map(sortedAbility.map((x,i)=>[x.r,i+1]));
-  const rows=base.map(x=>{
-    const v=valueAssessment(x.win,x.place,x.odds,x.pop,rankMap.get(x.r)||null,x.conf);
-    const vr=x.r.querySelector('.value-result');
+  const rows=[...document.querySelectorAll('.horse-row')].map(r=>{
+    const name=r.querySelector('.horse-name').value.trim(); if(!name)return null; const no=r.querySelector('.horse-no')?.value||'';
+    const win=num(r.querySelector('.win').value), place=num(r.querySelector('.place').value), odds=num(r.querySelector('.odds').value), pop=num(r.querySelector('.pop').value);
+    const v=valueAssessment(win,place,odds,pop);
+    const vr=r.querySelector('.value-result');
     if(vr){vr.className='value-result '+v.tone; vr.innerHTML=`<strong>${v.badge}</strong><span>${esc(v.reason)}${v.gap!==null?` / 市場差 ${v.gap>=0?'+':''}${v.gap.toFixed(1)}pt`:''}</span>`;}
-    const evEl=x.r.querySelector('.ev'); if(evEl){evEl.value=v.ev!==null?v.ev.toFixed(1):'';evEl.placeholder=v.fair?`市場待ち / AIフェア${v.fair.toFixed(1)}倍`:'自動算出';}
-    return {...x,aiRank:rankMap.get(x.r)||null,...v};
-  });
-  const ability=[...rows].filter(x=>x.win!==null).sort((a,b)=>b.win-a.win).slice(0,5);
+    if(v.ev!==null) r.querySelector('.ev').value=v.ev.toFixed(1);
+    return {no,name,win:win??-1,place:place??-1,odds,pop, ...v};
+  }).filter(Boolean);
+  const ability=[...rows].filter(x=>x.win>=0).sort((a,b)=>b.win-a.win).slice(0,5);
   const value=[...rows].filter(x=>x.ev!==null).sort((a,b)=>b.ev-a.ev).slice(0,5);
-  const diamonds=rows.filter(x=>x.tone==='diamond'||x.tone==='diamond3'||x.tone==='candidate').sort((a,b)=>(b.ev??0)-(a.ev??0)||(b.rankGap??0)-(a.rankGap??0));
+  const diamonds=rows.filter(x=>x.tone==='diamond'||x.tone==='diamond3').sort((a,b)=>(b.ev??0)-(a.ev??0));
   const warnings=rows.filter(x=>x.tone==='warning').sort((a,b)=>(a.ev??999)-(b.ev??999));
   const oddsCount=rows.filter(x=>x.odds).length;
-  const marketCard=$('marketCard'); if(marketCard) marketCard.hidden=!(oddsCount||diamonds.length);
-  const status=$('marketStatus'); if(status){status.textContent=oddsCount?`${$('oddsType')?.value||'種別不明'} ${oddsCount}頭 / 人気自動算出`:'市場データ未取得';}
+  const marketCard=$('marketCard'); if(marketCard) marketCard.hidden=!oddsCount;
+  const status=$('marketStatus'); if(status){status.textContent=oddsCount?`${$('oddsType')?.value||'種別不明'} ${oddsCount}頭入力`:'オッズ未入力';}
   const rank=(arr,formatter)=>arr.length?arr.map((x,i)=>`<div class="rank-row"><span>${i+1}</span><strong>${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong><em>${formatter(x)}</em></div>`).join(''):'<p class="muted">対象なし</p>';
   const el=$('valueRanking'); if(!el)return;
-  el.innerHTML=`<div class="rank-grid"><div><h3>🏆 能力順位</h3>${rank(ability,x=>`勝率 ${x.win.toFixed(1)}% / フェア${x.fair?.toFixed(1)||'—'}倍`)}</div><div><h3>💰 期待値順位</h3>${value.length?rank(value,x=>`期待 ${x.ev.toFixed(1)}%`):'<p class="muted">実オッズ取得後に自動算出</p>'}</div></div><div class="rank-grid value-flags"><div><h3>💎 穴馬候補</h3>${diamonds.length?diamonds.map(x=>`<div class="flag-row"><strong>${x.badge} ${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong><span>${esc(x.reason)}</span></div>`).join(''):'<p class="muted">市場との乖離が確認できる候補なし</p>'}</div><div><h3>⚠️ 人気馬リスク</h3>${warnings.length?warnings.map(x=>`<div class="flag-row"><strong>${x.badge} ${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong><span>${esc(x.reason)}</span></div>`).join(''):'<p class="muted">条件該当なし</p>'}</div></div>`;
+  el.innerHTML=`<div class="rank-grid"><div><h3>🏆 能力順位</h3>${rank(ability,x=>`勝率 ${x.win.toFixed(1)}%`)}</div><div><h3>💰 期待値順位</h3>${rank(value,x=>`期待 ${x.ev.toFixed(1)}%`)}</div></div><div class="rank-grid value-flags"><div><h3>💎 穴馬候補</h3>${diamonds.length?diamonds.map(x=>`<div class="flag-row"><strong>${x.badge} ${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong><span>${esc(x.reason)}</span></div>`).join(''):'<p class="muted">条件該当なし</p>'}</div><div><h3>⚠️ 人気馬リスク</h3>${warnings.length?warnings.map(x=>`<div class="flag-row"><strong>${x.badge} ${x.no?esc(x.no)+'番 ':''}${esc(x.name)}</strong><span>${esc(x.reason)}</span></div>`).join(''):'<p class="muted">条件該当なし</p>'}</div></div>`;
 }
 
 function showView(id){ document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===id)); document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===id)); if(id==='dashboardView')renderDashboard(); }
@@ -480,44 +370,20 @@ $('importData').onchange=async e=>{const f=e.target.files?.[0]; if(!f)return; tr
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 $('refreshDashboard').onclick=renderDashboard;
 $('oddsCheckedAt')?.addEventListener('change',renderValueRanking);
-horseList.addEventListener('input',e=>{if(e.target.matches('.odds,.pop,.win,.place')){ if(e.target.matches('.odds')){const any=[...document.querySelectorAll('.odds')].some(x=>num(x.value)!==null); if(any && (!$('oddsType').value || $('oddsType').value==='オッズなし'))setAutoOddsMeta('種別不明',$('oddsCheckedAt')?.value||''); if(!any)setAutoOddsMeta('オッズなし','');derivePopularityFromOdds();} renderValueRanking();autoAssignMarks();renderAllAiBreakdowns();}});
+horseList.addEventListener('input',e=>{if(e.target.matches('.odds,.pop,.win,.place')){ if(e.target.matches('.odds')){const any=[...document.querySelectorAll('.odds')].some(x=>num(x.value)!==null); if(any && (!$('oddsType').value || $('oddsType').value==='オッズなし'))setAutoOddsMeta('種別不明',$('oddsCheckedAt')?.value||''); if(!any)setAutoOddsMeta('オッズなし','');} renderValueRanking();}});
 
 $('raceDate').valueAsDate=new Date(); setAutoOddsMeta('オッズなし',''); for(let i=0;i<5;i++) addHorse(); renderArchive(); renderDashboard(); renderValueRanking(); renderAllAiBreakdowns();
 
 // Ver.5: bulk import + assisted scoring
 const V5_ALIASES={
   horseNo:['horseNo','horseNumber','馬番','馬番号'], horseName:['horseName','horse','name','馬名'], mark:['mark','印','評価'], predictedTime:['predictedTime','time','予想走破タイム','予想タイム'],
-  popularity:['popularity','pop','人気','想定人気','rank','人気順','単勝人気'], odds:['odds','オッズ','winOdds','tanOdds','単勝','単勝オッズ','realOdds','currentOdds','finalOdds','predictedOdds','forecastOdds','expectedOdds','予想オッズ','実オッズ'], runningStyle:['runningStyle','style','脚質'], variance:['variance','ブレ幅'], positionFail:['positionFail','position-fail','位置取り失敗率'],
+  popularity:['popularity','pop','人気','想定人気'], odds:['odds','オッズ','realOdds','currentOdds','finalOdds','predictedOdds','forecastOdds','expectedOdds','予想オッズ','実オッズ'], runningStyle:['runningStyle','style','脚質'], variance:['variance','ブレ幅'], positionFail:['positionFail','position-fail','位置取り失敗率'],
   timeIndex:['timeIndex','タイム指数'], distanceIndex:['distanceIndex','距離指数'], courseIndex:['courseIndex','コース指数'], recentIndex:['recentIndex','近走指数'],
   runTheory:['runTheory','走破理論'], paceFit:['paceFit','展開適性'], trackFit:['trackFit','馬場適性'], distanceFit:['distanceFit','距離適性'], courseFit:['courseFit','コース適性'],
   bounce:['bounce','叩き効果'], lastRaceMemory:['lastRaceMemory','前走記憶'], loadLap:['loadLap','5・7・9H負荷','579H負荷'], training:['training','調教'], draw:['draw','枠'], weight:['weight','斤量'], jockey:['jockey','騎手'],
   oddsType:['oddsType','oddsKind','odds_type','オッズ種別'], oddsCheckedAt:['oddsCheckedAt','oddsTime','oddsTimestamp','オッズ確認時刻','確認時刻'], oddsSource:['oddsSource','source','dataSource','取得元','情報源'], dataConfidence:['dataConfidence','confidence','data-confidence','データ信頼度'], reason:['reason','根拠','コメント'], category:['category','競馬区分'], raceDate:['raceDate','date','日付'], track:['track','競馬場'], raceNo:['raceNo','race','レース'], distance:['distance','距離'], chaos:['chaos','波乱度'], bias:['bias','馬場傾向'], pace:['pace','展開予測']
 };
-function marketScalar(v,key='odds'){
-  if(v===undefined||v===null)return '';
-  if(typeof v==='object'){
-    const candidates=key==='popularity'
-      ? ['popularity','pop','rank','人気','人気順','単勝人気']
-      : ['odds','winOdds','tanOdds','win','value','単勝','単勝オッズ','実オッズ','予想オッズ'];
-    for(const k of candidates){if(v[k]!==undefined&&v[k]!==null)return marketScalar(v[k],key);}
-    return '';
-  }
-  const s=String(v).trim();
-  if(!s)return '';
-  if(key==='popularity'){
-    const m=s.replace(/,/g,'').match(/(?:^|[^0-9])([0-9]{1,2})(?:番人気|人気)?/); return m?m[1]:s;
-  }
-  const m=s.replace(/,/g,'').match(/([0-9]+(?:\.[0-9]+)?)/); return m?m[1]:s;
-}
-function pickAlias(obj,key){
-  if(!obj||typeof obj!=='object')return '';
-  for(const k of V5_ALIASES[key]||[key]){
-    if(obj[k]!==undefined&&obj[k]!==null&&String(obj[k]).trim()!=='')return (key==='odds'||key==='popularity')?marketScalar(obj[k],key):obj[k];
-  }
-  const nested=['market','marketData','oddsData','price','prices','betting','winMarket'];
-  for(const nk of nested){const n=obj[nk];if(n&&typeof n==='object'){for(const k of V5_ALIASES[key]||[key]){if(n[k]!==undefined&&n[k]!==null)return (key==='odds'||key==='popularity')?marketScalar(n[k],key):n[k];}}}
-  return '';
-}
+function pickAlias(obj,key){for(const k of V5_ALIASES[key]||[key]){if(obj[k]!==undefined&&obj[k]!==null&&String(obj[k]).trim()!=='')return obj[k];}return ''}
 function csvParse(text){
   const rows=[]; let row=[], cell='', q=false;
   for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1]; if(c==='"'){if(q&&n==='"'){cell+='"';i++;}else q=!q;} else if(c===','&&!q){row.push(cell);cell='';} else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&n==='\n')i++;row.push(cell);cell='';if(row.some(v=>String(v).trim()!==''))rows.push(row);row=[];} else cell+=c;}
@@ -532,7 +398,7 @@ function normalizeImportedHorse(raw,context){
   if(!direct.timeIndex){const vals=[pickAlias(raw,'timeIndex'),pickAlias(raw,'recentIndex')].map(num).filter(v=>v!==null);if(vals.length){const avg=vals.reduce((a,b)=>a+b,0)/vals.length;direct.timeIndex=relativeScore(context.indexAverages,avg,true);}}
   if(!direct.distanceFit) direct.distanceFit=relativeScore(context.distanceIndices,pickAlias(raw,'distanceIndex'),true);
   if(!direct.courseFit) direct.courseFit=relativeScore(context.courseIndices,pickAlias(raw,'courseIndex'),true);
-  return {'horse-no':String(pickAlias(raw,'horseNo')||'').trim(),mark:pickAlias(raw,'mark')||'','horse-name':String(pickAlias(raw,'horseName')||'').trim(),win:'',place:'',ev:'',time:String(pickAlias(raw,'predictedTime')||'').trim(),pop:String(pickAlias(raw,'popularity')||''),odds:String(pickAlias(raw,'odds')||''),'running-style':pickAlias(raw,'runningStyle')||'先行',variance:String(pickAlias(raw,'variance')||'2.0'),'position-fail':String(pickAlias(raw,'positionFail')||'12'),'actual-time':'','data-confidence':String(pickAlias(raw,'dataConfidence')||''),reason:String(pickAlias(raw,'reason')||''),logic:direct};
+  return {'horse-no':String(pickAlias(raw,'horseNo')||'').trim(),mark:pickAlias(raw,'mark')||'△','horse-name':String(pickAlias(raw,'horseName')||'').trim(),win:'',place:'',ev:'',time:String(pickAlias(raw,'predictedTime')||'').trim(),pop:String(pickAlias(raw,'popularity')||''),odds:String(pickAlias(raw,'odds')||''),'running-style':pickAlias(raw,'runningStyle')||'先行',variance:String(pickAlias(raw,'variance')||'2.0'),'position-fail':String(pickAlias(raw,'positionFail')||'12'),'actual-time':'','data-confidence':String(pickAlias(raw,'dataConfidence')||''),reason:String(pickAlias(raw,'reason')||''),logic:direct};
 }
 function buildContext(rows){
   const times=rows.map(r=>parseTime(pickAlias(r,'predictedTime'))).filter(v=>v!==null), distanceIndices=rows.map(r=>pickAlias(r,'distanceIndex')), courseIndices=rows.map(r=>pickAlias(r,'courseIndex'));
@@ -590,15 +456,15 @@ function saveCurrentSilent(){
 function runFullPipeline(autoSave=true){
   autoScoreCurrent();
   const ok=runSimulation();
-  if(ok&&autoSave){saveCurrentSilent(); $('importStatus').textContent += ' 6,000回シミュレーション実行・保存まで完了しました。';} renderAllAiBreakdowns(); setTimeout(renderQuickCompare,60);
+  if(ok&&autoSave){saveCurrentSilent(); $('importStatus').textContent += ' 6,000回シミュレーション実行・保存まで完了しました。';}
   return ok;
 }
 function importRaceRows(rows,meta={}){
   if(!rows.length)throw new Error('出走馬データがありません'); const ctx=buildContext(rows); const hs=rows.map(r=>normalizeImportedHorse(r,ctx)).filter(h=>h['horse-name']); if(hs.length<2)throw new Error('馬名を2頭以上確認できませんでした');
   applyRaceMeta(Object.assign({},rows[0]||{},meta));
   const autoOddsType=detectOddsType(rows,meta), autoOddsTime=detectOddsCheckedAt(rows,meta); setAutoOddsMeta(autoOddsType,autoOddsTime);
-  horseList.innerHTML=''; hs.forEach(addHorse); const marketN=hs.filter(h=>num(h.odds)!==null).length; $('importStatus').textContent=`${hs.length}頭読込 / オッズ${marketN?marketN+'頭取得':'未確認'} / 自動採点・6,000回Simへ`;
-  renderAllAiBreakdowns(); setTimeout(renderQuickCompare,0); if($('autoRunAfterImport').checked){setTimeout(()=>{runFullPipeline(true);setTimeout(renderQuickCompare,80);},0);} return hs.length;
+  horseList.innerHTML=''; hs.forEach(addHorse); $('importStatus').textContent=`${hs.length}頭を一括入力しました。オッズ種別：${autoOddsType}。予想タイム・指数など確認できた項目から採点を補助しました。`;
+  if($('autoRunAfterImport').checked){setTimeout(()=>runFullPipeline(true),0);} return hs.length;
 }
 function cleanJsonText(text){
   let t=String(text??'').replace(/^\uFEFF/,'').trim();
@@ -613,38 +479,11 @@ function jsonStructureHint(t){
   const last=t.slice(-1); if(last!=='}'&&last!==']')return 'JSONの末尾が } または ] で終わっていません。途中で切れている可能性があります。';
   return '';
 }
-function mergeMarketIntoRows(rows,root={}){
-  const out=rows.map(r=>Object.assign({},r));
-  const byNo=new Map(), byName=new Map();
-  out.forEach((r,i)=>{const no=String(pickAlias(r,'horseNo')||i+1);byNo.set(no,r);const nm=String(pickAlias(r,'horseName')||'').trim();if(nm)byName.set(nm,r);});
-  const apply=(entry,keyHint='')=>{
-    if(entry===undefined||entry===null)return;
-    if(typeof entry==='number'||typeof entry==='string'){
-      const r=byNo.get(String(keyHint)); if(r&&!pickAlias(r,'odds'))r.odds=marketScalar(entry,'odds'); return;
-    }
-    if(Array.isArray(entry)){entry.forEach((x,i)=>apply(x,String(i+1)));return;}
-    if(typeof entry==='object'){
-      const no=String(pickAlias(entry,'horseNo')||entry.number||entry.no||keyHint||'');
-      const nm=String(pickAlias(entry,'horseName')||entry.name||'').trim();
-      const r=byNo.get(no)||byName.get(nm);
-      if(r){
-        const o=pickAlias(entry,'odds'); if(o!==''&&!pickAlias(r,'odds'))r.odds=marketScalar(o,'odds');
-        const p=pickAlias(entry,'popularity'); if(p!==''&&!pickAlias(r,'popularity'))r.popularity=marketScalar(p,'popularity');
-        if(entry.oddsType&&!r.oddsType)r.oddsType=entry.oddsType;
-        if(entry.oddsCheckedAt&&!r.oddsCheckedAt)r.oddsCheckedAt=entry.oddsCheckedAt;
-        return;
-      }
-      Object.entries(entry).forEach(([k,v])=>{if(/^\d+$/.test(k))apply(v,k);});
-    }
-  };
-  [root.odds,root.marketOdds,root.winOdds,root.oddsData,root.market,root.markets,root.race?.odds,root.race?.market].forEach(x=>apply(x));
-  return out;
-}
 function parseRaceJson(text){
   const t=cleanJsonText(text); let d;
   try{d=JSON.parse(t);}catch(e){const hint=jsonStructureHint(t);throw new Error(hint||`JSON構文エラー：${e.message}`);}
   if(Array.isArray(d)){if(d[0]?.horses)throw new Error('これは保存バックアップJSONです。レース一括取込ではなく下部の「JSONを読み込み」を使用してください。');return {rows:d,meta:{}};}
-  if(d&&Array.isArray(d.horses))return {rows:mergeMarketIntoRows(d.horses,d),meta:Object.assign({},d.meta||{},d.race||{})};
+  if(d&&Array.isArray(d.horses))return {rows:d.horses,meta:d.race||d.meta||d};
   throw new Error('horses配列を確認できませんでした。チャス競馬研究所用JSONか確認してください。');
 }
 function validateRaceJson(text){const {rows}=parseRaceJson(text);if(rows.length<2)throw new Error('出走馬が2頭未満です。');return `${rows.length}頭のJSONを確認しました。形式は正常です。`;}
@@ -711,124 +550,873 @@ document.addEventListener('DOMContentLoaded',()=>{const a=document.getElementByI
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',bind); else bind();
 })();
 
+/* === Integrated Ver.7.5 features === */
+// CHASS KEIBA LAB Ver.7.5 patch
+// 目的:
+// 1) CHASS FINAL（最終判断）を最上部に追加
+// 2) 期待値・穴馬・人気馬リスクを見やすく統合
+// 3) AI勝率 / 総合評価 / 期待値モデルを分離して保存・検証
+// 4) ダッシュボードで回収率・平均人気・モデル比較を追加
+// 5) 既存 Ver.7.4 を壊さず後読みで拡張
 
-// Ver.6.8: race-result auto persistence + instant validation.
-let resultSaveTimer=null;
-function raceKey(d){return `${d.raceDate||''}|${d.track||''}|${String(d.raceNo||'')}`;}
-function autoPersistResult(){
-  clearTimeout(resultSaveTimer);
-  resultSaveTimer=setTimeout(()=>{
-    const d=getForm(), entries=resultEntries(d), status=$('resultSaveStatus');
-    if(!entries.length){if(status)status.textContent='結果待ち'; refreshResultAutoReview(); return;}
-    if(!d.raceDate||!d.track||!d.raceNo){if(status)status.textContent='レース情報不足'; return;}
-    const all=loadAll(), idx=all.findIndex(x=>raceKey(x)===raceKey(d));
-    if(idx>=0){
-      // Preserve the original pre-race prediction; update only post-race fields and actual times.
-      const old=all[idx]; old.result1=d.result1; old.result2=d.result2; old.result3=d.result3; old.review=d.review; old.resultUpdatedAt=new Date().toISOString();
-      const byNo=new Map((d.horses||[]).map(h=>[String(h['horse-no']||''),h]));
-      (old.horses||[]).forEach(h=>{const cur=byNo.get(String(h['horse-no']||'')); if(cur&&cur['actual-time'])h['actual-time']=cur['actual-time'];});
-      saveAll(all); renderArchive(); renderDashboard(); if(status)status.textContent='自動保存済';
-    }else{
-      d.resultUpdatedAt=new Date().toISOString(); all.unshift(d); saveAll(all); renderArchive(); renderDashboard(); if(status)status.textContent='新規保存済';
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const qsa = (s, root=document) => [...root.querySelectorAll(s)];
+  const num = v => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const clamp = (v, lo=0, hi=100) => Math.max(lo, Math.min(hi, v));
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+  }[m]));
+
+  // ----------------------------
+  // 0. Version / style
+  // ----------------------------
+  function setVersion75(){
+    document.title = document.title.replace(/Ver\.\d+(?:\.\d+)?/i, 'Ver.7.5');
+    const h1 = document.querySelector('.topbar h1');
+    if(h1){
+      const span = h1.querySelector('span');
+      if(span) span.textContent = 'Ver.7.5';
     }
-    refreshResultAutoReview();
-  },350);
-}
-function refreshResultAutoReview(){
-  const el=$('resultAutoReview'); if(!el)return; const d=getForm(), rs=resultEntries(d); if(!rs.length){el.textContent='結果を入力すると自動検証します。';return;}
-  const hs=d.horses||[], top=[...hs].filter(h=>num(h.win)!==null).sort((a,b)=>num(b.win)-num(a.win))[0];
-  const winner=hs.find(h=>String(h['horse-no'])===String(rs[0]));
-  const timeErrs=hs.map(h=>{const p=parseTime(h.time),a=parseTime(h['actual-time']);return p!==null&&a!==null?Math.abs(p-a):null}).filter(x=>x!==null);
-  const mae=timeErrs.length?timeErrs.reduce((a,b)=>a+b,0)/timeErrs.length:null;
-  const bits=[`1着：${winner?winner['horse-name']+'（'+winner['horse-no']+'番）':rs[0]+'番'}`];
-  if(top)bits.push(`AI勝率1位 ${top['horse-no']}番→${horsePosition(d,top)??'圏外'}`);
-  if(mae!==null)bits.push(`TIME平均誤差 ${mae.toFixed(2)}秒`);
-  el.textContent='自動検証｜'+bits.join(' ｜ ');
-}
-['result1','result2','result3','review'].forEach(id=>{const e=$(id);if(e){e.addEventListener('input',autoPersistResult);e.addEventListener('change',autoPersistResult);}});
-document.addEventListener('input',e=>{if(e.target?.classList?.contains('actual-time'))autoPersistResult();});
-
-// === Ver.7.3: NAR official sync + static frontend ===
-
-const NAR_API_STORAGE_KEY='chass_nar_api_base_v1';
-function normalizedApiBase(v){return String(v||'').trim().replace(/\/+$/,'');}
-function getNarApiBase(){return normalizedApiBase(localStorage.getItem(NAR_API_STORAGE_KEY)||'');}
-function saveNarApiBase(v){const x=normalizedApiBase(v); if(x)localStorage.setItem(NAR_API_STORAGE_KEY,x); else localStorage.removeItem(NAR_API_STORAGE_KEY); return x;}
-function narApiUrl(path){const base=getNarApiBase(); return base ? base+path : path;}
-const NAR_TRACK_CODES = {'園田':'27','姫路':'28'};
-function narTrackCode(){
-  const track=String($('track')?.value||'').trim();
-  const savedCode=String(window.__narCode||'').trim();
-  return savedCode || NAR_TRACK_CODES[track] || '';
-}
-function setOfficialStatus(text,kind=''){
-  const el=$('officialResultStatus'); if(!el)return;
-  el.textContent=text; el.classList.remove('official-sync-ok','official-sync-warn');
-  if(kind==='ok')el.classList.add('official-sync-ok');
-  if(kind==='warn')el.classList.add('official-sync-warn');
-}
-function currentRaceApiParams(){
-  return new URLSearchParams({code:narTrackCode(),date:String($('raceDate')?.value||''),race:String($('raceNo')?.value||'')});
-}
-function applyOfficialOdds(data){
-  if(!data?.odds?.length)return 0;
-  const byNo=new Map(data.odds.map(x=>[String(x.horseNo),x])); let n=0;
-  [...document.querySelectorAll('.horse-row')].forEach(r=>{
-    const no=String(r.querySelector('.horse-no')?.value||'').trim(), x=byNo.get(no); if(!x)return;
-    const odds=r.querySelector('.odds'), pop=r.querySelector('.pop');
-    if(x.winOdds!=null && odds){odds.value=x.winOdds;n++;}
-    if(x.popularity!=null && pop)pop.value=x.popularity;
-  });
-  if(n){setAutoOddsMeta('実オッズ',data.checkedAt||'最終');derivePopularityFromOdds();renderValueRanking();autoAssignMarks();renderAllAiBreakdowns();}
-  return n;
-}
-function applyOfficialResult(data){
-  const order=data?.finishOrder||[]; if(order.length>=3){
-    $('result1').value=order[0]; $('result2').value=order[1]; $('result3').value=order[2];
   }
-  const times=data?.actualTimes||{};
-  [...document.querySelectorAll('.horse-row')].forEach(r=>{
-    const no=String(r.querySelector('.horse-no')?.value||'').trim(), t=times[no];
-    if(t && r.querySelector('.actual-time'))r.querySelector('.actual-time').value=t;
-  });
-  if(order.length)autoPersistResult();
-  return order.length;
-}
-async function fetchOfficialNar({silent=false}={}){
-  const code=narTrackCode(), date=String($('raceDate')?.value||''), race=String($('raceNo')?.value||'');
-  if(!code||!date||!race){if(!silent)setOfficialStatus('NAR競馬場コード・日付・Rが不足しています。','warn');return false;}
-  try{
-    setOfficialStatus('NAR公式を確認中…');
-    const base=getNarApiBase(); if(!base)throw new Error('NAR連携先未設定'); const res=await fetch(narApiUrl('/api/nar/sync?'+currentRaceApiParams().toString()),{headers:{'accept':'application/json'}});
-    if(!res.ok)throw new Error(res.status===404?'公式取得APIが未導入です':'HTTP '+res.status);
-    const data=await res.json();
-    const on=applyOfficialOdds(data), rn=applyOfficialResult(data);
-    if(!on&&!rn){setOfficialStatus(data.pending?'結果待ち：NAR公式ではまだ確定していません。':'公式ページは取得できましたが解析対象データを確認できません。','warn');return false;}
-    saveCurrentSilent(); renderArchive(); renderDashboard();
-    setOfficialStatus(`NAR公式反映：${on?`最終オッズ ${on}頭`:''}${on&&rn?' / ':''}${rn?`着順 ${data.finishOrder.slice(0,3).join('-')}`:''}`,'ok');
-    return true;
-  }catch(e){
-    const msg=String(e?.message||e);
-    setOfficialStatus(msg.includes('未設定')?'NAR連携先が未設定です。「NAR自動連携設定」からWorker URLを1回保存してください。':`公式取得失敗：${msg}`,'warn');
-    return false;
-  }
-}
-$('fetchOfficialResult')?.addEventListener('click',()=>fetchOfficialNar({silent:false}));
-// 保存済み/読み込み済みレースは、画面が落ち着いてから一度だけ自動照合。
-setTimeout(()=>{if($('track')?.value&&$('raceNo')?.value)fetchOfficialNar({silent:true});},1200);
 
-// Ver.7.0 one-time NAR API connection settings
-(function(){
-  const input=$('narApiBase'), saveBtn=$('saveNarApiBase'), testBtn=$('testNarApiBase');
-  if(input)input.value=getNarApiBase();
-  if(getNarApiBase())setOfficialStatus('NAR自動連携：設定済み');
-  saveBtn?.addEventListener('click',()=>{
-    const v=saveNarApiBase(input?.value||'');
-    setOfficialStatus(v?'NAR自動連携：保存しました。':'NAR自動連携：未設定','ok');
-  });
-  testBtn?.addEventListener('click',async()=>{
-    const v=saveNarApiBase(input?.value||''); if(!v){setOfficialStatus('Worker URLを入力してください。','warn');return;}
-    try{const r=await fetch(narApiUrl('/api/health'),{headers:{accept:'application/json'}}); if(!r.ok)throw new Error('HTTP '+r.status); const d=await r.json(); setOfficialStatus(`NAR自動連携：接続OK（API ${d.version||''}）`,'ok');}
-    catch(e){setOfficialStatus('NAR自動連携：接続失敗 '+String(e?.message||e),'warn');}
-  });
+  function injectStyles(){
+    if($('chass75Styles')) return;
+    const st = document.createElement('style');
+    st.id = 'chass75Styles';
+    st.textContent = `
+      .chass-final-card{border:1px solid rgba(90,229,188,.42);background:linear-gradient(180deg,rgba(16,34,55,.98),rgba(12,27,46,.98));}
+      .chass-final-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+      .chass-final-title{font-size:1.55rem;font-weight:800;letter-spacing:.01em}
+      .chass-final-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}
+      .chass-final-pick{border:1px solid rgba(130,160,205,.22);border-radius:16px;padding:14px;background:rgba(255,255,255,.025)}
+      .chass-final-pick strong{display:block;font-size:1.05rem;margin-bottom:6px}
+      .chass-final-pick small{display:block;opacity:.78;line-height:1.55}
+      .chass-final-flags{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+      .chass-final-flag{border-radius:14px;padding:12px 14px;background:rgba(255,255,255,.03);border:1px solid rgba(130,160,205,.18);line-height:1.5}
+      .chass-final-flag.diamond{border-color:rgba(92,224,207,.45)}
+      .chass-final-flag.warning{border-color:rgba(255,194,88,.45)}
+      .chass-final-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+      .model-tag{display:inline-flex;align-items:center;border-radius:999px;padding:5px 9px;font-size:.78rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}
+      .chass75-value{font-weight:800}
+      .chass75-value.good{color:#61e7bd}
+      .chass75-value.hot{color:#7bf0d0}
+      .chass75-value.bad{color:#ffc66d}
+      .dash-extra-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+      .dash-extra-card{border:1px solid rgba(130,160,205,.18);border-radius:16px;padding:14px;background:rgba(255,255,255,.025)}
+      .dash-extra-card strong{font-size:1.35rem;display:block;margin:5px 0}
+      .model-compare-table td,.model-compare-table th{white-space:nowrap}
+      @media(max-width:700px){
+        .chass-final-grid{grid-template-columns:1fr}
+        .chass-final-flags{grid-template-columns:1fr}
+        .dash-extra-grid{grid-template-columns:1fr}
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  // ----------------------------
+  // 1. Utility: horse snapshot
+  // ----------------------------
+  function horseRows(){
+    return qsa('.horse-row').filter(r => r.querySelector('.horse-name')?.value.trim());
+  }
+
+  function currentHorseData(){
+    const rows = horseRows();
+    const hs = rows.map((r, i) => {
+      let h = null;
+      try{
+        h = typeof horseFromRow === 'function' ? horseFromRow(r) : null;
+      }catch{}
+      if(!h){
+        h = {
+          'horse-no': r.querySelector('.horse-no')?.value || String(i+1),
+          mark: r.querySelector('.mark')?.value || '',
+          'horse-name': r.querySelector('.horse-name')?.value.trim() || '',
+          win: r.querySelector('.win')?.value || '',
+          place: r.querySelector('.place')?.value || '',
+          ev: r.querySelector('.ev')?.value || '',
+          odds: r.querySelector('.odds')?.value || '',
+          pop: r.querySelector('.pop')?.value || '',
+          time: r.querySelector('.time')?.value || ''
+        };
+      }
+      let overall = 50, confidence = 0;
+      try{
+        if(typeof aiBreakdown === 'function'){
+          overall = aiBreakdown(h, rows.map(rr => typeof horseFromRow==='function'?horseFromRow(rr):h))?.overall ?? overall;
+        }
+      }catch{}
+      try{
+        if(typeof derivedConfidence === 'function') confidence = derivedConfidence(h);
+      }catch{}
+      const win = num(h.win), place = num(h.place), odds = num(h.odds), pop = num(h.pop), ev = num(h.ev);
+      const fair = win && win > 0 ? 100 / win : null;
+      const expected = odds && win !== null ? odds * win : ev;
+      return {
+        row:r, no:String(h['horse-no']||i+1), name:h['horse-name']||'',
+        mark:h.mark||'', win, place, odds, pop, ev: expected,
+        fair, time:h.time||'', overall:Number(overall)||50, confidence:Number(confidence)||0
+      };
+    });
+    return hs;
+  }
+
+  function abilityRank(hs){
+    return [...hs].sort((a,b)=>(b.win??-1)-(a.win??-1));
+  }
+  function overallRank(hs){
+    return [...hs].sort((a,b)=>(b.overall??-1)-(a.overall??-1));
+  }
+  function valueRank(hs){
+    return [...hs].filter(x=>x.ev!==null).sort((a,b)=>(b.ev??-1)-(a.ev??-1));
+  }
+
+  function finalScore(x, hs){
+    const aRank = abilityRank(hs).findIndex(h=>h===x);
+    const oRank = overallRank(hs).findIndex(h=>h===x);
+    const vRank = valueRank(hs).findIndex(h=>h===x);
+    const n = Math.max(1, hs.length);
+    const rankScore = (r, w) => r < 0 ? 0 : ((n-r)/n)*w;
+    // 勝率・総合評価・複勝率・期待値・信頼度を分離して統合
+    let s = 0;
+    s += rankScore(aRank, 34);
+    s += rankScore(oRank, 25);
+    s += (x.place ?? 0) * 0.16;
+    s += (x.confidence ?? 0) * 0.10;
+    if(x.ev !== null) s += clamp((x.ev-70)/80*15, -5, 15);
+    return s;
+  }
+
+  function pickFinal(hs){
+    return [...hs].sort((a,b)=>finalScore(b,hs)-finalScore(a,hs));
+  }
+
+  function holeCandidates(hs){
+    return hs.filter(x=>{
+      if(x.ev===null) return false;
+      if(x.pop!==null && x.pop>=8 && (x.place??0)>=18 && x.ev>=125) return true;
+      if(x.pop!==null && x.pop>=4 && (x.place??0)>=20 && x.ev>=112) return true;
+      return false;
+    }).sort((a,b)=>(b.ev??0)-(a.ev??0));
+  }
+
+  function warningCandidates(hs){
+    return hs.filter(x=>{
+      if(x.ev===null || x.pop===null || x.pop>3) return false;
+      return x.ev < 82;
+    }).sort((a,b)=>(a.ev??999)-(b.ev??999));
+  }
+
+  // ----------------------------
+  // 2. CHASS FINAL
+  // ----------------------------
+  function ensureFinalCard(){
+    let card = $('chassFinalCard');
+    if(card) return card;
+    const raceCard = document.querySelector('.race-overview-card');
+    if(!raceCard) return null;
+    card = document.createElement('section');
+    card.id = 'chassFinalCard';
+    card.className = 'card chass-final-card';
+    card.innerHTML = `
+      <div class="chass-final-head">
+        <div><p class="eyebrow">CHASS FINAL</p><div class="chass-final-title">最終判断</div></div>
+        <span class="badge" id="chassFinalStatus">分析待ち</span>
+      </div>
+      <div id="chassFinalBody"><p class="muted">予想データを読み込むと自動表示します。</p></div>
+    `;
+    raceCard.insertAdjacentElement('afterend', card);
+    return card;
+  }
+
+  function renderFinal(){
+    const card = ensureFinalCard();
+    if(!card) return;
+    const body = $('chassFinalBody');
+    const status = $('chassFinalStatus');
+    const hs = currentHorseData();
+    if(!hs.length){
+      body.innerHTML = '<p class="muted">予想データを読み込むと自動表示します。</p>';
+      if(status) status.textContent = '分析待ち';
+      return;
+    }
+
+    const picks = pickFinal(hs).slice(0,3);
+    const marks = ['◎','○','▲'];
+    const diamonds = holeCandidates(hs);
+    const warnings = warningCandidates(hs);
+    const chaos = num($('chaos')?.value);
+    const pace = $('pace')?.value?.trim() || '未設定';
+
+    const cards = picks.map((x,i)=>{
+      const ev = x.ev===null ? '市場待ち' : `${x.ev.toFixed(0)}%`;
+      const fair = x.fair ? `${x.fair.toFixed(1)}倍` : '—';
+      return `<div class="chass-final-pick">
+        <strong>${marks[i]} ${esc(x.no)}番 ${esc(x.name)}</strong>
+        <small>勝 ${x.win===null?'—':x.win.toFixed(1)+'%'} ｜ 複 ${x.place===null?'—':x.place.toFixed(1)+'%'}<br>
+        総合 ${x.overall.toFixed(0)}/100 ｜ 期待 ${ev} ｜ AIフェア ${fair}</small>
+      </div>`;
+    }).join('');
+
+    const d = diamonds[0];
+    const w = warnings[0];
+    const diamondText = d
+      ? `${(d.pop??99)>=10 && (d.ev??0)>=135 ? '💎💎💎 激推し大穴' : '💎 穴馬'}：${esc(d.no)}番 ${esc(d.name)} ｜ 期待 ${d.ev.toFixed(0)}%${d.pop?` ｜ ${d.pop}人気`:''}`
+      : '💎 穴馬：現時点で強い市場乖離なし';
+    const warnText = w
+      ? `⚠️ 人気馬注意：${esc(w.no)}番 ${esc(w.name)} ｜ 期待 ${w.ev.toFixed(0)}%${w.pop?` ｜ ${w.pop}人気`:''}`
+      : '⚠️ 人気馬リスク：強い該当なし';
+
+    body.innerHTML = `
+      <div class="chass-final-grid">${cards}</div>
+      <div class="chass-final-flags">
+        <div class="chass-final-flag diamond">${diamondText}</div>
+        <div class="chass-final-flag warning">${warnText}</div>
+      </div>
+      <div class="chass-final-meta">
+        <span class="model-tag">波乱度 ${chaos===null?'—':chaos+'%'}</span>
+        <span class="model-tag">展開 ${esc(pace)}</span>
+        <span class="model-tag">勝率モデル・総合モデル・期待値モデルを分離</span>
+      </div>
+    `;
+    if(status) status.textContent = hs.some(x=>x.odds) ? '市場反映済' : 'AI評価';
+  }
+
+  // ----------------------------
+  // 3. 自動印を「最終判断」に合わせる
+  // ----------------------------
+  function assignFinalMarks(){
+    const hs = currentHorseData();
+    if(!hs.length) return;
+    const picks = pickFinal(hs);
+    hs.forEach(x=>{
+      const sel = x.row.querySelector('.mark');
+      if(sel) sel.value = '';
+    });
+    ['◎','○','▲'].forEach((m,i)=>{
+      const x = picks[i];
+      if(x?.row?.querySelector('.mark')) x.row.querySelector('.mark').value = m;
+    });
+  }
+
+  // ----------------------------
+  // 4. 保存時にモデル別順位を記録
+  // ----------------------------
+  function modelSnapshot(){
+    const hs = currentHorseData();
+    const top = arr => arr[0] ? {horseNo:arr[0].no,horseName:arr[0].name} : null;
+    return {
+      savedAt:new Date().toISOString(),
+      winModelTop:top(abilityRank(hs)),
+      overallModelTop:top(overallRank(hs)),
+      valueModelTop:top(valueRank(hs)),
+      finalModelTop:top(pickFinal(hs))
+    };
+  }
+
+  if(typeof getForm === 'function'){
+    const oldGetForm = getForm;
+    window.getForm = function(){
+      const d = oldGetForm();
+      d.modelSnapshot = modelSnapshot();
+      return d;
+    };
+  }
+
+  // ----------------------------
+  // 5. Dashboard extras
+  // ----------------------------
+  function raceResults(r){
+    return [r.result1,r.result2,r.result3].map(x=>String(x||'').trim()).filter(Boolean);
+  }
+  function pos(r,h){
+    const rs = raceResults(r);
+    const no = String(h['horse-no']||'').trim();
+    const i = rs.indexOf(no);
+    return i>=0 ? i+1 : null;
+  }
+
+  function ensureDashboardExtras(){
+    const dash = $('dashboardView');
+    if(!dash || $('dashValueValidation')) return;
+
+    const sec = document.createElement('section');
+    sec.id = 'dashValueValidation';
+    sec.className = 'card dash-data-section';
+    sec.innerHTML = `
+      <div class="section-head"><div><p class="eyebrow">VALUE VALIDATION</p><h2>穴馬・危険馬・回収率</h2></div></div>
+      <div id="dashValueValidationBody" class="dash-extra-grid"></div>
+    `;
+    dash.appendChild(sec);
+
+    const sec2 = document.createElement('section');
+    sec2.id = 'dashModelCompare';
+    sec2.className = 'card dash-data-section';
+    sec2.innerHTML = `
+      <div class="section-head"><div><p class="eyebrow">MODEL COMPARISON</p><h2>モデル別トップ評価の成績</h2></div></div>
+      <div class="table-wrap"><table class="model-compare-table">
+        <thead><tr><th>モデル</th><th>対象</th><th>1着</th><th>3着内</th><th>勝率</th><th>複勝率</th></tr></thead>
+        <tbody id="dashModelCompareBody"></tbody>
+      </table></div>
+    `;
+    dash.appendChild(sec2);
+  }
+
+  function calcValueStats(all){
+    let dN=0,dPlace=0,dWin=0,dPop=0,dPopN=0,dReturn=0;
+    let wN=0,wOut=0;
+    all.filter(r=>raceResults(r).length).forEach(r=>{
+      (r.horses||[]).forEach(h=>{
+        const pop=num(h.pop), ev=num(h.ev), odds=num(h.odds), place=num(h.place);
+        const p=pos(r,h);
+        const isD = (String(h.mark||'').includes('💎')) ||
+          (pop!==null && ev!==null && ((pop>=8 && place>=18 && ev>=125)||(pop>=4 && place>=20 && ev>=112)));
+        if(isD){
+          dN++;
+          if(p===1)dWin++;
+          if(p&&p<=3)dPlace++;
+          if(pop!==null){dPop+=pop;dPopN++;}
+          if(p===1 && odds!==null)dReturn += odds*100;
+        }
+        const isW = String(h.mark||'').includes('⚠️') || (pop!==null&&pop<=3&&ev!==null&&ev<82);
+        if(isW){
+          wN++;
+          if(!p || p>3)wOut++;
+        }
+      });
+    });
+    return {
+      dN,dWin,dPlace,avgPop:dPopN?dPop/dPopN:null,
+      winReturn:dN?dReturn/dN:null,
+      wN,wOut
+    };
+  }
+
+  function modelStats(all, key){
+    let n=0,win=0,place=0;
+    all.filter(r=>raceResults(r).length).forEach(r=>{
+      const snap=r.modelSnapshot?.[key];
+      if(!snap?.horseNo)return;
+      const h=(r.horses||[]).find(x=>String(x['horse-no'])===String(snap.horseNo));
+      if(!h)return;
+      n++;
+      const p=pos(r,h);
+      if(p===1)win++;
+      if(p&&p<=3)place++;
+    });
+    return {n,win,place};
+  }
+
+  function pct(a,b){ return b ? (a/b*100).toFixed(1)+'%' : '—'; }
+
+  function renderDashboardExtras(){
+    ensureDashboardExtras();
+    let all=[];
+    try{ all = typeof loadAll === 'function' ? loadAll() : []; }catch{}
+    const v=calcValueStats(all);
+    const body=$('dashValueValidationBody');
+    if(body){
+      body.innerHTML = `
+        <div class="dash-extra-card"><span>💎 穴馬 指名数</span><strong>${v.dN}頭</strong><small>勝 ${pct(v.dWin,v.dN)} / 複 ${pct(v.dPlace,v.dN)}</small></div>
+        <div class="dash-extra-card"><span>💎 平均人気</span><strong>${v.avgPop===null?'—':v.avgPop.toFixed(1)+'人気'}</strong><small>保存データ内の人気</small></div>
+        <div class="dash-extra-card"><span>💎 単勝回収率</span><strong>${v.winReturn===null?'—':v.winReturn.toFixed(1)+'%'}</strong><small>単勝オッズ保存済み馬のみ概算</small></div>
+        <div class="dash-extra-card"><span>⚠️ 人気馬 圏外率</span><strong>${pct(v.wOut,v.wN)}</strong><small>${v.wN}頭中 ${v.wOut}頭</small></div>
+      `;
+    }
+
+    const models=[
+      ['winModelTop','勝率モデル'],
+      ['overallModelTop','総合評価モデル'],
+      ['valueModelTop','期待値モデル'],
+      ['finalModelTop','CHASS FINAL']
+    ];
+    const tb=$('dashModelCompareBody');
+    if(tb){
+      tb.innerHTML=models.map(([k,label])=>{
+        const s=modelStats(all,k);
+        return `<tr><td><strong>${label}</strong></td><td>${s.n}</td><td>${s.win}</td><td>${s.place}</td><td>${pct(s.win,s.n)}</td><td>${pct(s.place,s.n)}</td></tr>`;
+      }).join('');
+    }
+  }
+
+  // ----------------------------
+  // 6. Existing function hooks
+  // ----------------------------
+  function hook(name, after){
+    const fn = window[name];
+    if(typeof fn !== 'function') return;
+    if(fn.__chass75Hooked) return;
+    const wrapped = function(...args){
+      const out = fn.apply(this,args);
+      try{ after(...args); }catch(e){ console.warn('Ver.7.5 hook',name,e); }
+      return out;
+    };
+    wrapped.__chass75Hooked = true;
+    window[name] = wrapped;
+  }
+
+  function hookAsync(name, after){
+    const fn = window[name];
+    if(typeof fn !== 'function') return;
+    if(fn.__chass75Hooked) return;
+    const wrapped = async function(...args){
+      const out = await fn.apply(this,args);
+      try{ await after(...args); }catch(e){ console.warn('Ver.7.5 hook',name,e); }
+      return out;
+    };
+    wrapped.__chass75Hooked = true;
+    window[name] = wrapped;
+  }
+
+  function installHooks(){
+    hook('renderAllAiBreakdowns',()=>renderFinal());
+    hook('renderValueRanking',()=>renderFinal());
+    hook('renderDashboard',()=>renderDashboardExtras());
+    hook('saveCurrentSilent',()=>renderDashboardExtras());
+    hook('saveCurrent',()=>renderDashboardExtras());
+
+    const oldSim = window.runSimulation;
+    if(typeof oldSim==='function' && !oldSim.__chass75Hooked){
+      const wrapped=function(...args){
+        const ok=oldSim.apply(this,args);
+        if(ok){
+          try{ assignFinalMarks(); }catch{}
+          try{ if(typeof renderValueRanking==='function') renderValueRanking(); }catch{}
+          try{ renderFinal(); }catch{}
+        }
+        return ok;
+      };
+      wrapped.__chass75Hooked=true;
+      window.runSimulation=wrapped;
+      const btn=$('runSimulation');
+      if(btn) btn.onclick=window.runSimulation;
+    }
+
+    const oldApplyOdds = window.applyOfficialOdds;
+    if(typeof oldApplyOdds==='function' && !oldApplyOdds.__chass75Hooked){
+      const wrapped=function(...args){
+        const n=oldApplyOdds.apply(this,args);
+        try{
+          if(typeof renderValueRanking==='function') renderValueRanking();
+          assignFinalMarks();
+          renderFinal();
+        }catch{}
+        return n;
+      };
+      wrapped.__chass75Hooked=true;
+      window.applyOfficialOdds=wrapped;
+    }
+
+    hookAsync('fetchOfficialNar',async()=> {
+      try{
+        if(typeof renderValueRanking==='function') renderValueRanking();
+        assignFinalMarks();
+        renderFinal();
+        renderDashboardExtras();
+      }catch{}
+    });
+  }
+
+  // ----------------------------
+  // 7. Mutation observer for imported data
+  // ----------------------------
+  let t=null;
+  function scheduleRefresh(){
+    clearTimeout(t);
+    t=setTimeout(()=>{
+      try{ renderFinal(); }catch{}
+      try{ renderDashboardExtras(); }catch{}
+    },120);
+  }
+
+  function init(){
+    setVersion75();
+    injectStyles();
+    ensureFinalCard();
+    installHooks();
+    renderFinal();
+    ensureDashboardExtras();
+    renderDashboardExtras();
+
+    document.addEventListener('input', e=>{
+      if(e.target?.matches?.('.win,.place,.odds,.pop,.mark,.horse-name,.horse-no,#chaos,#pace')) scheduleRefresh();
+    });
+    document.addEventListener('change', e=>{
+      if(e.target?.matches?.('.win,.place,.odds,.pop,.mark,.horse-name,.horse-no,#chaos,#pace')) scheduleRefresh();
+    });
+
+    const root=$('horseList');
+    if(root){
+      new MutationObserver(scheduleRefresh).observe(root,{childList:true,subtree:true});
+    }
+
+    // タブ切替後にモデル比較を再描画
+    qsa('.tab').forEach(btn=>btn.addEventListener('click',()=>setTimeout(renderDashboardExtras,60)));
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',init);
+  }else{
+    init();
+  }
+})();
+
+/* === Integrated Ver.7.6 features === */
+/* CHASS KEIBA LAB Ver.7.6 patch
+   Goals:
+   1) AI fair odds / real odds / expected return are strictly separated.
+   2) Market snapshots are preserved per race.
+   3) Dashboard tables are mobile-friendly.
+   4) No "expected return" is shown as confirmed unless real odds are available.
+*/
+(() => {
+  'use strict';
+
+  const VERSION = '7.6';
+  const SNAP_KEY = 'chass_market_snapshots_v76';
+
+  const $v76 = (id) => document.getElementById(id);
+  const n76 = (v) => {
+    const x = parseFloat(v);
+    return Number.isFinite(x) ? x : null;
+  };
+  const esc76 = (s='') => String(s).replace(/[&<>"']/g, m => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
+  }[m]));
+
+  function raceKey76() {
+    const d = String($v76('raceDate')?.value || '');
+    const t = String($v76('track')?.value || '');
+    const r = String($v76('raceNo')?.value || '');
+    return `${d}|${t}|${r}`;
+  }
+
+  function loadSnaps76() {
+    try { return JSON.parse(localStorage.getItem(SNAP_KEY) || '{}'); }
+    catch { return {}; }
+  }
+  function saveSnaps76(v) {
+    localStorage.setItem(SNAP_KEY, JSON.stringify(v));
+  }
+
+  function currentHorseMarket76() {
+    return [...document.querySelectorAll('.horse-row')]
+      .map((row, i) => {
+        let h = null;
+        try { h = horseFromRow(row); } catch {}
+        if (!h) return null;
+        const name = String(h['horse-name'] || '').trim();
+        if (!name) return null;
+        const win = n76(h.win), place = n76(h.place), odds = n76(h.odds), pop = n76(h.pop);
+        const fair = win && win > 0 ? 100 / win : null;
+        return {
+          no: String(h['horse-no'] || i + 1),
+          name,
+          mark: h.mark || '',
+          win, place, odds, pop, fair
+        };
+      }).filter(Boolean);
+  }
+
+  function marketKind76() {
+    const t = String($v76('oddsType')?.value || '').trim();
+    if (t === '実オッズ') return 'real';
+    if (t === '予想オッズ') return 'predicted';
+    if (t === '種別不明') return 'unknown';
+    return 'none';
+  }
+
+  function captureSnapshot76(source='ui') {
+    const horses = currentHorseMarket76();
+    if (!horses.length || !horses.some(h => h.odds && h.odds > 0)) return;
+    const key = raceKey76();
+    if (!key || key === '||') return;
+
+    const db = loadSnaps76();
+    db[key] ||= [];
+    const kind = marketKind76();
+    const checkedAt = String($v76('oddsCheckedAt')?.value || '');
+    const sig = JSON.stringify(horses.map(h => [h.no, h.odds, h.pop]));
+    const last = db[key][db[key].length - 1];
+    if (last && last.sig === sig && last.kind === kind && last.checkedAt === checkedAt) return;
+
+    db[key].push({
+      at: new Date().toISOString(),
+      source,
+      kind,
+      oddsType: String($v76('oddsType')?.value || ''),
+      checkedAt,
+      horses: horses.map(h => ({ no:h.no, name:h.name, odds:h.odds, pop:h.pop })),
+      sig
+    });
+    if (db[key].length > 40) db[key] = db[key].slice(-40);
+    saveSnaps76(db);
+  }
+
+  function getSnapshotPair76() {
+    const list = loadSnaps76()[raceKey76()] || [];
+    const priced = list.filter(x => (x.horses || []).some(h => h.odds));
+    if (!priced.length) return { first:null, final:null, latest:null };
+
+    const firstReal = priced.find(x => x.kind === 'real') || null;
+    const finalReal = [...priced].reverse().find(x =>
+      x.kind === 'real' && (/最終/.test(x.checkedAt || '') || x.source === 'official-final')
+    ) || null;
+    return {
+      first: firstReal || priced[0],
+      final: finalReal,
+      latest: priced[priced.length - 1]
+    };
+  }
+
+  function valueLabel76(h, kind) {
+    if (!h.fair) return { main:'AIフェア —', sub:'AI勝率未計算', cls:'' };
+    if (kind !== 'real' || !h.odds) {
+      const src = kind === 'predicted' ? '予想オッズ' : kind === 'unknown' ? '種別不明オッズ' : '市場未取得';
+      return {
+        main:`AIフェア ${h.fair.toFixed(1)}倍`,
+        sub:`実オッズ — ｜ 期待回収率 —（${src}）`,
+        cls:''
+      };
+    }
+    const ev = h.win * h.odds;
+    const gap = h.odds / h.fair;
+    let cls = '', tag = '適正圏';
+    if (ev >= 125 && (h.pop ?? 0) >= 8 && (h.place ?? 0) >= 18) { cls='v76-diamond3'; tag='💎💎💎 大穴'; }
+    else if (ev >= 110 && (h.pop ?? 0) >= 4) { cls='v76-diamond'; tag='💎 期待値'; }
+    else if (ev < 82 && (h.pop ?? 99) <= 3) { cls='v76-warning'; tag='⚠️ 人気馬注意'; }
+
+    return {
+      main:`${tag} ｜ 期待回収率 ${ev.toFixed(0)}%`,
+      sub:`実 ${h.odds.toFixed(1)}倍 ｜ AIフェア ${h.fair.toFixed(1)}倍 ｜ 市場/AI ${gap.toFixed(2)}x`,
+      cls
+    };
+  }
+
+  function ensureMarketCard76() {
+    let card = $v76('v76MarketDiscipline');
+    if (card) return card;
+
+    card = document.createElement('section');
+    card.id = 'v76MarketDiscipline';
+    card.className = 'card v76-market-card';
+    card.innerHTML = `
+      <div class="section-head">
+        <div><p class="eyebrow">MARKET CHECK</p><h2>AIフェア・実オッズ・期待回収率</h2></div>
+        <span id="v76MarketBadge" class="badge">市場待ち</span>
+      </div>
+      <div class="v76-market-note">
+        AIフェア倍率と実オッズを分離表示します。期待回収率は「実オッズ」と確認できた場合だけ確定表示します。
+      </div>
+      <div id="v76MarketRows" class="v76-market-list"></div>
+      <div id="v76SnapshotInfo" class="muted v76-snapshot-info"></div>
+    `;
+
+    const finalCard = [...document.querySelectorAll('section.card')].find(x =>
+      /最終判断/.test(x.textContent || '')
+    );
+    const quick = document.querySelector('.quick-card');
+    if (finalCard?.parentNode) finalCard.insertAdjacentElement('afterend', card);
+    else if (quick?.parentNode) quick.insertAdjacentElement('beforebegin', card);
+    else document.querySelector('#predictionView')?.prepend(card);
+    return card;
+  }
+
+  function renderMarketDiscipline76() {
+    const card = ensureMarketCard76();
+    if (!card) return;
+
+    const horses = currentHorseMarket76();
+    const list = $v76('v76MarketRows');
+    const badge = $v76('v76MarketBadge');
+    const info = $v76('v76SnapshotInfo');
+
+    if (!horses.length) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+
+    const kind = marketKind76();
+    if (badge) {
+      badge.textContent = kind === 'real' ? '実オッズ確認済'
+        : kind === 'predicted' ? '予想オッズ'
+        : kind === 'unknown' ? '種別不明'
+        : '市場待ち';
+    }
+
+    const rows = [...horses]
+      .sort((a,b) => (b.win ?? -1) - (a.win ?? -1))
+      .map(h => {
+        const v = valueLabel76(h, kind);
+        return `<article class="v76-market-row ${v.cls}">
+          <div class="v76-market-head">
+            <strong class="horse-number-badge">${esc76(h.no)}</strong>
+            <span class="v76-mark">${esc76(h.mark || '')}</span>
+            <strong>${esc76(h.name)}</strong>
+          </div>
+          <div class="v76-market-grid">
+            <div><span>AI勝率</span><strong>${h.win == null ? '—' : h.win.toFixed(1)+'%'}</strong></div>
+            <div><span>AIフェア</span><strong>${h.fair == null ? '—' : h.fair.toFixed(1)+'倍'}</strong></div>
+            <div><span>実オッズ</span><strong>${kind === 'real' && h.odds ? h.odds.toFixed(1)+'倍' : '—'}</strong></div>
+          </div>
+          <div class="v76-value-line"><strong>${esc76(v.main)}</strong><span>${esc76(v.sub)}</span></div>
+        </article>`;
+      }).join('');
+
+    if (list) list.innerHTML = rows;
+    const pair = getSnapshotPair76();
+    if (info) {
+      const a = pair.first ? `初回市場 ${pair.first.checkedAt || pair.first.at}` : '初回市場 —';
+      const b = pair.final ? `最終市場 ${pair.final.checkedAt || pair.final.at}` : '最終市場 —';
+      info.textContent = `市場履歴｜${a} ｜ ${b}`;
+    }
+  }
+
+  function attachTableLabels76(root=document) {
+    root.querySelectorAll('table').forEach(table => {
+      const heads = [...table.querySelectorAll('thead th')].map(x => x.textContent.trim());
+      table.querySelectorAll('tbody tr').forEach(tr => {
+        [...tr.children].forEach((td, i) => {
+          if (heads[i]) td.setAttribute('data-label', heads[i]);
+        });
+      });
+    });
+  }
+
+  function injectStyles76() {
+    if ($v76('v76Styles')) return;
+    const s = document.createElement('style');
+    s.id = 'v76Styles';
+    s.textContent = `
+      .v76-market-note{padding:12px 14px;border:1px solid rgba(116,239,199,.22);border-radius:14px;margin-bottom:14px;line-height:1.55}
+      .v76-market-list{display:grid;gap:12px}
+      .v76-market-row{border:1px solid rgba(145,166,205,.24);border-radius:18px;padding:14px;background:rgba(255,255,255,.015)}
+      .v76-market-row.v76-diamond,.v76-market-row.v76-diamond3{border-color:rgba(94,224,190,.6)}
+      .v76-market-row.v76-warning{border-color:rgba(255,190,70,.55)}
+      .v76-market-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:1.05rem}
+      .v76-mark{min-width:1.2em;text-align:center}
+      .v76-market-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+      .v76-market-grid>div{border:1px solid rgba(145,166,205,.22);border-radius:13px;padding:9px;text-align:center}
+      .v76-market-grid span{display:block;font-size:.72rem;opacity:.72;margin-bottom:3px}
+      .v76-market-grid strong{font-size:1rem}
+      .v76-value-line{margin-top:10px;display:grid;gap:3px}
+      .v76-value-line span{font-size:.82rem;opacity:.78}
+      .v76-snapshot-info{margin-top:12px;font-size:.82rem}
+      @media(max-width:680px){
+        .v76-market-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+        #dashboardView .table-wrap{overflow:visible}
+        #dashboardView table{display:block;width:100%;min-width:0}
+        #dashboardView thead{display:none}
+        #dashboardView tbody{display:grid;gap:10px}
+        #dashboardView tr{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;border:1px solid rgba(145,166,205,.22);border-radius:16px;padding:12px}
+        #dashboardView td{display:flex;justify-content:space-between;gap:8px;border:0!important;padding:5px 0!important;min-width:0}
+        #dashboardView td::before{content:attr(data-label);opacity:.65;font-size:.78rem}
+        #dashboardView td:first-child{grid-column:1/-1;font-weight:800;font-size:1.02rem}
+        #dashboardView td:first-child::before{display:none}
+      }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function updateVersion76() {
+    document.title = document.title.replace(/Ver\.\d+(?:\.\d+)?/g, `Ver.${VERSION}`);
+    document.querySelectorAll('h1 span').forEach(x => {
+      if (/Ver\./.test(x.textContent || '')) x.textContent = `Ver.${VERSION}`;
+    });
+  }
+
+  // Attach market snapshots to the normal saved race object.
+  try {
+    const oldGetForm = getForm;
+    getForm = function() {
+      const d = oldGetForm();
+      const pair = getSnapshotPair76();
+      const list = loadSnaps76()[raceKey76()] || [];
+      d.marketSnapshots = list.map(x => ({
+        at:x.at, source:x.source, kind:x.kind, oddsType:x.oddsType,
+        checkedAt:x.checkedAt, horses:x.horses
+      }));
+      d.marketFirst = pair.first || null;
+      d.marketFinal = pair.final || null;
+      return d;
+    };
+  } catch {}
+
+  // Capture ordinary market input before/after ranking refresh.
+  try {
+    const oldRenderValueRanking = renderValueRanking;
+    renderValueRanking = function(...args) {
+      const out = oldRenderValueRanking.apply(this, args);
+      captureSnapshot76('ui');
+      renderMarketDiscipline76();
+      return out;
+    };
+  } catch {}
+
+  // Capture official NAR data. If checkedAt says "最終", preserve it as final market.
+  try {
+    const oldApplyOfficialOdds = applyOfficialOdds;
+    applyOfficialOdds = function(data) {
+      const n = oldApplyOfficialOdds(data);
+      if (n) {
+        captureSnapshot76(/最終/.test(String(data?.checkedAt || '')) ? 'official-final' : 'official');
+        renderMarketDiscipline76();
+      }
+      return n;
+    };
+  } catch {}
+
+  // Keep dashboard labels fresh after rerender.
+  try {
+    const oldRenderDashboard = renderDashboard;
+    renderDashboard = function(...args) {
+      const out = oldRenderDashboard.apply(this, args);
+      setTimeout(() => attachTableLabels76($v76('dashboardView') || document), 0);
+      return out;
+    };
+  } catch {}
+
+  function boot76() {
+    injectStyles76();
+    updateVersion76();
+    captureSnapshot76('boot');
+    renderMarketDiscipline76();
+    attachTableLabels76();
+    document.addEventListener('input', (e) => {
+      if (e.target?.matches?.('.odds,.pop,.win,.place,#oddsCheckedAt')) {
+        setTimeout(() => {
+          captureSnapshot76('input');
+          renderMarketDiscipline76();
+        }, 40);
+      }
+    });
+    document.addEventListener('change', (e) => {
+      if (e.target?.matches?.('.odds,.pop,.win,.place,#oddsCheckedAt,#oddsType')) {
+        setTimeout(() => {
+          captureSnapshot76('change');
+          renderMarketDiscipline76();
+        }, 40);
+      }
+    });
+
+    const obs = new MutationObserver(() => {
+      clearTimeout(window.__v76mut);
+      window.__v76mut = setTimeout(() => {
+        renderMarketDiscipline76();
+        attachTableLabels76();
+      }, 120);
+    });
+    obs.observe(document.body, {childList:true, subtree:true});
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot76);
+  else boot76();
 })();

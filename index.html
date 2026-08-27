@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1020" />
-  <title>チャス競馬研究所 Ver.7.1</title>
+  <title>チャス競馬研究所 Ver.7.6</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
-    <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.7.1</span></h1></div>
+    <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.7.6</span></h1></div>
     <button id="themeToggle" class="ghost">表示切替</button>
   </header>
 
@@ -66,8 +66,7 @@
       </div>
 
       <section class="card quick-card">
-        <div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div><span class="badge">最終判断</span></div>
-        <div id="quickMarketStatus" class="quick-market-overview">市場データ：未取得</div>
+        <div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div><span class="badge">馬番つき</span></div>
         <div id="quickCompare" class="table-wrap"><p class="muted">馬データを入力すると一覧表示します。</p></div>
       </section>
 
@@ -111,28 +110,13 @@
       </section>
 
       <section class="card">
-        <div class="section-head"><div><p class="eyebrow">RESULT</p><h2>レース後検証</h2></div><span id="resultSaveStatus" class="badge">結果待ち</span></div>
-        <div class="official-result-box">
-          <button id="fetchOfficialResult" class="primary" type="button">NAR公式から結果・最終オッズを取得</button>
-          <span id="officialResultStatus" class="muted">NAR連携未設定。初回のみ連携先を設定してください。</span>
-        </div>
-        <details class="nar-api-settings">
-          <summary>NAR自動連携設定</summary>
-          <div class="grid one">
-            <label>結果取得Worker URL<input id="narApiBase" type="url" placeholder="https://chass-nar-api.xxxxx.workers.dev" /></label>
-            <div class="row-actions">
-              <button id="saveNarApiBase" class="ghost" type="button">連携先を保存</button>
-              <button id="testNarApiBase" class="ghost" type="button">接続テスト</button>
-            </div>
-            <p class="hint">1回保存すれば、このiPhoneでは次回以降も自動利用します。予想データや結果は従来どおりアプリ側に保存します。</p>
-          </div>
-        </details>
+        <div class="section-head"><div><p class="eyebrow">RESULT</p><h2>レース後検証</h2></div></div>
         <div class="grid three">
           <label>1着 馬番<input id="result1" type="number" min="1" max="18" placeholder="例：3" /></label>
           <label>2着 馬番<input id="result2" type="number" min="1" max="18" placeholder="例：5" /></label>
           <label>3着 馬番<input id="result3" type="number" min="1" max="18" placeholder="例：9" /></label>
         </div>
-        <p class="hint">着順は馬番だけ入力します。入力後は同一レースの保存データへ自動反映し、検証ダッシュボードを再集計します。</p><div id="resultAutoReview" class="quick-market-overview">結果を入力すると自動検証します。</div>
+        <p class="hint">着順は馬番だけ入力します。各馬の実走タイムも入力すると、予想走破タイム誤差を自動集計します。</p>
         <label>検証メモ<textarea id="review" rows="4" placeholder="展開誤差、予想タイム誤差、穴馬評価の良否など"></textarea></label>
       </section>
 
@@ -201,7 +185,7 @@
     <article class="horse-row">
       <div class="horse-top compact-horse-top">
         <label class="horse-no-wrap"><span>馬番</span><input class="horse-no" type="number" min="1" max="18" placeholder="#" /></label>
-        <select class="mark"><option value="">—</option><option>◎</option><option>○</option><option>▲</option><option>△</option><option>☆</option><option>💎</option><option>💎💎💎</option><option>⚠️</option></select>
+        <select class="mark"><option>◎</option><option>○</option><option>▲</option><option>△</option><option>☆</option><option>💎</option><option>💎💎💎</option><option>⚠️</option></select>
         <input class="horse-name" placeholder="馬名" />
         <button class="remove ghost" type="button">削除</button>
       </div>
@@ -253,17 +237,5 @@
   </template>
 
   <script src="app.js"></script>
-  <script src="/chass-v7.4-patch.js"></script>
-  <script src="app.js"></script>
-<script src="/chass-v7.4-patch.js"></script>
-<script src="/chass-v7.5-patch.js"></script>
-  <script src="app.js"></script>
-<script src="/chass-v7.4-patch.js"></script>
-<script src="/chass-v7.5-patch.js"></script>
-<script src="/chass-v7.6-patch.js"></script>
-</body>
-</html>
-</body>
-</html>
 </body>
 </html>
