@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.2";
+const VERSION="9.3";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -46,6 +46,40 @@ async function fetchText(url){
   if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);
   return r.text();
 }
+
+function parseRaceMeta(html){
+  const text=cleanText(html);
+  const distance=Number(text.match(/(?:ダート|芝)?\s*(\d{3,4})\s*m/i)?.[1]||0)||null;
+  const weather=text.match(/天候[:：]?\s*(晴|曇|雨|雪)/)?.[1]||"";
+  const trackCondition=text.match(/(?:馬場|馬場状態)[:：]?\s*(良|稍重|重|不良)/)?.[1]||"不明";
+  let raceName="";
+  const hm=String(html).match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i);
+  if(hm)raceName=cleanText(hm[1]).replace(/^\d+R\s*/,"").trim();
+  return {raceName,distance,weather,trackCondition,surface:/芝/.test(text)?"芝":"ダート"};
+}
+function parseRaceCard(html){
+  const out=[];
+  for(const row of tableRows(html)){
+    const c=row.cells;if(c.length<3)continue;
+    let no=null,name="",start=0;
+    if(/^\d{1,2}$/.test(String(c[1]||""))&&Number(c[1])>=1&&Number(c[1])<=18){no=String(Number(c[1]));name=String(c[2]||"");start=3;}
+    else if(/^\d{1,2}$/.test(String(c[0]||""))&&Number(c[0])>=1&&Number(c[0])<=18){no=String(Number(c[0]));name=String(c[1]||"");start=2;}
+    if(!no||!name||/馬番|馬名/.test(name))continue;
+    let weight=null,sexAge="",jockey="",trainer="";
+    for(let i=start;i<c.length;i++){
+      const s=String(c[i]||"").trim();
+      if(!sexAge&&/^[牡牝セ騙]\d+$/.test(s))sexAge=s;
+      const wm=s.match(/^(\d{2}(?:\.\d)?)$/);if(weight==null&&wm){const v=Number(wm[1]);if(v>=45&&v<=65)weight=v;}
+    }
+    const texts=c.slice(start).filter(x=>x&&!/^\d+(?:\.\d+)?$/.test(String(x)));
+    if(texts.length)jockey=String(texts[0]||"").trim();
+    if(texts.length>1)trainer=String(texts[texts.length-1]||"").trim();
+    out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer});
+  }
+  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
+  return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));
+}
+
 function parseResult(html){
   const order=[],actualTimes={};
   for(const row of tableRows(html)){
@@ -104,6 +138,20 @@ function narUrls(code,date,race){
     odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`
   };
 }
+
+async function apiRace(u,res){
+  const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");
+  if(!code||!date||!race)return sendJson(res,400,{ok:false,error:"code,date,race are required"});
+  const urls=narUrls(code,date,race);
+  try{
+    const [ch,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]);
+    const meta=parseRaceMeta(ch),horses=parseRaceCard(ch),odds=parseTanFuku(oh);
+    const om=new Map(odds.map(x=>[String(x.horseNo),x]));
+    const merged=horses.map(h=>({...h,odds:om.get(String(h.horseNo))?.odds??null,popularity:om.get(String(h.horseNo))?.popularity??null}));
+    return sendJson(res,200,{ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...meta,horses:merged,odds,acquiredAt:new Date().toISOString()});
+  }catch(e){return sendJson(res,502,{ok:false,error:String(e?.message||e),source:"NAR公式",urls});}
+}
+
 async function apiOdds(u,res){
   const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");
   if(!code||!date||!race)return sendJson(res,400,{ok:false,error:"code,date,race are required"});
@@ -151,6 +199,7 @@ http.createServer(async(req,res)=>{
   if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
+  if(u.pathname==="/api/nar/race")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
   if(u.pathname==="/api/nar/sync")return apiSync(u,res);
   return staticFile(u,res);

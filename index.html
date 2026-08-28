@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.2</title>
+  <title>チャス競馬研究所 Ver.9.3</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.2</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.3</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -23,7 +23,26 @@
       <p class="eyebrow">RACE</p>
       <div class="race-head"><div><h2 id="raceTitle">レース情報未入力</h2><p id="raceMeta" class="muted">予想データファイルを読み込むと自動表示します。</p></div><div class="chips"><span id="chaosBadge" class="badge">波乱度 —</span><span id="paceBadge" class="badge">展開 —</span></div></div>
       <div id="biasText" class="note">馬場：—</div>
-      <label class="file-button primary">予想データファイルを選択<input id="raceImportFile" type="file" accept=".json,application/json" hidden /></label>
+
+      <section class="auto-race-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">AUTO RACE DATA</p>
+            <h3>公式データから自動生成</h3>
+          </div>
+          <span id="autoRaceBadge" class="badge">未取得</span>
+        </div>
+        <div class="grid auto-race-grid">
+          <label>日付<input id="autoRaceDate" type="date"></label>
+          <label>競馬場<select id="autoTrack"></select></label>
+          <label>レース<select id="autoRaceNo"></select></label>
+        </div>
+        <button id="autoRaceLoad" class="primary wide">NAR公式データを取得・予想開始</button>
+        <p id="autoRaceStatus" class="muted status-line">手動JSONを作らず、出馬表＋取得可能な市場情報から内部データを自動生成します。</p>
+      </section>
+      <div class="source-divider"><span>または手動JSON</span></div>
+
+      <label class="file-button ghost">予想データファイルを選択<input id="raceImportFile" type="file" accept=".json,application/json" hidden /></label>
       <div id="importStatus" class="muted status-line">ファイル未選択</div>
       <details class="editor"><summary>レース情報を確認・修正</summary><div class="grid two">
         <label>競馬区分<select id="category"><option>地方競馬</option><option>中央競馬</option></select></label>

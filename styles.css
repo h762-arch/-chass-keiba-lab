@@ -70,3 +70,14 @@ label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12
  .failure-item{grid-template-columns:1fr}
  .failure-item strong{font-size:13px}
 }
+
+/* Ver.9.3 Auto Race Data */
+.auto-race-panel{margin:16px 0;padding:16px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:17px;background:rgba(99,223,178,.035)}
+.auto-race-panel h3{margin:3px 0 0;font-size:18px}
+.auto-race-grid{grid-template-columns:1.35fr 1fr .75fr;margin-top:12px}
+.source-divider{display:flex;align-items:center;gap:10px;margin:16px 0;color:var(--muted);font-size:11px;font-weight:800}
+.source-divider:before,.source-divider:after{content:"";height:1px;background:var(--line);flex:1}
+@media(max-width:700px){
+ .auto-race-grid{grid-template-columns:1fr 1fr}
+ .auto-race-grid label:first-child{grid-column:1/-1}
+}
