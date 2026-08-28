@@ -3,7 +3,7 @@ function json(data,status=200){return new Response(JSON.stringify(data,null,2),{
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/\s+/g," ").trim()}
 function tableRows(html=""){return [...String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>{const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>cleanText(x[1]));return {cells,text:cells.join(" ")}})}
-async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (compatible; ChassKeibaLab/9.0.1)","accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
+async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (compatible; ChassKeibaLab/9.1)","accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
 function parseResult(html){
  const order=[],actualTimes={};
  for(const row of tableRows(html)){
@@ -40,7 +40,7 @@ function parseTanFuku(html){
 export default{
  async fetch(request,env){
   const u=new URL(request.url);
-  if(u.pathname==="/api/health")return json({ok:true,version:"9.0.1",service:"chass-keiba-lab"});
+  if(u.pathname==="/api/health")return json({ok:true,version:"9.1",service:"chass-keiba-lab"});
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
     const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");
     if(!code||!date||!race)return json({error:"code,date,race are required"},400);
@@ -52,11 +52,11 @@ export default{
     try{
       if(u.pathname==="/api/nar/odds"){
         const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);
-        return json({source:"NAR公式",version:"9.0.1",track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});
+        return json({source:"NAR公式",version:"9.1",track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});
       }
       const [rh,oh]=await Promise.all([fetchText(urls.result).catch(()=>""),fetchText(urls.odds).catch(()=>"")]);
       const rr=parseResult(rh),oo=parseTanFuku(oh);
-      return json({source:"NAR公式",version:"9.0.1",track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3});
+      return json({source:"NAR公式",version:"9.1",track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}

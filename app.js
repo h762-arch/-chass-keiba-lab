@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.0.1';
+const APP_VERSION='9.1';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -236,19 +236,136 @@ function getAllRaces(){
  const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&x.result?.finishOrder?.length>=3);
 }
 function horsePosition(r,h){const no=Number(h?.horseNo);const i=(r.result?.finishOrder||[]).map(Number).indexOf(no);return i>=0?i+1:null}
+
+function timeToSec(v){
+ const s=String(v||'').trim();
+ const m=s.match(/^(\d+):([0-5]\d(?:\.\d+)?)$/);
+ if(!m)return null;
+ return Number(m[1])*60+Number(m[2]);
+}
+function pct(n,d){return d?`${(n/d*100).toFixed(1)}%`:'—'}
+function getHorseByNo(r,no){return (r.horses||[]).find(h=>Number(h.horseNo)===Number(no))||null}
+function top3Snapshot(r){
+ const snap=r.finalSnapshot?.top3;
+ if(Array.isArray(snap)&&snap.length)return snap.slice(0,3);
+ return rankFinalFor(r.horses||[]).slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),mark:['◎','○','▲'][i]}));
+}
+function aggregateAdvanced(races){
+ const adv={
+   races:races.length,
+   top3Any:0,top3Perfect:0,top3Captured:0,
+   diamondN:0,diamondPlace:0,diamondWin:0,diamondPop:[],diamondOdds:[],
+   warningN:0,warningOut:0,
+   ev100N:0,ev100Win:0,ev100Place:0,
+   winMae:[],placeMae:[],winBrier:[],placeBrier:[],
+   timeAbs:[],finalRankAbs:[],
+   byDistance:{},byPopularity:{},byEvBand:{}
+ };
+ const band=(o)=>{
+   if(o==null)return '不明';
+   if(o<=3)return '1-3人気';
+   if(o<=6)return '4-6人気';
+   if(o<=9)return '7-9人気';
+   return '10人気以下';
+ };
+ const evBand=(e)=>{
+   if(e==null)return '未取得';
+   if(e<100)return '<100%';
+   if(e<150)return '100-149%';
+   if(e<250)return '150-249%';
+   return '250%以上';
+ };
+ const pushGroup=(obj,key,hit,win)=>{
+   const g=(obj[key]??={n:0,place:0,win:0});g.n++;if(hit)g.place++;if(win)g.win++;
+ };
+ for(const r of races){
+   const order=(r.result?.finishOrder||[]).map(Number);
+   const snap=top3Snapshot(r);
+   const captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
+   if(captured>0)adv.top3Any++;
+   if(captured===3)adv.top3Perfect++;
+   adv.top3Captured+=captured;
+
+   // FINAL rank vs actual rank, for top3 only
+   snap.forEach((x,i)=>{
+     const pos=order.indexOf(Number(x.horseNo));
+     if(pos>=0)adv.finalRankAbs.push(Math.abs((i+1)-(pos+1)));
+   });
+
+   for(const h of (r.horses||[])){
+     const no=Number(h.horseNo), pos=order.indexOf(no), placed=pos>=0, won=pos===0;
+     const vm=h.valueMark|| (h.mark?.includes?.('💎')?h.mark:'');
+     const wm=h.warningMark||h.warning||'';
+     if(vm){
+       adv.diamondN++; if(placed)adv.diamondPlace++; if(won)adv.diamondWin++;
+       if(h.popularity!=null)adv.diamondPop.push(Number(h.popularity));
+       if(h.odds!=null)adv.diamondOdds.push(Number(h.odds));
+     }
+     if(wm){adv.warningN++; if(!placed)adv.warningOut++;}
+     if(h.ev!=null&&h.ev>=100){adv.ev100N++; if(won)adv.ev100Win++; if(placed)adv.ev100Place++;}
+
+     if(h.win!=null){
+       const y=won?1:0, p=Number(h.win)/100;
+       adv.winMae.push(Math.abs(p-y)*100);adv.winBrier.push((p-y)**2);
+     }
+     if(h.place!=null){
+       const y=placed?1:0, p=Number(h.place)/100;
+       adv.placeMae.push(Math.abs(p-y)*100);adv.placeBrier.push((p-y)**2);
+     }
+     const pred=timeToSec(h.predictedTime), actual=timeToSec(h.actualTime||r.actualTimes?.[String(h.horseNo)]||r.result?.actualTimes?.[String(h.horseNo)]);
+     if(pred!=null&&actual!=null)adv.timeAbs.push(Math.abs(pred-actual));
+
+     const dist=String(r.race?.distance||'不明');
+     pushGroup(adv.byDistance,dist,placed,won);
+     pushGroup(adv.byPopularity,band(h.popularity),placed,won);
+     pushGroup(adv.byEvBand,evBand(h.ev),placed,won);
+   }
+ }
+ return adv;
+}
+function renderGroupTable(title,obj){
+ const rows=Object.entries(obj).map(([k,g])=>`<div class="dash-row"><strong>${esc(k)}</strong><span>対象 ${g.n}</span><span>勝 ${pct(g.win,g.n)}</span><span>複 ${pct(g.place,g.n)}</span><span></span></div>`).join('');
+ return `<div class="dash-section"><h3>${title}</h3>${rows||'<p class="muted">データなし</p>'}</div>`;
+}
+
 function renderDashboard(){
  const races=getAllRaces(),horses=races.flatMap(x=>x.horses||[]),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
  const hit=(race,h)=>horsePosition(race,h)!=null,win=(race,h)=>horsePosition(race,h)===1;
  let dh=0,wh=0;for(const race of races){(race.horses||[]).filter(h=>h.valueMark||h.mark?.includes?.('💎')).forEach(h=>{if(hit(race,h))dh++});(race.horses||[]).filter(h=>h.warningMark||h.warning).forEach(h=>{if(!hit(race,h))wh++})}
- $('dashKpis').innerHTML=[['検証済み',`${races.length}R`],['評価馬数',`${horses.length}頭`],['💎複勝率',diamonds.length?`${(dh/diamonds.length*100).toFixed(1)}%`:'—'],['⚠️圏外率',warnings.length?`${(wh/warnings.length*100).toFixed(1)}%`:'—']].map(([a,b])=>`<div class="kpi"><span>${a}</span><strong>${b}</strong></div>`).join('');
+ const adv=aggregateAdvanced(races);
+ $('dashKpis').innerHTML=[
+   ['検証済み',`${races.length}R`],
+   ['評価馬数',`${horses.length}頭`],
+   ['◎○▲ 1頭以上',pct(adv.top3Any,adv.races)],
+   ['平均捕捉',adv.races?`${(adv.top3Captured/adv.races).toFixed(2)}頭`:'—'],
+   ['💎複勝率',diamonds.length?`${(dh/diamonds.length*100).toFixed(1)}%`:'—'],
+   ['⚠️圏外率',warnings.length?`${(wh/warnings.length*100).toFixed(1)}%`:'—'],
+   ['TIME MAE',adv.timeAbs.length?`${mean(adv.timeAbs).toFixed(2)}秒`:'—'],
+   ['期待100%+複',pct(adv.ev100Place,adv.ev100N)]
+ ].map(([a,b])=>`<div class="kpi"><span>${a}</span><strong>${b}</strong></div>`).join('');
+
  const modelStats=[
   ['勝率モデル',r=>[...(r.horses||[])].sort((a,b)=>b.win-a.win)[0]],
   ['総合モデル',r=>[...(r.horses||[])].sort((a,b)=>b.overall-a.overall)[0]],
   ['期待値モデル',r=>[...(r.horses||[])].filter(h=>h.ev!=null).sort((a,b)=>b.ev-a.ev)[0]],
   ['CHASS FINAL',r=>{const no=r.finalSnapshot?.top3?.[0]?.horseNo;return (r.horses||[]).find(h=>Number(h.horseNo)===Number(no))||rankFinalFor(r.horses||[])[0]}]
  ];
- $('dashModels').innerHTML='<div class="dash-section"><h3>モデル別成績</h3>'+modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[];races.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(hp!=null)p++;if(hp!=null)pos.push(hp)});return `<div class="dash-row"><strong>${name}</strong><span>対象 ${target}</span><span>勝率 ${target?(w/target*100).toFixed(1):'—'}%</span><span>複勝率 ${target?(p/target*100).toFixed(1):'—'}%</span><span>平均着 ${pos.length?mean(pos).toFixed(2):'—'}</span></div>`}).join('')+'</div>';
- $('dashRaces').innerHTML='<div class="dash-section"><h3>保存レース</h3>'+races.slice().reverse().map(r=>`<div class="dash-row"><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span><span>${r.result.finishOrder.join('-')}</span><span>${(r.horses||[]).length}頭</span><span>${esc(r.result.memo||'')}</span></div>`).join('')+'</div>';
+ const modelHtml='<div class="dash-section"><h3>モデル別成績</h3>'+modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[];races.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(hp!=null)p++;if(hp!=null)pos.push(hp)});return `<div class="dash-row"><strong>${name}</strong><span>対象 ${target}</span><span>勝率 ${target?(w/target*100).toFixed(1):'—'}%</span><span>複勝率 ${target?(p/target*100).toFixed(1):'—'}%</span><span>平均着 ${pos.length?mean(pos).toFixed(2):'—'}</span></div>`}).join('')+'</div>';
+
+ const calHtml=`<div class="dash-section"><h3>確率較正・精度</h3>
+   <div class="dash-row"><strong>AI勝率</strong><span>MAE ${adv.winMae.length?mean(adv.winMae).toFixed(1)+'pt':'—'}</span><span>Brier ${adv.winBrier.length?mean(adv.winBrier).toFixed(3):'—'}</span><span></span><span></span></div>
+   <div class="dash-row"><strong>AI複勝率</strong><span>MAE ${adv.placeMae.length?mean(adv.placeMae).toFixed(1)+'pt':'—'}</span><span>Brier ${adv.placeBrier.length?mean(adv.placeBrier).toFixed(3):'—'}</span><span></span><span></span></div>
+   <div class="dash-row"><strong>FINAL順位差</strong><span>平均 ${adv.finalRankAbs.length?mean(adv.finalRankAbs).toFixed(2):'—'}</span><span></span><span></span><span></span></div>
+   <div class="dash-row"><strong>💎</strong><span>対象 ${adv.diamondN}</span><span>勝 ${pct(adv.diamondWin,adv.diamondN)}</span><span>複 ${pct(adv.diamondPlace,adv.diamondN)}</span><span>平均人気 ${adv.diamondPop.length?mean(adv.diamondPop).toFixed(1):'—'}</span></div>
+ </div>`;
+
+ $('dashModels').innerHTML=modelHtml+calHtml+renderGroupTable('距離別',adv.byDistance)+renderGroupTable('人気帯別',adv.byPopularity)+renderGroupTable('期待値帯別',adv.byEvBand);
+
+ $('dashRaces').innerHTML='<div class="dash-section"><h3>保存レース</h3>'+races.slice().reverse().map(r=>{
+   const snap=top3Snapshot(r),order=(r.result?.finishOrder||[]).map(Number),captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
+   const terr=(r.horses||[]).map(h=>{const p=timeToSec(h.predictedTime),a=timeToSec(h.actualTime||r.actualTimes?.[String(h.horseNo)]||r.result?.actualTimes?.[String(h.horseNo)]);return p!=null&&a!=null?Math.abs(p-a):null}).filter(x=>x!=null);
+   return `<div class="dash-race-card"><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span><span>結果 ${r.result.finishOrder.join('-')}</span><span>◎○▲捕捉 ${captured}/3</span><span>TIME MAE ${terr.length?mean(terr).toFixed(2)+'秒':'—'}</span></div>`;
+ }).join('')+'</div>';
 }
 function migrateLegacy(){
  const old=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
