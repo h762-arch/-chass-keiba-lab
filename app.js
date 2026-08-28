@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.0';
+const APP_VERSION='9.0.1';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -30,8 +30,8 @@ function raceId(r={}){
  return d&&t&&n?`${d}|${t}|${n}`:'';
 }
 function oddsType(v){
- const s=String(v||'');
- if(/予想|想定|forecast|predicted/i.test(s))return '予想オッズ';
+ const s=String(v||'').trim();
+ if(/予想|想定|参考|forecast|predicted/i.test(s))return '予想オッズ';
  if(/最終|確定|実オッズ|final|real|official/i.test(s))return '実オッズ';
  if(!s||/なし|未取得/.test(s))return 'オッズなし';
  return '種別不明';
@@ -93,6 +93,7 @@ function transform(root){
    return {
      horseNo:h.horseNo??h.horseNumber??h.馬番??i+1,
      horseName:h.horseName??h.horse??h.name??h.馬名??'',
+     sourceMark:String(h.sourceMark??h.mark??''),
      popularity:num(h.popularity??h.pop??h.人気),
      odds:num(h.realOdds??h.finalOdds??h.odds??h.単勝オッズ),
      runningStyle:h.runningStyle??h.style??h.脚質??'不明',
@@ -114,8 +115,14 @@ function transform(root){
  }
  return {race:r,horses,result:null,actualTimes:{},finalSnapshot:null,predictionSnapshot:null,marketSnapshot:null};
 }
+function normalizeCategory(v){
+ const s=String(v||'').trim();
+ if(s==='地方'||s==='地方競馬')return '地方競馬';
+ if(s==='中央'||s==='中央競馬')return '中央競馬';
+ return '地方競馬';
+}
 function fillRace(r){
- $('category').value=r.category||'地方競馬';$('raceDate').value=(r.raceDate||r.date||'').replaceAll('/','-');$('track').value=r.track||'';$('raceNo').value=r.raceNo||'';$('distance').value=r.distance||'';$('trackCondition').value=r.trackCondition||'不明';$('chaos').value=r.chaos??50;$('pace').value=r.pace||'標準';
+ $('category').value=normalizeCategory(r.category);$('raceDate').value=(r.raceDate||r.date||'').replaceAll('/','-');$('track').value=r.track||'';$('raceNo').value=r.raceNo||'';$('distance').value=r.distance||'';$('trackCondition').value=r.trackCondition||'不明';$('chaos').value=r.chaos??50;$('pace').value=r.pace||'標準';
 }
 function raceFromForm(){
  return {...state.race,category:$('category').value,raceDate:$('raceDate').value,track:$('track').value,raceNo:Number($('raceNo').value)||'',distance:Number($('distance').value)||'',trackCondition:$('trackCondition').value,chaos:Number($('chaos').value)||50,pace:$('pace').value||'標準'};
@@ -131,7 +138,7 @@ function makeSnapshot(){
  const marks=['◎','○','▲']; state.horses.forEach(h=>h.finalMark='');
  top3.forEach((x,i)=>{const h=state.horses.find(z=>Number(z.horseNo)===Number(x.horseNo));if(h)h.finalMark=marks[i]});
  if(!state.predictionSnapshot){
-   state.predictionSnapshot={createdAt:new Date().toISOString(),horses:state.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,win:h.win,place:h.place,overall:h.overall,predictedTime:h.predictedTime,abilityMark:h.abilityMark,dataConfidence:h.dataConfidence}))};
+   state.predictionSnapshot={createdAt:new Date().toISOString(),horses:state.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,win:h.win,place:h.place,overall:h.overall,predictedTime:h.predictedTime,abilityMark:h.abilityMark,sourceMark:h.sourceMark||'',dataConfidence:h.dataConfidence}))};
  }
 }
 function render(){
@@ -158,7 +165,7 @@ function renderQuick(){
 function renderHorses(){
  const list=$('horseList');list.innerHTML=''; const tpl=$('horseTpl');
  state.horses.forEach(x=>{
-   const n=tpl.content.cloneNode(true);n.querySelector('.horse-no').textContent=x.horseNo;n.querySelector('.horse-mark-name').textContent=`${displayMark(x)} ${x.horseName}`.trim();n.querySelector('.horse-sub').textContent=[x.runningStyle,x.popularity?`${x.popularity}人気`:'',x.odds?`${x.odds}倍`:''].filter(Boolean).join('｜');n.querySelector('.overall-pill').textContent=`総合 ${x.overall}`;n.querySelector('.m-win').textContent=x.win.toFixed(1)+'%';n.querySelector('.m-place').textContent=x.place.toFixed(1)+'%';n.querySelector('.m-time').textContent=x.predictedTime||'—';n.querySelector('.m-overall').textContent=x.overall; const raw=x.raw;n.querySelector('.facts').innerHTML=`最高指数 ${raw.highest??'—'} / 5走平均 ${raw.avg5??'—'} / 距離 ${raw.distance??'—'} / コース ${raw.course??'—'} / 近走 ${raw.recent.length?raw.recent.join('→'):'—'} / 斤量 ${raw.kg??'—'}kg`;n.querySelector('.logic').innerHTML=`指数スコア ${x.scores.timeIndex?.toFixed(1)??'—'} / 距離適性 ${x.scores.distanceFit?.toFixed(1)??'—'} / コース適性 ${x.scores.courseFit?.toFixed(1)??'—'} / 斤量補正 ${x.scores.weight?.toFixed(1)??'—'} / 信頼度 ${x.dataConfidence}%`;n.querySelector('.reason').textContent=x.reason||'根拠データなし';list.appendChild(n);
+   const n=tpl.content.cloneNode(true);n.querySelector('.horse-no').textContent=x.horseNo;n.querySelector('.horse-mark-name').textContent=`${displayMark(x)} ${x.horseName}`.trim();n.querySelector('.horse-sub').textContent=[x.runningStyle,x.popularity?`${x.popularity}人気`:'',x.odds?`${x.odds}倍`:''].filter(Boolean).join('｜');n.querySelector('.overall-pill').textContent=`総合 ${x.overall}`;n.querySelector('.m-win').textContent=x.win.toFixed(1)+'%';n.querySelector('.m-place').textContent=x.place.toFixed(1)+'%';n.querySelector('.m-time').textContent=x.predictedTime||'—';n.querySelector('.m-overall').textContent=x.overall; const raw=x.raw;n.querySelector('.facts').innerHTML=`最高指数 ${raw.highest??'—'} / 5走平均 ${raw.avg5??'—'} / 距離 ${raw.distance??'—'} / コース ${raw.course??'—'} / 近走 ${raw.recent.length?raw.recent.join('→'):'—'} / 斤量 ${raw.kg??'—'}kg`;n.querySelector('.logic').innerHTML=`指数スコア ${x.scores.timeIndex?.toFixed(1)??'—'} / 距離適性 ${x.scores.distanceFit?.toFixed(1)??'—'} / コース適性 ${x.scores.courseFit?.toFixed(1)??'—'} / 斤量補正 ${x.scores.weight?.toFixed(1)??'—'} / 信頼度 ${x.dataConfidence}%${x.sourceMark?` / 元印 ${esc(x.sourceMark)}`:''}`;n.querySelector('.reason').textContent=x.reason||'根拠データなし';list.appendChild(n);
  });
 }
 function mergeExisting(next, existing){
@@ -258,5 +265,5 @@ $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$
 
 migrateLegacy();setVersion();
 const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});
-if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.horses=(state.horses||[]).map(h=>({...h,abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
+if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
 })();

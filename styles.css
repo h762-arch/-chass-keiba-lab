@@ -13,11 +13,38 @@ label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12
 .editor{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.editor summary,.horse-details summary{font-weight:900;cursor:pointer}
 .integrity-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.integrity-grid>div,.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:12px}.integrity-grid span,.kpi span{display:block;color:var(--muted);font-size:11px}.integrity-grid strong,.kpi strong{display:block;font-size:18px;margin-top:5px}
 .final-card{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}.final-grid{display:grid;gap:10px}.final-pick,.flag-box{border:1px solid var(--line);border-radius:15px;padding:14px;background:rgba(255,255,255,.02)}.final-pick strong{font-size:18px}.final-pick small{display:block;color:var(--muted);line-height:1.6;margin-top:4px}.flag-box.diamond{border-color:color-mix(in srgb,var(--accent) 65%,var(--line))}.flag-box.warning{border-color:color-mix(in srgb,var(--warn) 65%,var(--line))}.flags{display:grid;gap:10px;margin-top:12px}
-.quick-list{display:grid;gap:9px}.quick-row{display:grid;grid-template-columns:48px minmax(0,1fr) repeat(4,70px);gap:8px;align-items:center;border:1px solid var(--line);border-radius:15px;padding:10px;background:rgba(255,255,255,.018)}.quick-no{display:grid;place-items:center;width:42px;height:42px;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--line));border-radius:12px;color:var(--accent);font-weight:900}.quick-name{font-weight:900}.quick-stat{text-align:center}.quick-stat span{display:block;color:var(--muted);font-size:9px}.quick-stat strong{font-size:13px}
+.quick-list{display:grid;gap:10px}.quick-row{display:grid;grid-template-columns:48px minmax(0,1fr) repeat(4,78px);gap:8px;align-items:center;border:1px solid var(--line);border-radius:15px;padding:10px;background:rgba(255,255,255,.018)}.quick-no{display:grid;place-items:center;width:42px;height:42px;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--line));border-radius:12px;color:var(--accent);font-weight:900}.quick-name{font-weight:900;min-width:0;overflow-wrap:anywhere}.quick-stat{text-align:center;min-width:0}.quick-stat span{display:block;color:var(--muted);font-size:9px}.quick-stat strong{display:block;font-size:13px;white-space:nowrap}
 .horse-row{border:1px solid var(--line);border-radius:18px;background:var(--panel2);padding:14px;margin:10px 0}.horse-no{display:grid;place-items:center;width:46px;height:46px;border-radius:13px;border:1px solid color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);font-weight:900;font-size:20px}.horse-head{align-items:center}.horse-head>div:nth-child(2){flex:1}.horse-mark-name{font-size:18px}.horse-sub{display:block;margin-top:3px}
 .horse-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}.horse-metrics>div{text-align:center;border:1px solid var(--line);border-radius:13px;padding:9px}.horse-metrics span{display:block;color:var(--muted);font-size:10px}.horse-metrics strong{font-size:15px}
 .horse-details{margin-top:10px;border:1px solid var(--line);border-radius:13px;padding:12px}.horse-details-body{padding-top:10px}.facts,.logic{line-height:1.7;font-size:12px;color:var(--muted)}.reason{line-height:1.6;font-size:13px}.good{color:var(--good)}.warn{color:var(--warn)}.danger-text{color:var(--danger)}.empty{color:var(--muted)}
 .kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.dash-section{margin-top:16px}.dash-row{display:grid;grid-template-columns:1fr repeat(4,80px);gap:8px;padding:10px;border-top:1px solid var(--line);font-size:12px}.dash-row:first-child{border-top:0}
+.market-controls{margin-top:12px;display:flex;align-items:center;gap:12px}.auto-odds{display:flex;align-items:center;gap:8px;font-weight:700}.auto-odds input{width:20px;height:20px}.market-card .status-line{margin-top:10px}
+
 @media(max-width:700px){
- .card{padding:16px;border-radius:18px}.integrity-grid{grid-template-columns:1fr 1fr}.integrity-grid>div:last-child{grid-column:1/-1}.grid.three{grid-template-columns:1fr}.quick-row{grid-template-columns:44px minmax(0,1fr);}.quick-row .quick-stat{display:inline-grid;grid-template-columns:auto auto;gap:4px;text-align:left}.quick-row .quick-stat span{font-size:9px}.quick-row .quick-stat strong{font-size:11px}.horse-metrics{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.horse-metrics>div{padding:7px 4px}.kpi-grid{grid-template-columns:1fr 1fr}.tabs{top:78px}.dash-row{grid-template-columns:1fr 1fr}.dash-row>*:nth-child(n+4){display:none}
-}.market-controls{margin-top:12px;display:flex;align-items:center;gap:12px}.auto-odds{display:flex;align-items:center;gap:8px;font-weight:700}.auto-odds input{width:20px;height:20px}.market-card .status-line{margin-top:10px}
+ .card{padding:16px;border-radius:18px}
+ .integrity-grid{grid-template-columns:1fr 1fr}.integrity-grid>div:last-child{grid-column:1/-1}
+ .grid.three{grid-template-columns:1fr}
+ .quick-row{
+   grid-template-columns:52px minmax(0,1fr) minmax(0,1fr);
+   grid-template-areas:
+     "no name name"
+     "no stat1 stat2"
+     "no stat3 stat4";
+   align-items:stretch;
+   gap:8px;
+   padding:12px;
+ }
+ .quick-no{grid-area:no;width:48px;height:48px;align-self:start}
+ .quick-name{grid-area:name;font-size:16px;line-height:1.35;padding:4px 0}
+ .quick-stat{display:flex;flex-direction:column;justify-content:center;text-align:center;border:1px solid var(--line);border-radius:11px;padding:8px 6px;min-height:54px}
+ .quick-row .quick-stat:nth-of-type(1){grid-area:stat1}
+ .quick-row .quick-stat:nth-of-type(2){grid-area:stat2}
+ .quick-row .quick-stat:nth-of-type(3){grid-area:stat3}
+ .quick-row .quick-stat:nth-of-type(4){grid-area:stat4}
+ .quick-row .quick-stat span{font-size:10px}
+ .quick-row .quick-stat strong{font-size:14px;margin-top:2px}
+ .horse-metrics{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}.horse-metrics>div{padding:7px 4px}
+ .kpi-grid{grid-template-columns:1fr 1fr}
+ .tabs{top:78px}
+ .dash-row{grid-template-columns:1fr 1fr}.dash-row>*:nth-child(n+4){display:none}
+}

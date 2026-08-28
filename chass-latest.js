@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const VERSION='9.0';
+const VERSION='9.0.1';
 function setVersion(){
   document.title=document.title.replace(/Ver\.\d+(?:\.\d+)*/g,`Ver.${VERSION}`);
   document.querySelectorAll('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./.test(el.textContent||''))el.textContent=`Ver.${VERSION}`});
