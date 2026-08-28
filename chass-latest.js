@@ -719,3 +719,116 @@
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
+
+/* CHASS KEIBA LAB Ver.8.9.2 - QUICK VIEW / MARKET DETAIL SYNC / VALIDATION DEFINITIONS / ACTUAL TIME */
+(() => {
+  'use strict';
+  const VERSION='8.9.2';
+  const DB_KEY='chass_v80_races';
+  const $=id=>document.getElementById(id);
+  const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  const pct=(a,b)=>b?((a/b)*100).toFixed(1)+'%':'—';
+  const clamp=(v,a=0,b=100)=>Math.max(a,Math.min(b,v));
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+  const normDate=s=>String(s||'').replaceAll('/','-');
+
+  function setVersion(){
+    document.title=document.title.replace(/Ver\.\d+(?:\.\d+){0,2}/gi,`Ver.${VERSION}`);
+    qsa('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./i.test(el.textContent||''))el.textContent=`Ver.${VERSION}`});
+  }
+  function rid(){
+    const d=normDate($('raceDate')?.value||'');
+    const t=String($('track')?.value||'').trim();
+    const r=String($('raceNo')?.value||'').match(/\d+/)?.[0]||'';
+    return d&&t&&r?`${d}|${t}|${r}`:'';
+  }
+  function loadDb(){try{const v=JSON.parse(localStorage.getItem(DB_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{}}catch{return {}}}
+  function saveDb(v){localStorage.setItem(DB_KEY,JSON.stringify(v))}
+  function savedRace(){const k=rid();return k?loadDb()[k]||null:null}
+  function hNo(h){return String(h?.horseNo??h?.['horse-no']??h?.no??'').trim()}
+  function hName(h){return String(h?.horseName??h?.['horse-name']??h?.name??'').trim()}
+  function hMark(h){return String(h?.mark??'').trim()}
+  function hWin(h){return num(h?.win??h?.winRate??h?.aiWin)}
+  function hPlace(h){return num(h?.place??h?.placeRate??h?.aiPlace)}
+  function hOverall(h){return num(h?.overall??h?.score??h?.aiOverall)}
+  function hOdds(h){return num(h?.odds??h?.realOdds??h?.currentOdds)}
+  function hPop(h){return num(h?.popularity??h?.pop)}
+  function hTime(h){return String(h?.predictedTime??h?.time??'')}
+  function hEv(h){const x=num(h?.ev??h?.expectedReturn??h?.expectedValue);if(x!=null&&x>10)return x;const w=hWin(h),o=hOdds(h);return w!=null&&o!=null?w*o:null}
+  function horses(r=savedRace()){return Array.isArray(r?.horses)?r.horses:[]}
+  function resultOrder(r){const a=r?.result?.finishOrder;return (Array.isArray(a)&&a.length?a:[r?.result1,r?.result2,r?.result3]).slice(0,3).map(x=>String(x||'').trim()).filter(Boolean)}
+  function pos(r,h){const o=resultOrder(r),no=hNo(h),name=hName(h);let i=no?o.indexOf(no):-1;if(i<0&&name)i=o.indexOf(name);return i>=0?i+1:null}
+  function actualTime(r,h){const m=r?.actualTimes||r?.result?.actualTimes||r?.actualTimeByHorse||{};return m?.[hNo(h)]??h?.actualTime??''}
+  function timeSec(v){if(v==null||v==='')return null;if(typeof v==='number')return Number.isFinite(v)?v:null;const s=String(v).trim();if(/^\d+(?:\.\d+)?$/.test(s))return Number(s);const m=s.match(/^(\d+):([0-5]?\d(?:\.\d+)?)$/);return m?Number(m[1])*60+Number(m[2]):null}
+
+  function injectCss(){
+    if($('chass892Styles'))return;
+    const s=document.createElement('style');s.id='chass892Styles';s.textContent=`
+      #chass88Validation{display:none!important}
+      #chass892Validation{margin:18px 0;padding:16px;border:1px solid rgba(97,223,184,.24);border-radius:20px;background:rgba(15,29,49,.62)}
+      .c892-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}.c892-head small{display:block;color:#61dfb8;font-weight:850;letter-spacing:.14em}.c892-head h3{margin:3px 0 0;font-size:1.35rem}.c892-note{color:#9cadc7;font-size:.76rem;line-height:1.5}
+      .c892-window{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.c892-window button{border:1px solid rgba(130,160,205,.25);background:transparent;color:#aebbd0;border-radius:999px;padding:8px 11px;font-weight:750}.c892-window button.active{background:#61dfb8;color:#071620;border-color:#61dfb8}
+      .c892-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.c892-card{border:1px solid rgba(130,160,205,.20);border-radius:15px;padding:12px;min-width:0}.c892-card span,.c892-card small,.c892-card strong{display:block}.c892-card span{color:#9cadc7;font-size:.78rem}.c892-card strong{font-size:1.35rem;margin:5px 0}.c892-card small{color:#8fa1bb;font-size:.71rem;line-height:1.4}.c892-wide{grid-column:1/-1}
+      .c892-title{margin:18px 0 8px;font-size:1rem;font-weight:850}.c892-table{display:grid;gap:7px}.c892-row{display:grid;grid-template-columns:minmax(84px,1.2fr) repeat(3,minmax(0,.8fr));gap:7px;align-items:center;border-top:1px solid rgba(130,160,205,.16);padding:9px 4px;font-size:.78rem}.c892-row span{color:#a9b7cc}
+      .c892-quick{display:grid;gap:10px}.c892-qcard{border:1px solid rgba(130,160,205,.22);border-radius:18px;padding:14px;background:rgba(255,255,255,.02)}.c892-qhead{display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:10px;align-items:center}.c892-no{display:grid;place-items:center;width:54px;height:54px;border:1px solid rgba(97,223,184,.58);border-radius:15px;color:#61dfb8;font-size:1.35rem;font-weight:900}.c892-qname{font-size:1.05rem;font-weight:850;min-width:0;overflow-wrap:anywhere}.c892-score{font-size:.75rem;color:#9cadc7;border:1px solid rgba(130,160,205,.20);border-radius:999px;padding:6px 8px;white-space:nowrap}.c892-qstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.c892-qstats>div{border:1px solid rgba(130,160,205,.16);border-radius:12px;padding:8px 5px;text-align:center;min-width:0}.c892-qstats small{display:block;color:#8fa1bb;font-size:.66rem}.c892-qstats b{display:block;margin-top:2px;font-size:.9rem;white-space:nowrap}.c892-market{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;color:#9cadc7;font-size:.76rem}
+      @media(max-width:520px){.c892-qhead{grid-template-columns:54px minmax(0,1fr)}.c892-score{grid-column:2;justify-self:start}.c892-qstats{grid-template-columns:repeat(2,minmax(0,1fr))}.c892-row{grid-template-columns:1fr 1fr}.c892-row b{grid-column:1/-1}.c892-grid{grid-template-columns:1fr 1fr}}
+    `;document.head.appendChild(s);
+  }
+
+  function renderQuick(){
+    const host=$('quickList')||$('quickCompare');if(!host)return;
+    const hs=horses();if(!hs.length)return;
+    const sorted=[...hs].sort((a,b)=>(hWin(b)??-1)-(hWin(a)??-1));
+    host.innerHTML=`<div class="c892-quick">${sorted.map(h=>`<article class="c892-qcard"><div class="c892-qhead"><span class="c892-no">${esc(hNo(h))}</span><div class="c892-qname">${esc(hMark(h))} ${esc(hName(h))}</div><span class="c892-score">総合 ${hOverall(h)==null?'—':Math.round(hOverall(h))}</span></div><div class="c892-qstats"><div><small>AI勝率</small><b>${hWin(h)==null?'—':hWin(h).toFixed(1)+'%'}</b></div><div><small>複勝率</small><b>${hPlace(h)==null?'—':hPlace(h).toFixed(1)+'%'}</b></div><div><small>TIME</small><b>${esc(hTime(h)||'—')}</b></div><div><small>期待</small><b>${hEv(h)==null?'—':Math.round(hEv(h))+'%'}</b></div></div><div class="c892-market"><span>実オッズ ${hOdds(h)==null?'—':hOdds(h)+'倍'}</span><span>${hPop(h)==null?'人気 —':hPop(h)+'人気'}</span></div></article>`).join('')}</div>`;
+  }
+
+  function syncHorseDetails(){
+    const map=new Map(horses().map(h=>[hNo(h),h]));
+    qsa('.horse-row').forEach(row=>{
+      const no=String(row.querySelector('.horse-no')?.textContent||row.querySelector('.horse-no')?.value||'').trim();const h=map.get(no);if(!h)return;
+      const sub=row.querySelector('.horse-sub');if(sub){const old=String(sub.textContent||'').split('｜').map(x=>x.trim()).filter(Boolean);const style=old.find(x=>!/(人気|倍)$/.test(x)&&x!=='不明')||'';sub.textContent=[style,hPop(h)!=null?`${hPop(h)}人気`:'人気—',hOdds(h)!=null?`${hOdds(h)}倍`:'オッズ—'].filter(Boolean).join('｜')}
+      const name=row.querySelector('.horse-mark-name');if(name)name.textContent=`${hMark(h)} ${hName(h)}`.trim();
+    });
+  }
+
+  function allRaces(limit){let rs=Object.values(loadDb()).filter(r=>resultOrder(r).length>=3);rs.sort((a,b)=>String(b.result?.at||b.updatedAt||'').localeCompare(String(a.result?.at||a.updatedAt||'')));return limit?rs.slice(0,limit):rs}
+  function modelTop(r,key){const hs=Array.isArray(r?.horses)?r.horses:[];const snap=r?.modelSnapshot?.[key]||r?.unifiedSnapshot?.modelSnapshot?.[key];if(snap?.horseNo)return String(snap.horseNo);if(!hs.length)return null;if(key==='win')return hNo([...hs].sort((a,b)=>(hWin(b)??-1)-(hWin(a)??-1))[0]);if(key==='overall')return hNo([...hs].sort((a,b)=>(hOverall(b)??-1)-(hOverall(a)??-1))[0]);if(key==='value')return hNo([...hs].sort((a,b)=>(hEv(b)??-1)-(hEv(a)??-1))[0]);return hNo(hs.find(h=>hMark(h).includes('◎'))||[...hs].sort((a,b)=>(hWin(b)??-1)-(hWin(a)??-1))[0])}
+  function calc(limit=0){
+    const rs=allRaces(limit),s={races:rs.length,atLeast1:0,all3:0,captured:0,marks:{},diamond:{n:0,p:0,pop:[],odds:[]},warn:{n:0,out:0},winAE:[],plAE:[],winBrier:[],plBrier:[],time:[],models:{win:{n:0,w:0,p:0},overall:{n:0,w:0,p:0},value:{n:0,w:0,p:0},final:{n:0,w:0,p:0}}};['◎','○','▲','△','☆'].forEach(k=>s.marks[k]={n:0,w:0,p:0});
+    for(const r of rs){const hs=Array.isArray(r.horses)?r.horses:[],actual=new Set(resultOrder(r));const preds=hs.filter(h=>/[◎○▲]/.test(hMark(h))).slice(0,3).map(h=>hNo(h));const hits=preds.filter(x=>actual.has(String(x))).length;s.captured+=hits;if(hits>=1)s.atLeast1++;if(preds.length===3&&hits===3)s.all3++;
+      for(const h of hs){const p=pos(r,h),m=hMark(h),wp=hWin(h),pp=hPlace(h);for(const k of Object.keys(s.marks))if(m.includes(k)){const z=s.marks[k];z.n++;if(p===1)z.w++;if(p&&p<=3)z.p++}
+        const pop=hPop(h),ev=hEv(h),diamond=m.includes('💎')||(pop!=null&&ev!=null&&pop>=5&&(pp??0)>=20&&ev>=112);if(diamond){s.diamond.n++;if(p&&p<=3)s.diamond.p++;if(pop!=null)s.diamond.pop.push(pop);if(hOdds(h)!=null)s.diamond.odds.push(hOdds(h))}
+        const warning=m.includes('⚠')||(pop!=null&&pop<=3&&ev!=null&&ev<82);if(warning){s.warn.n++;if(!p||p>3)s.warn.out++}
+        if(wp!=null){const y=p===1?1:0,q=clamp(wp)/100;s.winAE.push(Math.abs(y*100-wp));s.winBrier.push((q-y)**2)}if(pp!=null){const y=p&&p<=3?1:0,q=clamp(pp)/100;s.plAE.push(Math.abs(y*100-pp));s.plBrier.push((q-y)**2)}const pt=timeSec(hTime(h)),at=timeSec(actualTime(r,h));if(pt!=null&&at!=null)s.time.push(Math.abs(at-pt));
+      }
+      for(const k of Object.keys(s.models)){const no=modelTop(r,k);if(!no)continue;const h=hs.find(x=>hNo(x)===no);if(!h)continue;const p=pos(r,h),z=s.models[k];z.n++;if(p===1)z.w++;if(p&&p<=3)z.p++}
+    }return s;
+  }
+  let currentLimit=0;
+  function ensureValidation(){
+    const dash=$('dashboardView');if(!dash)return null;let sec=$('chass892Validation');if(sec)return sec;const host=qsa('section.card',dash).find(x=>/予想検証ダッシュボード/.test(x.textContent||''))||dash;sec=document.createElement('div');sec.id='chass892Validation';const races=$('dashRaces');if(races&&races.parentNode===host)host.insertBefore(sec,races);else host.appendChild(sec);return sec;
+  }
+  function renderValidation(){
+    const sec=ensureValidation();if(!sec)return;const s=calc(currentLimit),modelNames={win:'勝率',overall:'総合',value:'期待値',final:'FINAL'};const avgCaptured=s.races?s.captured/s.races:null;
+    sec.innerHTML=`<div class="c892-head"><div><small>VALIDATION 8.9.2</small><h3>検証精度・フィードバック</h3></div><span class="c892-note">定義を分離して誤解を防止</span></div><div class="c892-window"><button data-l="0" class="${currentLimit===0?'active':''}">全期間</button><button data-l="50" class="${currentLimit===50?'active':''}">最新50R</button><button data-l="100" class="${currentLimit===100?'active':''}">最新100R</button></div><div class="c892-note">対象 ${s.races}R。◎○▲について「1頭以上捕捉」「3頭完全捕捉」「平均捕捉頭数」を別々に表示します。</div><div class="c892-grid" style="margin-top:10px"><div class="c892-card"><span>◎○▲ 1頭以上捕捉率</span><strong>${pct(s.atLeast1,s.races)}</strong><small>${s.races}R中 ${s.atLeast1}R</small></div><div class="c892-card"><span>◎○▲ 3頭完全捕捉率</span><strong>${pct(s.all3,s.races)}</strong><small>着順不問で3頭すべて3着内</small></div><div class="c892-card"><span>平均捕捉頭数</span><strong>${avgCaptured==null?'—':avgCaptured.toFixed(2)+'頭'}</strong><small>1Rあたり最大3頭</small></div><div class="c892-card"><span>💎 穴馬 複勝率</span><strong>${pct(s.diamond.p,s.diamond.n)}</strong><small>${s.diamond.n}頭中 ${s.diamond.p}頭</small></div><div class="c892-card"><span>💎 平均人気 / 単勝</span><strong>${avg(s.diamond.pop)==null?'—':avg(s.diamond.pop).toFixed(1)+'人気'}</strong><small>${avg(s.diamond.odds)==null?'実オッズ不足':'平均 '+avg(s.diamond.odds).toFixed(1)+'倍'}</small></div><div class="c892-card"><span>⚠️ 人気馬 圏外率</span><strong>${pct(s.warn.out,s.warn.n)}</strong><small>${s.warn.n}頭中 ${s.warn.out}頭</small></div><div class="c892-card"><span>AI勝率 MAE / Brier</span><strong>${avg(s.winAE)==null?'—':avg(s.winAE).toFixed(1)+'pt'}</strong><small>Brier ${avg(s.winBrier)==null?'—':avg(s.winBrier).toFixed(3)}（小さいほど良）</small></div><div class="c892-card"><span>AI複勝率 MAE / Brier</span><strong>${avg(s.plAE)==null?'—':avg(s.plAE).toFixed(1)+'pt'}</strong><small>Brier ${avg(s.plBrier)==null?'—':avg(s.plBrier).toFixed(3)}（小さいほど良）</small></div><div class="c892-card c892-wide"><span>予想TIME 平均絶対誤差</span><strong>${avg(s.time)==null?'—':avg(s.time).toFixed(2)+'秒'}</strong><small>実走TIMEを取得・保存できた馬のみ</small></div></div><div class="c892-title">モデル別成績</div><div class="c892-table">${Object.entries(s.models).map(([k,v])=>`<div class="c892-row"><b>${modelNames[k]}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.w,v.n)}</span><span>複 ${pct(v.p,v.n)}</span></div>`).join('')}</div><div class="c892-title">印別成績</div><div class="c892-table">${Object.entries(s.marks).map(([k,v])=>`<div class="c892-row"><b>${k}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.w,v.n)}</span><span>複 ${pct(v.p,v.n)}</span></div>`).join('')}</div>`;
+    qsa('.c892-window button',sec).forEach(b=>b.addEventListener('click',()=>{currentLimit=Number(b.dataset.l||0);renderValidation()}));
+  }
+
+  function captureNar(data){
+    if(!data||typeof data!=='object')return;const k=rid();if(!k)return;const db=loadDb(),r=db[k];if(!r)return;
+    const times=data.actualTimes||data.result?.actualTimes||{};if(times&&Object.keys(times).length){r.actualTimes={...(r.actualTimes||{}),...times};r.result={...(r.result||{}),actualTimes:{...(r.result?.actualTimes||{}),...times}}}
+    if(Array.isArray(data.odds)&&data.odds.length){const map=new Map(data.odds.map(x=>[String(x.horseNo??x.no??''),num(x.winOdds??x.odds)]));r.horses=(r.horses||[]).map(h=>{const o=map.get(hNo(h));return o!=null?{...h,odds:o,realOdds:o}:h})}
+    db[k]=r;saveDb(db);
+  }
+  function wrapFetch(){
+    if(window.fetch.__chass892)return;const native=window.fetch.bind(window);const wrapped=async(...args)=>{const res=await native(...args);try{const url=String(args[0]?.url||args[0]||'');if(/\/api\/nar\/(sync|odds)/.test(url)){res.clone().json().then(d=>{captureNar(d);setTimeout(refresh,80)}).catch(()=>{})}}catch{}return res};wrapped.__chass892=true;wrapped.__native=native;window.fetch=wrapped;
+  }
+  async function recoverActualTimes(){
+    const r=savedRace();if(!r||resultOrder(r).length<3)return;const existing=r.actualTimes||r.result?.actualTimes||{};if(Object.keys(existing).length)return;const code={'帯広':3,'門別':36,'盛岡':10,'水沢':11,'浦和':18,'船橋':19,'大井':20,'川崎':21,'笠松':22,'金沢':23,'名古屋':24,'園田':27,'姫路':28,'高知':31,'佐賀':32}[String($('track')?.value||'')];const date=$('raceDate')?.value,race=String($('raceNo')?.value||'').match(/\d+/)?.[0];if(!code||!date||!race)return;try{await fetch(`/api/nar/sync?code=${code}&date=${encodeURIComponent(date)}&race=${encodeURIComponent(race)}`,{cache:'no-store',headers:{accept:'application/json'}})}catch{}
+  }
+  function refresh(){setVersion();renderQuick();syncHorseDetails();renderValidation()}
+  function boot(){injectCss();setVersion();wrapFetch();refresh();const mo=new MutationObserver(()=>{clearTimeout(mo.__t);mo.__t=setTimeout(refresh,80)});['quickList','quickCompare','horseList','dashboardView'].forEach(id=>{const el=$(id);if(el)mo.observe(el,{childList:true,subtree:true})});document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/現在オッズ|結果・最終オッズ|結果を保存|再集計|予想入力|検証ダッシュボード/.test(t))setTimeout(refresh,750)},true);setTimeout(recoverActualTimes,1200);setInterval(()=>{setVersion();syncHorseDetails()},3000)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
