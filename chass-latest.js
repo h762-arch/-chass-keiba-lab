@@ -923,3 +923,132 @@
   function boot(){injectCss();setVersion();render();document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/結果|再集計|検証ダッシュボード/.test(t))setTimeout(()=>{setVersion();render()},700)},true);setInterval(()=>{setVersion()},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
+
+/* CHASS KEIBA LAB Ver.8.9.4 - SNAPSHOT / MARK SEPARATION / ACTUAL TIME INTEGRITY */
+(() => {
+  'use strict';
+  const VERSION='8.9.4';
+  const DB_KEY='chass_v80_races';
+  const CURRENT_KEY='chass_v80_current';
+  const $=id=>document.getElementById(id);
+  const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
+  const clean=s=>String(s??'').trim();
+  const clone=v=>{try{return JSON.parse(JSON.stringify(v))}catch{return v}};
+  const load=()=>{try{const v=JSON.parse(localStorage.getItem(DB_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{}}catch{return {}}};
+  const save=db=>localStorage.setItem(DB_KEY,JSON.stringify(db));
+  const horseNo=h=>String(h?.horseNo??h?.['horse-no']??h?.no??'').trim();
+  const horseName=h=>String(h?.horseName??h?.['horse-name']??h?.name??'').trim();
+  const resultOrder=r=>{
+    const cs=[r?.result?.finishOrder,r?.result?.order,r?.finishOrder,[r?.finish1,r?.finish2,r?.finish3],[r?.result1,r?.result2,r?.result3]];
+    for(const c of cs){if(Array.isArray(c)){const a=c.slice(0,3).map(x=>String(x??'').trim()).filter(Boolean);if(a.length>=3)return a}}
+    return [];
+  };
+  function setVersion(){
+    document.title=document.title.replace(/Ver\.\d+(?:\.\d+){0,2}/gi,`Ver.${VERSION}`);
+    qsa('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./i.test(el.textContent||''))el.textContent=`Ver.${VERSION}`});
+  }
+  function splitLegacyMark(h){
+    const legacy=clean(h?.mark);
+    let ability=clean(h?.abilityMark), value=clean(h?.valueMark), warning=clean(h?.warningMark||h?.warning), final=clean(h?.finalMark);
+    if(!ability){const m=legacy.match(/[◎○▲△☆]/); if(m) ability=m[0]}
+    if(!value){const m=legacy.match(/💎💎💎|💎/); if(m) value=m[0]}
+    if(!warning){const m=legacy.match(/⚠️?⚠️?⚠️?|⚠+/); if(m) warning=m[0]}
+    return {abilityMark:ability,valueMark:value,warningMark:warning,finalMark:final};
+  }
+  function finalRefs(r){
+    const fs=r?.finalSnapshot?.top3||r?.unifiedSnapshot?.finalSnapshot?.top3||[];
+    if(Array.isArray(fs)&&fs.length)return fs.slice(0,3).map((x,i)=>({no:horseNo(x),name:horseName(x),mark:['◎','○','▲'][i]}));
+    return [];
+  }
+  function normalizeRace(r){
+    if(!r||typeof r!=='object')return false;
+    let changed=false;
+    const refs=finalRefs(r);
+    if(Array.isArray(r.horses)) r.horses.forEach(h=>{
+      const s=splitLegacyMark(h);
+      for(const k of ['abilityMark','valueMark','warningMark']) if(clean(h[k])!==clean(s[k])){h[k]=s[k];changed=true}
+      const ref=refs.find(x=>(x.no&&x.no===horseNo(h))||(x.name&&x.name===horseName(h)));
+      if(ref && clean(h.finalMark)!==ref.mark){h.finalMark=ref.mark;changed=true}
+    });
+    if(!r.markSchemaVersion||r.markSchemaVersion<2){r.markSchemaVersion=2;changed=true}
+    if(!r.snapshotSchemaVersion||r.snapshotSchemaVersion<2){r.snapshotSchemaVersion=2;changed=true}
+    if(r.finalSnapshot?.top3?.length){
+      r.finalSnapshot.top3=r.finalSnapshot.top3.map((x,i)=>({...x,finalMark:x.finalMark||['◎','○','▲'][i],snapshotRole:'final'}));
+    }
+    if(r.modelSnapshot){
+      Object.keys(r.modelSnapshot).forEach(k=>{const x=r.modelSnapshot[k];if(x&&typeof x==='object'&&!x.snapshotRole)x.snapshotRole='model'});
+    }
+    return changed;
+  }
+  function migrateDb(){
+    const db=load();let changed=false;Object.values(db).forEach(r=>{if(normalizeRace(r))changed=true});if(changed)save(db);return changed;
+  }
+  function ensureCurrentSnapshots(){
+    const db=load();const id=localStorage.getItem(CURRENT_KEY)||'';const r=db[id];if(!r)return false;
+    let changed=normalizeRace(r);
+    const hs=Array.isArray(r.horses)?r.horses:[];
+    // Never overwrite a historical final snapshot. Only create one if absent.
+    if(!(r.finalSnapshot?.top3?.length>=3) && hs.length){
+      const ranked=[...hs].sort((a,b)=>(num(b.win)||0)-(num(a.win)||0)).slice(0,3);
+      if(ranked.length===3){
+        r.finalSnapshot={...(r.finalSnapshot||{}),top3:ranked.map((h,i)=>({horseNo:horseNo(h),horseName:horseName(h),finalMark:['◎','○','▲'][i],label:['◎','○','▲'][i],win:num(h.win),place:num(h.place),overall:num(h.overall),odds:num(h.odds),pop:num(h.popularity??h.pop),expectedReturn:num(h.ev),predictedTime:h.predictedTime??h.time??'',snapshotRole:'final'})),capturedAt:new Date().toISOString(),source:'ver8.9.4-fallback'};
+        ranked.forEach((h,i)=>h.finalMark=['◎','○','▲'][i]); changed=true;
+      }
+    }
+    if(changed){db[id]=r;save(db)}
+    return changed;
+  }
+  function mergeActualTimes(data){
+    const times=data?.actualTimes;if(!times||typeof times!=='object'||!Object.keys(times).length)return false;
+    const db=load();const id=localStorage.getItem(CURRENT_KEY)||'';const r=db[id];if(!r)return false;
+    r.actualTimes={...(r.actualTimes||{}),...times};
+    r.result={...(r.result||{}),actualTimes:{...(r.result?.actualTimes||{}),...times}};
+    if(Array.isArray(r.horses))r.horses.forEach(h=>{const t=times[horseNo(h)];if(t!=null)h.actualTime=t});
+    r.validationSnapshot={...(r.validationSnapshot||{}),hasActualTimes:true,actualTimeCount:Object.keys(r.actualTimes).length};
+    db[id]=r;save(db);return true;
+  }
+  function installFetchCapture(){
+    if(window.__chass894FetchInstalled)return;window.__chass894FetchInstalled=true;
+    const native=window.fetch.bind(window);
+    window.fetch=async function(input,init){
+      const res=await native(input,init);
+      try{
+        const url=typeof input==='string'?input:String(input?.url||'');
+        if(/\/api\/nar\/sync(?:\?|$)/.test(url)){
+          const d=await res.clone().json();
+          if(mergeActualTimes(d)){setTimeout(()=>{decorateValidation();},80)}
+        }
+      }catch{}
+      return res;
+    };
+  }
+  function stats(){
+    const rs=Object.values(load()).filter(r=>resultOrder(r).length>=3);
+    let races=rs.length,withFinal=0,split=0,total=0,actual=0;
+    rs.forEach(r=>{
+      if(r?.finalSnapshot?.top3?.length>=3||r?.unifiedSnapshot?.finalSnapshot?.top3?.length>=3)withFinal++;
+      (r.horses||[]).forEach(h=>{total++;if(h.abilityMark||h.valueMark||h.warningMark||h.finalMark)split++});
+      const t=r.actualTimes||r.result?.actualTimes||{};actual+=Object.keys(t||{}).length;
+    });
+    return {races,withFinal,split,total,actual};
+  }
+  function decorateValidation(){
+    setVersion();
+    const sec=$('chass893Validation');if(!sec)return;
+    const small=sec.querySelector('.c893-head small');if(small)small.textContent='VALIDATION 8.9.4';
+    const note=sec.querySelector('.c893-head .c893-note');if(note)note.textContent='印分離＋予想時点スナップショット固定';
+    let box=$('chass894Integrity');if(!box){box=document.createElement('div');box.id='chass894Integrity';box.className='c893-note';box.style.cssText='margin:10px 0 2px;padding:10px 12px;border:1px solid rgba(97,223,184,.22);border-radius:12px;background:rgba(97,223,184,.04);line-height:1.6';const win=sec.querySelector('.c893-window');win?.insertAdjacentElement('afterend',box)}
+    const s=stats();
+    box.textContent=`保存構造：finalSnapshot ${s.withFinal}/${s.races}R ｜ 印分離 ${s.split}/${s.total}頭 ｜ 実走TIME ${s.actual}頭。能力印・穴印・危険印・FINAL印を別フィールドで保持します。`;
+  }
+  function hookPersistenceButtons(){
+    document.addEventListener('click',e=>{
+      const text=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');
+      if(/現在オッズ|結果|保存|再集計|検証/.test(text))setTimeout(()=>{migrateDb();ensureCurrentSnapshots();decorateValidation()},500);
+    },true);
+    document.addEventListener('change',e=>{if(e.target?.matches?.('#raceImportFile,#finish1,#finish2,#finish3,.odds,.pop,.mark'))setTimeout(()=>{migrateDb();ensureCurrentSnapshots();decorateValidation()},350)},true);
+  }
+  function boot(){migrateDb();ensureCurrentSnapshots();installFetchCapture();hookPersistenceButtons();decorateValidation();setInterval(()=>{setVersion();decorateValidation()},2500)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
