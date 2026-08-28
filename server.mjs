@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.3.2";
+const VERSION="9.4";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -49,13 +49,19 @@ async function fetchText(url){
 
 function parseRaceMeta(html){
   const text=cleanText(html);
-  const distance=Number(text.match(/(?:ダート|芝)?\s*(\d{3,4})\s*m/i)?.[1]||0)||null;
+  const dists=[...text.matchAll(/(?:ダート|芝|右|左|外|内)?\s*(\d{3,4})\s*m/gi)]
+    .map(m=>Number(m[1])).filter(v=>v>=800&&v<=3600);
+  const distance=dists.length?dists[0]:null;
   const weather=text.match(/天候[:：]?\s*(晴|曇|雨|雪)/)?.[1]||"";
   const trackCondition=text.match(/(?:馬場|馬場状態)[:：]?\s*(良|稍重|重|不良)/)?.[1]||"不明";
   let raceName="";
-  const hm=String(html).match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i);
-  if(hm)raceName=cleanText(hm[1]).replace(/^\d+R\s*/,"").trim();
-  return {raceName,distance,weather,trackCondition,surface:/芝/.test(text)?"芝":"ダート"};
+  const candidates=[
+    ...[...String(html).matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)].map(m=>cleanText(m[1])),
+    ...[...String(html).matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)].map(m=>cleanText(m[1]))
+  ].filter(Boolean);
+  raceName=candidates.find(x=>!/(地方競馬情報サイト|NAR|Keiba|競馬情報)/i.test(x)&&x.length>=2&&x.length<=100)||"";
+  raceName=raceName.replace(/^\d{1,2}R\s*/,"").trim();
+  return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*m/.test(text)?"芝":"ダート"};
 }
 function parseRaceCard(html){
   const out=[];
@@ -145,10 +151,17 @@ async function apiRace(u,res){
   const urls=narUrls(code,date,race);
   try{
     const [ch,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]);
-    const meta=parseRaceMeta(ch),horses=parseRaceCard(ch),odds=parseTanFuku(oh);
+    const meta=parseRaceMeta(ch),cardHorses=parseRaceCard(ch),odds=parseTanFuku(oh);
+    const cm=new Map(cardHorses.map(x=>[String(x.horseNo),x]));
     const om=new Map(odds.map(x=>[String(x.horseNo),x]));
-    const merged=horses.map(h=>({...h,odds:om.get(String(h.horseNo))?.odds??null,popularity:om.get(String(h.horseNo))?.popularity??null}));
-    return sendJson(res,200,{ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...meta,horses:merged,odds,acquiredAt:new Date().toISOString()});
+    const numbers=[...new Set([...cardHorses.map(x=>String(x.horseNo)),...odds.map(x=>String(x.horseNo))])].sort((a,b)=>Number(a)-Number(b));
+    const merged=numbers.map(no=>{
+      const c=cm.get(no)||{},o=om.get(no)||{};
+      const cardName=String(c.horseName||"").trim(),oddsName=String(o.horseName||"").trim();
+      const cardBad=!cardName||/^\d{1,2}$/.test(cardName)||/^馬番\d+$/.test(cardName);
+      return {...c,horseNo:no,horseName:(!cardBad?cardName:oddsName)||cardName||`馬番${no}`,odds:o.odds??null,popularity:o.popularity??null,nameSource:(!cardBad?"出馬表":oddsName?"オッズ表":"fallback")};
+    });
+    return sendJson(res,200,{ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length},acquiredAt:new Date().toISOString()});
   }catch(e){return sendJson(res,502,{ok:false,error:String(e?.message||e),source:"NAR公式",urls});}
 }
 

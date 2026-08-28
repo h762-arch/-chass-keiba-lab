@@ -3,7 +3,7 @@ function json(data,status=200){return new Response(JSON.stringify(data,null,2),{
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/\s+/g," ").trim()}
 function tableRows(html=""){return [...String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>{const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>cleanText(x[1]));return {cells,text:cells.join(" ")}})}
-async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (compatible; ChassKeibaLab/9.3.2)","accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
+async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (compatible; ChassKeibaLab/9.4)","accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
 function parseResult(html){
  const order=[],actualTimes={};
  for(const row of tableRows(html)){
@@ -19,17 +19,21 @@ function parseResult(html){
 
 function parseRaceMeta(html){
  const text=cleanText(html);
- const distance=Number(text.match(/(?:ダート|芝)?\s*(\d{3,4})\s*m/i)?.[1]||0)||null;
+ const dists=[...text.matchAll(/(?:ダート|芝|右|左|外|内)?\s*(\d{3,4})\s*m/gi)]
+   .map(m=>Number(m[1])).filter(v=>v>=800&&v<=3600);
+ const distance=dists.length?dists[0]:null;
  const weather=text.match(/天候[:：]?\s*(晴|曇|雨|雪)/)?.[1]||'';
  const trackCondition=text.match(/(?:馬場|馬場状態)[:：]?\s*(良|稍重|重|不良)/)?.[1]||'不明';
+
  let raceName='';
- const hm=String(html).match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i);
- if(hm)raceName=cleanText(hm[1]).replace(/^\d+R\s*/,'').trim();
- if(!raceName){
-   const tm=text.match(/\d+R\s+(.{2,60}?)(?:\s+\d{3,4}m|\s+発走|\s+ダート|\s+芝)/);
-   if(tm)raceName=tm[1].trim();
- }
- return {raceName,distance,weather,trackCondition,surface:/芝/.test(text)?'芝':'ダート'};
+ const candidates=[
+   ...[...String(html).matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)].map(m=>cleanText(m[1])),
+   ...[...String(html).matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)].map(m=>cleanText(m[1]))
+ ].filter(Boolean);
+ raceName=candidates.find(x=>!/(地方競馬情報サイト|NAR|Keiba|競馬情報)/i.test(x)&&x.length>=2&&x.length<=100)||'';
+ raceName=raceName.replace(/^\d{1,2}R\s*/,'').trim();
+
+ return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*m/.test(text)?'芝':'ダート'};
 }
 function parseRaceCard(html){
  const out=[];
@@ -81,7 +85,7 @@ function parseTanFuku(html){
 export default{
  async fetch(request,env){
   const u=new URL(request.url);
-  if(u.pathname==="/api/health")return json({ok:true,version:"9.3.2",service:"chass-keiba-lab"});
+  if(u.pathname==="/api/health")return json({ok:true,version:"9.4",service:"chass-keiba-lab"});
 
   if(u.pathname==="/api/nar/race"){
     const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");
@@ -93,10 +97,22 @@ export default{
     };
     try{
       const [ch,oh]=await Promise.all([fetchText(urls.card),fetchText(urls.odds).catch(()=>"")]);
-      const meta=parseRaceMeta(ch),horses=parseRaceCard(ch),odds=parseTanFuku(oh);
+      const meta=parseRaceMeta(ch),cardHorses=parseRaceCard(ch),odds=parseTanFuku(oh);
+      const cm=new Map(cardHorses.map(x=>[String(x.horseNo),x]));
       const om=new Map(odds.map(x=>[String(x.horseNo),x]));
-      const merged=horses.map(h=>({...h,odds:om.get(String(h.horseNo))?.odds??null,popularity:om.get(String(h.horseNo))?.popularity??null}));
-      return json({source:"NAR公式",version:"9.3.2",track:TRACK_NAMES[Number(code)]||"",code,date,race,...meta,horses:merged,odds,acquiredAt:new Date().toISOString()});
+      const numbers=[...new Set([...cardHorses.map(x=>String(x.horseNo)),...odds.map(x=>String(x.horseNo))])].sort((a,b)=>Number(a)-Number(b));
+      const merged=numbers.map(no=>{
+        const c=cm.get(no)||{},o=om.get(no)||{};
+        const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();
+        const cardBad=!cardName||/^\d{1,2}$/.test(cardName)||/^馬番\d+$/.test(cardName);
+        return {
+          ...c,horseNo:no,
+          horseName:(!cardBad?cardName:oddsName)||cardName||`馬番${no}`,
+          odds:o.odds??null,popularity:o.popularity??null,
+          nameSource:(!cardBad?cardName:oddsName)?(!cardBad?'出馬表':'オッズ表'):'fallback'
+        };
+      });
+      return json({source:"NAR公式",version:"9.4",track:TRACK_NAMES[Number(code)]||"",code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length},acquiredAt:new Date().toISOString()});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
 
@@ -111,11 +127,11 @@ export default{
     try{
       if(u.pathname==="/api/nar/odds"){
         const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);
-        return json({source:"NAR公式",version:"9.3.2",track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});
+        return json({source:"NAR公式",version:"9.4",track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});
       }
       const [rh,oh]=await Promise.all([fetchText(urls.result).catch(()=>""),fetchText(urls.odds).catch(()=>"")]);
       const rr=parseResult(rh),oo=parseTanFuku(oh);
-      return json({source:"NAR公式",version:"9.3.2",track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3});
+      return json({source:"NAR公式",version:"9.4",track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}

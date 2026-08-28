@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.3.2</title>
+  <title>チャス競馬研究所 Ver.9.4</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.3.2</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.4</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -28,7 +28,7 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">AUTO RACE DATA</p>
-            <h3>公式データから自動生成</h3>
+            <h3>公式データから高品質自動生成</h3>
           </div>
           <span id="autoRaceBadge" class="badge">未取得</span>
         </div>
@@ -38,7 +38,7 @@
           <label>レース<select id="autoRaceNo"></select></label>
         </div>
         <button id="autoRaceLoad" class="primary wide">NAR公式データを取得・予想開始</button>
-        <p id="autoRaceStatus" class="muted status-line">手動JSONを作らず、出馬表＋取得可能な市場情報から内部データを自動生成します。</p>
+        <p id="autoRaceStatus" class="muted status-line">出馬表＋オッズ表を照合して馬名・距離・市場情報を整合し、内部データを自動生成します。</p>
       </section>
       <div class="source-divider"><span>または手動JSON</span></div>
 

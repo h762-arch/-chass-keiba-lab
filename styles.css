@@ -81,3 +81,7 @@ label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12
  .auto-race-grid{grid-template-columns:1fr 1fr}
  .auto-race-grid label:first-child{grid-column:1/-1}
 }
+
+/* Ver.9.4 quality labels */
+.integrity-grid>div strong{overflow-wrap:anywhere}
+.horse-details .logic{font-weight:700}
