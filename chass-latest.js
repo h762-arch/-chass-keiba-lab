@@ -1,7 +1,7 @@
-/* CHASS KEIBA LAB Ver.8.8 - State Sync / Auto Validation + Feedback Dashboard */
+/* CHASS KEIBA LAB Ver.8.9 - State Sync / Auto Validation + Feedback Dashboard */
 (() => {
   'use strict';
-  const VERSION='8.8';
+  const VERSION='8.9';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
   const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -158,7 +158,7 @@
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 
-/* CHASS KEIBA LAB Ver.8.8 - VALIDATION FEEDBACK LOOP
+/* CHASS KEIBA LAB Ver.8.9 - VALIDATION FEEDBACK LOOP
    Additive patch for Ver.8.7+
    Purpose:
    1) Expand post-race validation beyond win-only accuracy.
@@ -168,7 +168,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '8.8';
+  const VERSION = '8.9';
   const $ = id => document.getElementById(id);
   const qsa = (s, r=document) => [...r.querySelectorAll(s)];
   const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -351,7 +351,7 @@
       <div class="ch88-table">${Object.entries(s.mark).map(([k,v])=>`<div class="ch88-row"><b>${k}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.win,v.n)}</span><span>複 ${pct(v.place,v.n)}</span><span>3着内 ${v.place}</span></div>`).join('')}</div>
       <div class="ch88-title" style="margin-top:18px">モデル別成績</div>
       <div class="ch88-table">${Object.entries(s.models).map(([k,v])=>`<div class="ch88-row"><b>${esc(labels[k])}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.win,v.n)}</span><span>複 ${pct(v.place,v.n)}</span><span>3着内 ${v.place}</span></div>`).join('')}</div>
-      <div class="ch88-note">Ver.8.8は「勝った/外れた」だけでなく、TOP3捕捉・印別複勝・穴馬・危険馬・AI確率誤差・予想TIME誤差を同時に保存データから評価します。少数レースでは数値が大きく振れるため、50R・100R以上の累積値を主判断にしてください。</div>`;
+      <div class="ch88-note">Ver.8.9は「勝った/外れた」だけでなく、TOP3捕捉・印別複勝・穴馬・危険馬・AI確率誤差・予想TIME誤差を同時に保存データから評価します。少数レースでは数値が大きく振れるため、50R・100R以上の累積値を主判断にしてください。</div>`;
   }
 
   function hook(name){
@@ -372,3 +372,184 @@
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
 
+
+/* CHASS KEIBA LAB Ver.8.9 - UNIFIED STATE / VALIDATION FOUNDATION
+   1) Prediction -> market -> final -> result -> validation stored as one race snapshot.
+   2) Model/final snapshots are persisted so dashboard targets do not fall back to 0.
+   3) Quick View uses a fixed mobile 2-row layout.
+   4) CHASS FINAL explains why each top pick is ranked there.
+   5) Validation can compare ALL / latest 50R / latest 100R.
+*/
+(() => {
+  'use strict';
+  const VERSION='8.9';
+  const STATE_KEY='chass_unified_state_v89';
+  const $=id=>document.getElementById(id);
+  const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  const pct=(a,b)=>b?`${(a/b*100).toFixed(1)}%`:'—';
+
+  function setVersion(){
+    document.title=document.title.replace(/Ver\.\d+(?:\.\d+)?/gi,`Ver.${VERSION}`);
+    qsa('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./i.test(el.textContent||''))el.textContent=`Ver.${VERSION}`});
+  }
+  function raceKey(d={}){return [d.raceDate??$('raceDate')?.value??'',d.track??$('track')?.value??'',d.raceNo??$('raceNo')?.value??''].map(x=>String(x).trim()).join('|')}
+  function hNo(h,i=0){return String(h?.['horse-no']??h?.horseNo??h?.no??i+1).trim()}
+  function hName(h){return String(h?.['horse-name']??h?.horseName??h?.name??'').trim()}
+  function hWin(h){return num(h?.win??h?.winRate??h?.aiWin)}
+  function hPlace(h){return num(h?.place??h?.placeRate??h?.aiPlace)}
+  function hOdds(h){return num(h?.odds??h?.realOdds??h?.currentOdds)}
+  function hPop(h){return num(h?.pop??h?.popularity)}
+  function hOverall(h){return num(h?.overall??h?.score??h?.aiOverall)}
+  function hTime(h){return String(h?.time??h?.predictedTime??'')}
+  function hMark(h){return String(h?.mark??'').trim()}
+  function ev(h){const x=num(h?.expectedReturn??h?.ev??h?.expectedValue);if(x!=null&&x>10)return x;const w=hWin(h),o=hOdds(h);return w!=null&&o!=null?w*o:null}
+  function realMarket(){return String($('oddsType')?.value||$('oddsTypeDisplay')?.textContent||'').includes('実オッズ')}
+  function resultOrder(d={}){return [d.result1??$('result1')?.value,d.result2??$('result2')?.value,d.result3??$('result3')?.value].map(x=>String(x||'').trim()).filter(Boolean)}
+
+  function domHorses(){
+    const rs=qsa('.horse-row');
+    return rs.map((r,i)=>{
+      let h={};try{if(typeof window.horseFromRow==='function')h=window.horseFromRow(r)||{}}catch{}
+      let overall=hOverall(h);
+      if(overall==null){try{if(typeof window.aiBreakdown==='function'){const all=rs.map(rr=>window.horseFromRow?.(rr)||{});overall=num(window.aiBreakdown(h,all)?.overall)}}catch{}}
+      return {
+        ...h,
+        'horse-no':hNo(h,i),
+        'horse-name':hName(h)||String(r.querySelector('.horse-name')?.value||'').trim(),
+        mark:hMark(h)||String(r.querySelector('.mark')?.value||'').trim(),
+        win:hWin(h)??num(r.querySelector('.win')?.value),
+        place:hPlace(h)??num(r.querySelector('.place')?.value),
+        time:hTime(h)||String(r.querySelector('.time')?.value||''),
+        overall,
+        odds:hOdds(h)??num(r.querySelector('.odds')?.value),
+        pop:hPop(h)??num(r.querySelector('.pop')?.value)
+      };
+    }).filter(h=>h['horse-name']||h['horse-no']);
+  }
+  function form(){try{return typeof window.getForm==='function'?(window.getForm()||{}):{}}catch{return {}}}
+  function rank(hs,getter){return [...hs].sort((a,b)=>(getter(b)??-Infinity)-(getter(a)??-Infinity))}
+  function snapshotTop(h,label){return h?{label,horseNo:hNo(h),horseName:hName(h),mark:hMark(h),win:hWin(h),place:hPlace(h),overall:hOverall(h),odds:hOdds(h),pop:hPop(h),expectedReturn:ev(h),predictedTime:hTime(h)}:null}
+
+  function buildSnapshot(reason='sync'){
+    const d=form(),hs=(Array.isArray(d.horses)&&d.horses.length?d.horses:domHorses()).map((h,i)=>({...h,'horse-no':hNo(h,i)}));
+    const byWin=rank(hs,hWin),byOverall=rank(hs,hOverall),byValue=rank(hs,ev);
+    const finalMarked=['◎','○','▲'].map(m=>hs.find(h=>hMark(h).includes(m))).filter(Boolean);
+    const final=finalMarked.length?finalMarked:byWin.slice(0,3);
+    const result=resultOrder(d);
+    const snap={
+      schemaVersion:'8.9',updatedAt:new Date().toISOString(),reason,
+      race:{raceDate:(d.raceDate??$('raceDate')?.value??''),track:(d.track??$('track')?.value??''),raceNo:(d.raceNo??$('raceNo')?.value??''),distance:(d.distance??$('distance')?.value??''),chaos:(d.chaos??$('chaos')?.value??''),pace:(d.pace??$('pace')?.value??''),bias:(d.bias??$('bias')?.value??'')},
+      horses:hs,
+      market:{isReal:realMarket(),count:hs.filter(h=>hOdds(h)!=null).length,checkedAt:(d.oddsCheckedAt??$('oddsCheckedAt')?.value??''),type:(d.oddsType??$('oddsType')?.value??'')},
+      result:{order:result,actualTimes:d.actualTimes||d.actualTimeByHorse||{}},
+      modelSnapshot:{
+        winModelTop:snapshotTop(byWin[0],'勝率モデル'),
+        overallModelTop:snapshotTop(byOverall[0],'総合モデル'),
+        valueModelTop:snapshotTop(byValue[0],'期待値モデル'),
+        finalModelTop:snapshotTop(final[0],'CHASS FINAL')
+      },
+      finalSnapshot:{top3:final.slice(0,3).map((h,i)=>snapshotTop(h,['◎','○','▲'][i]||`${i+1}位`)),diamond:hs.filter(h=>hMark(h).includes('💎')).map(h=>snapshotTop(h,'💎')),warning:hs.filter(h=>hMark(h).includes('⚠')).map(h=>snapshotTop(h,'⚠️'))},
+      validationSnapshot:{resultCount:result.length,hasActualTimes:Object.keys(d.actualTimes||d.actualTimeByHorse||{}).length>0}
+    };
+    return snap;
+  }
+
+  function saveUnified(reason='sync'){
+    const snap=buildSnapshot(reason),key=raceKey(snap.race);if(!key||key==='||')return null;
+    try{const db=JSON.parse(localStorage.getItem(STATE_KEY)||'{}');db[key]=snap;localStorage.setItem(STATE_KEY,JSON.stringify(db))}catch{}
+    try{
+      let all=typeof window.loadAll==='function'?(window.loadAll()||[]):[];if(!Array.isArray(all))all=[];
+      let idx=all.findIndex(r=>raceKey(r)===key);const base=idx>=0?all[idx]:form();
+      const merged={...base,modelSnapshot:snap.modelSnapshot,finalSnapshot:snap.finalSnapshot,validationSnapshot:snap.validationSnapshot,unifiedSnapshot:snap,oddsType:snap.market.type,oddsCheckedAt:snap.market.checkedAt};
+      if(snap.result.order[0])merged.result1=snap.result.order[0];if(snap.result.order[1])merged.result2=snap.result.order[1];if(snap.result.order[2])merged.result3=snap.result.order[2];
+      if(Object.keys(snap.result.actualTimes).length)merged.actualTimes=snap.result.actualTimes;
+      // Prediction fields remain frozen when a saved race already exists; only market/post-race fields are refreshed.
+      if(idx<0){merged.horses=snap.horses;all.unshift(merged)}else{all[idx]=merged}
+      if(typeof window.saveAll==='function')window.saveAll(all);
+    }catch(e){console.warn('CHASS 8.9 snapshot save',e)}
+    return snap;
+  }
+
+  function reasonFor(h,hs){
+    const w=hWin(h),p=hPlace(h),o=hOdds(h),e=ev(h),ov=hOverall(h),rp=rank(hs,hWin).indexOf(h)+1,rpl=rank(hs,hPlace).indexOf(h)+1;
+    const bits=[];
+    if(rp===1)bits.push('AI勝率1位');else if(rp<=3)bits.push(`AI勝率${rp}位`);
+    if(rpl===1)bits.push('複勝率1位');else if(rpl<=3)bits.push(`複勝率${rpl}位`);
+    if(e!=null&&e>=110)bits.push(`市場期待${Math.round(e)}%`);
+    if(e!=null&&e<82)bits.push(`市場期待${Math.round(e)}%で割高`);
+    if(ov!=null&&ov>=80&&rp>3)bits.push(`総合${Math.round(ov)}だが勝率順位は${rp}位`);
+    if(o==null)bits.push('市場未取得');
+    return bits.slice(0,3).join('＋')||'能力・展開・市場を統合評価';
+  }
+
+  function renderFinalReasons(){
+    const card=$('chassFinalCard')||qsa('section.card').find(x=>/CHASS FINAL|最終判断/.test(x.textContent||''));if(!card)return;
+    let box=$('chass89FinalReasons');if(!box){box=document.createElement('div');box.id='chass89FinalReasons';box.className='ch89-final-reasons';card.appendChild(box)}
+    const hs=domHorses(),tops=['◎','○','▲'].map(m=>hs.find(h=>hMark(h).includes(m))).filter(Boolean);
+    box.innerHTML=tops.length?`<div class="ch89-reason-title">選定理由</div>${tops.map(h=>`<div class="ch89-reason"><b>${esc(hMark(h).match(/[◎○▲]/)?.[0]||'')} ${esc(hNo(h))}番 ${esc(hName(h))}</b><span>${esc(reasonFor(h,hs))}</span></div>`).join('')}`:'';
+  }
+
+  function renderQuick(){
+    const host=$('quickCompare');if(!host)return;const hs=domHorses();if(!hs.length)return;
+    const sorted=rank(hs,hWin);
+    host.innerHTML=`<div class="ch89-quick-list">${sorted.map(h=>{
+      const e=realMarket()?ev(h):null;
+      return `<article class="ch89-quick-card"><div class="ch89-qhead"><span class="ch89-no">${esc(hNo(h))}</span><strong>${esc(hMark(h))} ${esc(hName(h))}</strong><em>総合 ${hOverall(h)==null?'—':Math.round(hOverall(h))}</em></div><div class="ch89-qstats"><span><small>AI勝率</small><b>${hWin(h)==null?'—':hWin(h).toFixed(1)+'%'}</b></span><span><small>複勝率</small><b>${hPlace(h)==null?'—':hPlace(h).toFixed(1)+'%'}</b></span><span><small>TIME</small><b>${esc(hTime(h)||'—')}</b></span><span><small>期待</small><b>${e==null?'—':Math.round(e)+'%'}</b></span></div>${realMarket()?`<div class="ch89-market"><span>実 ${hOdds(h)==null?'—':hOdds(h)+'倍'}</span><span>${hPop(h)==null?'人気 —':hPop(h)+'人気'}</span></div>`:''}</article>`;
+    }).join('')}</div>`;
+  }
+
+  function getSaved(){try{return typeof window.loadAll==='function'?(window.loadAll()||[]):[]}catch{return []}}
+  function pos(r,h){const order=[r.result1,r.result2,r.result3].map(x=>String(x||'').trim());let i=order.indexOf(hNo(h));if(i<0)i=order.indexOf(hName(h));return i>=0?i+1:null}
+  function modelTop(r,k){const s=r.modelSnapshot?.[k]||r.unifiedSnapshot?.modelSnapshot?.[k];if(s?.horseNo)return String(s.horseNo);const hs=r.horses||r.unifiedSnapshot?.horses||[];if(!hs.length)return null;if(k==='winModelTop')return hNo(rank(hs,hWin)[0]);if(k==='overallModelTop')return hNo(rank(hs,hOverall)[0]);if(k==='valueModelTop')return hNo(rank(hs,ev)[0]);const m=hs.find(h=>hMark(h).includes('◎'));return hNo(m||rank(hs,hWin)[0])}
+  function modelStats(limit=0){
+    let rs=getSaved().filter(r=>[r.result1,r.result2,r.result3].some(Boolean));rs=[...rs].sort((a,b)=>String(b.resultUpdatedAt||b.updatedAt||b.raceDate||'').localeCompare(String(a.resultUpdatedAt||a.updatedAt||a.raceDate||'')));if(limit)rs=rs.slice(0,limit);
+    const out={races:rs.length,models:{winModelTop:{n:0,w:0,p:0},overallModelTop:{n:0,w:0,p:0},valueModelTop:{n:0,w:0,p:0},finalModelTop:{n:0,w:0,p:0}}};
+    for(const r of rs){const hs=r.horses||r.unifiedSnapshot?.horses||[];for(const k of Object.keys(out.models)){const no=modelTop(r,k);if(!no)continue;const h=hs.find(x=>hNo(x)===no);if(!h)continue;const p=pos(r,h),s=out.models[k];s.n++;if(p===1)s.w++;if(p&&p<=3)s.p++}}
+    return out;
+  }
+
+  function renderValidationWindow(){
+    const sec=$('chass88Validation');if(!sec)return;
+    let ctl=$('chass89WindowCtl');if(!ctl){ctl=document.createElement('div');ctl.id='chass89WindowCtl';ctl.className='ch89-window';ctl.innerHTML='<b>集計期間</b><button data-n="0" class="active">全期間</button><button data-n="50">最新50R</button><button data-n="100">最新100R</button><div id="chass89ModelWindow"></div>';sec.prepend(ctl);ctl.addEventListener('click',e=>{const b=e.target.closest('button[data-n]');if(!b)return;qsa('button',ctl).forEach(x=>x.classList.toggle('active',x===b));renderModelWindow(Number(b.dataset.n||0))})}
+    renderModelWindow(Number(ctl.querySelector('button.active')?.dataset.n||0));
+  }
+  function renderModelWindow(n){
+    const host=$('chass89ModelWindow');if(!host)return;const s=modelStats(n),labels={winModelTop:'勝率',overallModelTop:'総合',valueModelTop:'期待値',finalModelTop:'FINAL'};
+    host.innerHTML=`<div class="ch89-window-meta">対象 ${s.races}R</div><div class="ch89-window-grid">${Object.entries(s.models).map(([k,v])=>`<div><b>${labels[k]}</b><span>対象 ${v.n}</span><strong>勝 ${pct(v.w,v.n)} / 複 ${pct(v.p,v.n)}</strong></div>`).join('')}</div>`;
+  }
+
+  function syncMarketUI(){
+    const hs=domHorses(),n=hs.filter(h=>hOdds(h)!=null).length,total=hs.length;
+    qsa('#marketStatus,#quickMarketStatus,#chassFinalStatus,[id*="marketStatus"],[id*="FinalStatus"]').forEach(el=>{
+      if(!el)return;const t=el.textContent||'';
+      if(n){if(/市場|オッズ|反映|未取得/.test(t))el.textContent=`市場反映済 ${n}/${total}頭`}else if(/市場|オッズ|反映/.test(t))el.textContent='市場未取得';
+    });
+  }
+
+  function injectStyles(){
+    if($('chass89Styles'))return;const s=document.createElement('style');s.id='chass89Styles';s.textContent=`
+      .ch89-quick-list{display:grid;gap:10px}.ch89-quick-card{border:1px solid rgba(130,160,205,.22);border-radius:18px;padding:14px;background:rgba(255,255,255,.02)}
+      .ch89-qhead{display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:10px;align-items:center}.ch89-no{display:grid;place-items:center;width:54px;height:54px;border:1px solid rgba(97,223,184,.55);border-radius:15px;color:#61dfb8;font-size:1.35rem;font-weight:900}.ch89-qhead strong{min-width:0;font-size:1.03rem;overflow-wrap:anywhere}.ch89-qhead em{font-style:normal;font-size:.76rem;color:#9cadc7;border:1px solid rgba(130,160,205,.2);padding:6px 8px;border-radius:999px;white-space:nowrap}
+      .ch89-qstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:11px}.ch89-qstats span{min-width:0;border:1px solid rgba(130,160,205,.17);border-radius:12px;padding:8px 5px;text-align:center}.ch89-qstats small{display:block;color:#9cadc7;font-size:.67rem}.ch89-qstats b{display:block;margin-top:2px;font-size:.91rem;white-space:nowrap}.ch89-market{display:flex;gap:12px;margin-top:8px;color:#9cadc7;font-size:.76rem}
+      .ch89-final-reasons{margin-top:12px;border-top:1px solid rgba(130,160,205,.18);padding-top:10px}.ch89-reason-title{font-size:.76rem;color:#61dfb8;font-weight:850;letter-spacing:.08em;margin-bottom:6px}.ch89-reason{display:grid;grid-template-columns:minmax(115px,.8fr) minmax(0,1.5fr);gap:8px;padding:7px 0}.ch89-reason b{font-size:.82rem}.ch89-reason span{font-size:.78rem;color:#9cadc7;line-height:1.45}
+      .ch89-window{margin-bottom:16px;padding:11px;border:1px solid rgba(97,223,184,.2);border-radius:15px}.ch89-window>b{display:block;margin-bottom:8px}.ch89-window button{border:1px solid rgba(130,160,205,.22);background:transparent;color:#aab8cd;border-radius:999px;padding:7px 10px;margin-right:5px}.ch89-window button.active{background:#61dfb8;color:#071620;border-color:#61dfb8}.ch89-window-meta{margin:10px 0 7px;color:#9cadc7;font-size:.78rem}.ch89-window-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.ch89-window-grid>div{border:1px solid rgba(130,160,205,.16);border-radius:12px;padding:8px}.ch89-window-grid b,.ch89-window-grid span,.ch89-window-grid strong{display:block}.ch89-window-grid span{font-size:.72rem;color:#9cadc7;margin-top:2px}.ch89-window-grid strong{font-size:.78rem;margin-top:3px}
+      @media(max-width:520px){.ch89-qhead{grid-template-columns:54px minmax(0,1fr)}.ch89-qhead em{grid-column:2;justify-self:start}.ch89-qstats{grid-template-columns:1fr 1fr}.ch89-reason{grid-template-columns:1fr}.ch89-window-grid{grid-template-columns:1fr 1fr}.tabs{position:relative!important}.chass84-result-anchor{scroll-margin-top:10px}}
+    `;document.head.appendChild(s)
+  }
+
+  function refresh(reason='ui'){
+    setVersion();syncMarketUI();renderQuick();renderFinalReasons();renderValidationWindow();saveUnified(reason);
+  }
+  function hook(name,reason){const fn=window[name];if(typeof fn!=='function'||fn.__ch89)return;const w=function(...args){const out=fn.apply(this,args);Promise.resolve(out).finally(()=>setTimeout(()=>refresh(reason||name),90));return out};w.__ch89=true;window[name]=w}
+  function boot(){
+    injectStyles();setVersion();
+    ['render','renderDashboard','renderValueRanking','renderAllAiBreakdowns','saveCurrentSilent','autoPersistResult','applyOfficialOdds','applyOfficialResult','fetchOfficialNar'].forEach(n=>hook(n,n));
+    document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/現在オッズ|結果・最終オッズ|結果を保存・再集計|再集計/.test(t))setTimeout(()=>refresh('action'),700)},true);
+    document.addEventListener('change',e=>{if(e.target?.matches?.('.odds,.pop,.win,.place,.mark,.time,.actual-time,#result1,#result2,#result3'))setTimeout(()=>refresh('change'),180)});
+    qsa('.tab').forEach(b=>b.addEventListener('click',()=>setTimeout(()=>{setVersion();renderValidationWindow()},120)));
+    setTimeout(()=>refresh('boot'),500);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
