@@ -58,3 +58,15 @@ label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12
  .dash-race-card{grid-template-columns:1fr 1fr}
  .dash-race-card>*:first-child{grid-column:1/-1}
 }
+
+/* Ver.9.2 failure analysis */
+.failure-card{border:1px solid var(--line);border-radius:16px;padding:14px;margin:10px 0;background:rgba(255,255,255,.018)}
+.failure-head{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px}
+.failure-head span{color:var(--muted);font-size:12px}
+.failure-item{display:grid;grid-template-columns:160px 1fr;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:12px}
+.failure-item:first-of-type{border-top:0}
+.failure-item span{color:var(--muted);line-height:1.5}
+@media(max-width:700px){
+ .failure-item{grid-template-columns:1fr}
+ .failure-item strong{font-size:13px}
+}

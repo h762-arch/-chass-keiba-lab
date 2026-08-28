@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.1';
+const APP_VERSION='9.2';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -229,7 +229,7 @@ async function syncNar(){
 }
 function saveValidation(){
  const f=[num($('finish1').value),num($('finish2').value),num($('finish3').value)].filter(x=>x!=null);if(f.length<3){alert('1〜3着を入力してください');return}
- if(!state.finalSnapshot)makeSnapshot();state.result={finishOrder:f,memo:$('memo').value,at:new Date().toISOString(),actualTimes:{...state.actualTimes}};persist(true);renderDashboard();alert('検証結果を保存しました。');
+ if(!state.finalSnapshot)makeSnapshot();const autoReasons=failureReasonsForRace({...state,result:{finishOrder:f,actualTimes:{...state.actualTimes}}}).map(x=>x.label).join(' / ');state.result={finishOrder:f,memo:$('memo').value,autoDiagnosis:autoReasons,at:new Date().toISOString(),actualTimes:{...state.actualTimes}};persist(true);renderDashboard();alert('検証結果を保存しました。');
 }
 function getAllRaces(){
  const legacy=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
@@ -328,6 +328,74 @@ function renderGroupTable(title,obj){
  return `<div class="dash-section"><h3>${title}</h3>${rows||'<p class="muted">データなし</p>'}</div>`;
 }
 
+
+function failureReasonsForRace(r){
+ const order=(r.result?.finishOrder||[]).map(Number);
+ const snap=top3Snapshot(r);
+ const reasons=[];
+ const topPick=snap[0] ? getHorseByNo(r,snap[0].horseNo) : null;
+ const winner=getHorseByNo(r,order[0]);
+
+ if(topPick && Number(topPick.horseNo)!==order[0]){
+   if(topPick.popularity!=null && topPick.popularity<=3 && topPick.ev!=null && topPick.ev<90){
+     reasons.push({code:'MARKET_OVER',label:'人気・市場過大評価',detail:`FINAL◎ ${topPick.horseNo}番は${topPick.popularity}人気・期待${Math.round(topPick.ev)}%`});
+   }
+   if(topPick.valueMark){
+     reasons.push({code:'VALUE_OVER',label:'穴馬/期待値過大評価',detail:`FINAL◎に${topPick.valueMark}が重なり市場妙味を強く見過ぎた可能性`});
+   }
+   if(topPick.win!=null && topPick.win>=35 && !order.includes(Number(topPick.horseNo))){
+     reasons.push({code:'PROB_OVER',label:'AI勝率過大評価',detail:`AI勝率${topPick.win.toFixed(1)}%に対して3着外`});
+   }
+   const pt=timeToSec(topPick.predictedTime);
+   const at=timeToSec(topPick.actualTime||r.actualTimes?.[String(topPick.horseNo)]||r.result?.actualTimes?.[String(topPick.horseNo)]);
+   if(pt!=null && at!=null && Math.abs(pt-at)>=1.5){
+     reasons.push({code:'TIME_ERROR',label:'予想TIME誤差',detail:`FINAL◎のTIME誤差 ${Math.abs(pt-at).toFixed(2)}秒`});
+   }
+ }
+ if(winner){
+   const winnerSnapRank=snap.findIndex(x=>Number(x.horseNo)===Number(winner.horseNo));
+   if(winnerSnapRank<0){
+     if(winner.overall!=null && topPick?.overall!=null && winner.overall+10 < topPick.overall){
+       reasons.push({code:'ABILITY_UNDER',label:'勝ち馬能力過小評価',detail:`勝ち馬${winner.horseNo}番の総合${winner.overall}を上位評価できず`});
+     }
+     if(winner.popularity!=null && winner.popularity>=5){
+       reasons.push({code:'LONGSHOT_MISS',label:'穴馬取りこぼし',detail:`勝ち馬${winner.horseNo}番は${winner.popularity}人気`});
+     }
+   }
+ }
+ const pace=String(r.race?.pace||'');
+ const bias=String(r.race?.bias||r.race?.trackCondition||'');
+ if(pace && /速|遅|ハイ|スロー/.test(pace)){
+   reasons.push({code:'PACE_CHECK',label:'展開検証候補',detail:`事前展開「${pace}」と実際のレース内容を要確認`});
+ }
+ if(bias && bias!=='不明' && bias!=='—'){
+   reasons.push({code:'BIAS_CHECK',label:'馬場バイアス検証候補',detail:`事前馬場評価「${bias}」を結果と照合`});
+ }
+ if(!reasons.length){
+   reasons.push({code:'NO_CLEAR',label:'明確な単一原因なし',detail:'現保存データだけでは主要因を特定できません。検証メモやラップ追加で精度向上。'});
+ }
+ return reasons.slice(0,4);
+}
+function aggregateFailureReasons(races){
+ const map={};
+ races.forEach(r=>failureReasonsForRace(r).forEach(x=>{
+   const g=(map[x.code]??={label:x.label,count:0});g.count++;
+ }));
+ return Object.values(map).sort((a,b)=>b.count-a.count);
+}
+function renderFailureAnalysis(races){
+ const agg=aggregateFailureReasons(races);
+ const summary='<div class="dash-section"><h3>失敗原因ランキング</h3>'+
+   (agg.length?agg.map((x,i)=>`<div class="dash-row"><strong>${i+1}. ${esc(x.label)}</strong><span>${x.count}R</span><span>${pct(x.count,races.length)}</span><span></span><span></span></div>`).join(''):'<p class="muted">データなし</p>')+
+   '</div>';
+ const detail='<div class="dash-section"><h3>レース別 自動診断</h3>'+
+   races.slice().reverse().map(r=>{
+     const reasons=failureReasonsForRace(r);
+     return `<div class="failure-card"><div class="failure-head"><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span></div>${reasons.map(x=>`<div class="failure-item"><strong>${esc(x.label)}</strong><span>${esc(x.detail)}</span></div>`).join('')}</div>`;
+   }).join('')+'</div>';
+ return summary+detail;
+}
+
 function renderDashboard(){
  const races=getAllRaces(),horses=races.flatMap(x=>x.horses||[]),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
  const hit=(race,h)=>horsePosition(race,h)!=null,win=(race,h)=>horsePosition(race,h)===1;
@@ -359,7 +427,7 @@ function renderDashboard(){
    <div class="dash-row"><strong>💎</strong><span>対象 ${adv.diamondN}</span><span>勝 ${pct(adv.diamondWin,adv.diamondN)}</span><span>複 ${pct(adv.diamondPlace,adv.diamondN)}</span><span>平均人気 ${adv.diamondPop.length?mean(adv.diamondPop).toFixed(1):'—'}</span></div>
  </div>`;
 
- $('dashModels').innerHTML=modelHtml+calHtml+renderGroupTable('距離別',adv.byDistance)+renderGroupTable('人気帯別',adv.byPopularity)+renderGroupTable('期待値帯別',adv.byEvBand);
+ $('dashModels').innerHTML=modelHtml+calHtml+renderGroupTable('距離別',adv.byDistance)+renderGroupTable('人気帯別',adv.byPopularity)+renderGroupTable('期待値帯別',adv.byEvBand)+renderFailureAnalysis(races);
 
  $('dashRaces').innerHTML='<div class="dash-section"><h3>保存レース</h3>'+races.slice().reverse().map(r=>{
    const snap=top3Snapshot(r),order=(r.result?.finishOrder||[]).map(Number),captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
