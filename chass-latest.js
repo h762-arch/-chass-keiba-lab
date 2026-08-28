@@ -1,7 +1,7 @@
 /* CHASS KEIBA LAB Ver.8.9 - State Sync / Auto Validation + Feedback Dashboard */
 (() => {
   'use strict';
-  const VERSION='8.9';
+  const VERSION='8.9.1';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
   const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -168,7 +168,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '8.9';
+  const VERSION = '8.9.1';
   const $ = id => document.getElementById(id);
   const qsa = (s, r=document) => [...r.querySelectorAll(s)];
   const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -206,6 +206,7 @@
 
   function getAll(){
     try { if (typeof window.loadAll === 'function') return window.loadAll() || []; } catch {}
+    try { const v=JSON.parse(localStorage.getItem('chass_v80_races')||'{}'); if(v&&typeof v==='object'&&!Array.isArray(v)) return Object.values(v); } catch {}
     for (const key of ['chass_keiba_lab','chass_predictions','keiba_predictions','chass_saved_races']) {
       try { const v=JSON.parse(localStorage.getItem(key)||'[]'); if(Array.isArray(v)&&v.length) return v; } catch {}
     }
@@ -213,6 +214,8 @@
   }
 
   function resultOrder(r){
+    const f=r?.result?.finishOrder;
+    if(Array.isArray(f)&&f.length) return f.slice(0,3).map(x=>String(x||'').trim()).filter(Boolean);
     return [r.result1,r.result2,r.result3].map(x=>String(x||'').trim()).filter(Boolean);
   }
 
@@ -382,7 +385,7 @@
 */
 (() => {
   'use strict';
-  const VERSION='8.9';
+  const VERSION='8.9.1';
   const STATE_KEY='chass_unified_state_v89';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -500,11 +503,15 @@
     }).join('')}</div>`;
   }
 
-  function getSaved(){try{return typeof window.loadAll==='function'?(window.loadAll()||[]):[]}catch{return []}}
-  function pos(r,h){const order=[r.result1,r.result2,r.result3].map(x=>String(x||'').trim());let i=order.indexOf(hNo(h));if(i<0)i=order.indexOf(hName(h));return i>=0?i+1:null}
+  function getSaved(){
+    try{if(typeof window.loadAll==='function'){const x=window.loadAll()||[];if(Array.isArray(x)&&x.length)return x}}catch{}
+    try{const v=JSON.parse(localStorage.getItem('chass_v80_races')||'{}');if(v&&typeof v==='object'&&!Array.isArray(v))return Object.values(v)}catch{}
+    return [];
+  }
+  function pos(r,h){const order=(Array.isArray(r?.result?.finishOrder)&&r.result.finishOrder.length?r.result.finishOrder:[r.result1,r.result2,r.result3]).map(x=>String(x||'').trim());let i=order.indexOf(hNo(h));if(i<0)i=order.indexOf(hName(h));return i>=0?i+1:null}
   function modelTop(r,k){const s=r.modelSnapshot?.[k]||r.unifiedSnapshot?.modelSnapshot?.[k];if(s?.horseNo)return String(s.horseNo);const hs=r.horses||r.unifiedSnapshot?.horses||[];if(!hs.length)return null;if(k==='winModelTop')return hNo(rank(hs,hWin)[0]);if(k==='overallModelTop')return hNo(rank(hs,hOverall)[0]);if(k==='valueModelTop')return hNo(rank(hs,ev)[0]);const m=hs.find(h=>hMark(h).includes('◎'));return hNo(m||rank(hs,hWin)[0])}
   function modelStats(limit=0){
-    let rs=getSaved().filter(r=>[r.result1,r.result2,r.result3].some(Boolean));rs=[...rs].sort((a,b)=>String(b.resultUpdatedAt||b.updatedAt||b.raceDate||'').localeCompare(String(a.resultUpdatedAt||a.updatedAt||a.raceDate||'')));if(limit)rs=rs.slice(0,limit);
+    let rs=getSaved().filter(r=>(Array.isArray(r?.result?.finishOrder)&&r.result.finishOrder.length>=3)||[r.result1,r.result2,r.result3].some(Boolean));rs=[...rs].sort((a,b)=>String(b.resultUpdatedAt||b.updatedAt||b.raceDate||'').localeCompare(String(a.resultUpdatedAt||a.updatedAt||a.raceDate||'')));if(limit)rs=rs.slice(0,limit);
     const out={races:rs.length,models:{winModelTop:{n:0,w:0,p:0},overallModelTop:{n:0,w:0,p:0},valueModelTop:{n:0,w:0,p:0},finalModelTop:{n:0,w:0,p:0}}};
     for(const r of rs){const hs=r.horses||r.unifiedSnapshot?.horses||[];for(const k of Object.keys(out.models)){const no=modelTop(r,k);if(!no)continue;const h=hs.find(x=>hNo(x)===no);if(!h)continue;const p=pos(r,h),s=out.models[k];s.n++;if(p===1)s.w++;if(p&&p<=3)s.p++}}
     return out;
@@ -550,6 +557,165 @@
     document.addEventListener('change',e=>{if(e.target?.matches?.('.odds,.pop,.win,.place,.mark,.time,.actual-time,#result1,#result2,#result3'))setTimeout(()=>refresh('change'),180)});
     qsa('.tab').forEach(b=>b.addEventListener('click',()=>setTimeout(()=>{setVersion();renderValidationWindow()},120)));
     setTimeout(()=>refresh('boot'),500);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
+
+
+/* CHASS KEIBA LAB Ver.8.9.1 - MARKET RECOVERY / BASE STORAGE COMPATIBILITY / MOBILE GAP FIX */
+(() => {
+  'use strict';
+  const VERSION='8.9.1';
+  const DB_KEY='chass_v80_races';
+  const CURRENT_KEY='chass_v80_current';
+  const $=id=>document.getElementById(id);
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
+  const normDate=s=>String(s||'').replaceAll('/','-');
+  const currentRaceId=()=>{
+    const d=normDate($('raceDate')?.value||'');
+    const t=String($('track')?.value||'').trim();
+    const r=String($('raceNo')?.value||'').match(/\d+/)?.[0]||'';
+    return d&&t&&r?`${d}|${t}|${r}`:'';
+  };
+  const loadDb=()=>{try{const v=JSON.parse(localStorage.getItem(DB_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{}}catch{return {}}};
+  const saveDb=db=>localStorage.setItem(DB_KEY,JSON.stringify(db));
+  const raceFromRoot=root=>{
+    const r={...(root?.meta||{}),...(root?.race||{})};
+    const d=normDate(r.raceDate||r.date||'');
+    const t=String(r.track||'').trim();
+    const n=String(r.raceNo||'').match(/\d+/)?.[0]||'';
+    return d&&t&&n?`${d}|${t}|${n}`:'';
+  };
+  const actualResult=()=>[1,2,3].map(i=>String($(`result${i}`)?.value||$(`finish${i}`)?.value||'').trim()).filter(Boolean);
+  const stateHorseCount=()=>{
+    const rid=currentRaceId(); if(!rid)return 0;
+    const r=loadDb()[rid]; return Array.isArray(r?.horses)?r.horses.length:0;
+  };
+  const storedMarketCount=()=>{
+    const rid=currentRaceId(); if(!rid)return 0;
+    const r=loadDb()[rid]; return (r?.horses||[]).filter(h=>num(h?.odds??h?.realOdds??h?.currentOdds)>0).length;
+  };
+
+  function setVersion(){
+    document.title=document.title.replace(/Ver\.\d+(?:\.\d+){0,2}/gi,`Ver.${VERSION}`);
+    document.querySelectorAll('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./i.test(el.textContent||''))el.textContent=`Ver.${VERSION}`});
+  }
+
+  function injectFixCss(){
+    if($('chass891FixStyles'))return;
+    const st=document.createElement('style');st.id='chass891FixStyles';
+    st.textContent=`
+      @media(max-width:520px){
+        .tabs{position:sticky!important;top:78px!important;margin-top:0!important;transform:none!important}
+        .wrap{padding-top:14px!important}
+      }
+      #integrityGrid>div strong{overflow-wrap:anywhere}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function syncResultAliases(){
+    for(let i=1;i<=3;i++){
+      const src=$(`finish${i}`); if(!src)continue;
+      let alias=$(`result${i}`);
+      if(!alias){alias=document.createElement('input');alias.type='hidden';alias.id=`result${i}`;document.body.appendChild(alias)}
+      alias.value=src.value||'';
+    }
+  }
+
+  function recomputeMarketOnRace(r){
+    if(!r||!Array.isArray(r.horses))return r;
+    const market=r.horses.filter(h=>num(h.odds)>0);
+    if(!market.length)return r;
+    const sorted=[...market].sort((a,b)=>num(a.odds)-num(b.odds));
+    const popMap=new Map(sorted.map((h,i)=>[String(h.horseNo??h['horse-no']??''),i+1]));
+    r.horses.forEach(h=>{
+      const no=String(h.horseNo??h['horse-no']??'');
+      const o=num(h.odds),w=num(h.win),p=num(h.place);
+      if(o==null)return;
+      h.popularity=popMap.get(no)||num(h.popularity)||null;
+      h.ev=w!=null?o*w:null;
+      h.fair=w>0?100/w:null;
+      h.warning='';
+      if(String(h.mark||'').includes('💎'))h.mark='';
+    });
+    [...r.horses].sort((a,b)=>(num(b.win)||0)-(num(a.win)||0)).slice(0,4).forEach((h,i)=>h.mark=['◎','○','▲','△'][i]);
+    r.horses.forEach(h=>{
+      const pop=num(h.popularity),p=num(h.place),e=num(h.ev);
+      if(pop==null||e==null)return;
+      if(pop>=10&&p>=20&&e>=125)h.mark='💎💎💎';
+      else if(pop>=5&&p>=22&&e>=112)h.mark='💎';
+      if(pop>=1&&pop<=3&&e<75)h.warning=e<55?'⚠️⚠️⚠️':e<65?'⚠️⚠️':'⚠️';
+    });
+    r.race=r.race||{};r.race.oddsType='実オッズ';
+    return r;
+  }
+
+  function mergePreImport(pre,cur){
+    if(!pre||!cur)return cur;
+    const oldByNo=new Map((pre.horses||[]).map(h=>[String(h.horseNo??h['horse-no']??''),h]));
+    cur.horses=(cur.horses||[]).map(h=>{
+      const no=String(h.horseNo??h['horse-no']??''); const old=oldByNo.get(no); if(!old)return h;
+      const x={...h};
+      for(const k of ['odds','popularity','realOdds','currentOdds']) if((x[k]==null||x[k]==='')&&old[k]!=null)x[k]=old[k];
+      return x;
+    });
+    if(pre.race?.oddsType==='実オッズ' || (pre.horses||[]).some(h=>num(h.odds)>0)){
+      cur.race={...(cur.race||{}),oddsType:'実オッズ',oddsUpdatedAt:pre.race?.oddsUpdatedAt||pre.updatedAt||new Date().toISOString()};
+    }
+    if(!cur.result?.finishOrder?.length && pre.result?.finishOrder?.length)cur.result=pre.result;
+    if(pre.validated)cur.validated=true;
+    return recomputeMarketOnRace(cur);
+  }
+
+  function syncIntegrityAndBadges(){
+    const total=stateHorseCount(); const n=storedMarketCount();
+    const grid=$('integrityGrid');
+    if(grid){[...grid.children].forEach(div=>{if(/市場/.test(div.textContent||'')){const strong=div.querySelector('strong');if(strong)strong.textContent=`${n}/${total}頭`}})}
+    const ms=$('marketStatus');if(ms)ms.textContent=n?`市場反映済`:'市場待ち';
+    const badge=$('liveOddsBadge');if(badge&&n)badge.textContent=`${n}頭反映`;
+    document.querySelectorAll('#quickMarketStatus,#chassFinalStatus,[id*="marketStatus"],[id*="FinalStatus"]').forEach(el=>{
+      if(el===ms)return; const t=el.textContent||''; if(/市場|オッズ|反映|未取得/.test(t))el.textContent=n?`市場反映済 ${n}/${total}頭`:'市場未取得';
+    });
+  }
+
+  async function autoRefreshMarket(){
+    if(storedMarketCount()>0){syncIntegrityAndBadges();return true}
+    const btn=$('liveOddsSync');
+    if(btn&&currentRaceId()){
+      btn.click();
+      const start=Date.now();
+      while(Date.now()-start<8000){await new Promise(r=>setTimeout(r,250));if(storedMarketCount()>0){syncIntegrityAndBadges();return true}}
+    }
+    return false;
+  }
+
+  function installImportPreserver(){
+    const inp=$('raceImportFile');if(!inp||inp.__chass891)return;inp.__chass891=true;
+    inp.addEventListener('change',async e=>{
+      const f=e.target.files?.[0]; if(!f)return;
+      let rid='',pre=null;
+      try{const text=(await f.text()).replace(/^\uFEFF/,'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');rid=raceFromRoot(JSON.parse(text));if(rid)pre=loadDb()[rid]||null}catch{}
+      if(!rid)return;
+      const marker=`chass891-reload-${rid}`;
+      setTimeout(()=>{
+        const db=loadDb(),cur=db[rid]; if(!cur)return;
+        if(pre){db[rid]=mergePreImport(pre,cur);saveDb(db);localStorage.setItem(CURRENT_KEY,rid)}
+        if(pre && (pre.horses||[]).some(h=>num(h.odds)>0) && sessionStorage.getItem(marker)!=='1'){
+          sessionStorage.setItem(marker,'1');location.reload();return;
+        }
+        setTimeout(autoRefreshMarket,250);
+      },900);
+    },true);
+  }
+
+  function boot(){
+    setVersion();injectFixCss();syncResultAliases();installImportPreserver();syncIntegrityAndBadges();
+    document.addEventListener('input',e=>{if(/^finish[123]$/.test(e.target?.id||'')){syncResultAliases();setTimeout(setVersion,20)}},true);
+    document.addEventListener('change',e=>{if(/^finish[123]$/.test(e.target?.id||'')){syncResultAliases();setTimeout(setVersion,20)}},true);
+    document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/現在オッズ|結果・最終オッズ|結果を保存|再集計|予想入力|検証ダッシュボード/.test(t))setTimeout(()=>{setVersion();syncResultAliases();syncIntegrityAndBadges()},700)},true);
+    setTimeout(()=>{setVersion();syncResultAliases();syncIntegrityAndBadges();if(storedMarketCount()===0)autoRefreshMarket()},900);
+    setInterval(()=>{setVersion();syncResultAliases();syncIntegrityAndBadges()},2500);
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
