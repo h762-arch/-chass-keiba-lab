@@ -1,43 +1,41 @@
-# チャス競馬研究所 Ver.8.3
+# チャス競馬研究所 Ver.8.4
 
-Ver.8.3 は「機能を増やす更新」ではなく、今後の更新を安全に続けやすくするための整理版です。
+今回の更新は、Ver.8.3の整理版を維持しながら、予想から検証までの操作導線と市場オッズ表示を改善した更新です。
 
-## 基本構成
+## 主な改善
 
-今後は原則として次のファイルを中心に運用します。
+1. 上部操作を4ステップに整理
+   - STEP 1 データ読込
+   - STEP 2 現在オッズ
+   - STEP 3 レース結果
+   - STEP 4 検証
 
-- index.html
-- styles.css
-- app.js
-- chass-latest.js
-- worker.js
-- manifest.webmanifest
-- wrangler.jsonc
-- package.json
-- server.mjs
-- README.md
+2. 重複していた予想データ選択UIを整理
+   - レースカード内の旧読込ボタンは非表示
+   - 上部の1か所から読込
 
-予想データJSONなどは必要に応じて残してください。
+3. 現在オッズ取得を強化
+   - 既存の `syncLiveOdds()` があれば優先利用
+   - ない場合は `/api/nar/odds` を直接利用
+   - 取得後に人気・期待値・全馬比較を再表示
 
-## 今回の更新
+4. 全馬比較をモバイル向けに再構成
+   - 馬番 / 馬名 / 総合点を同じヘッダーに整理
+   - AI勝率 / 複勝率 / TIME / 期待値を4項目で固定表示
+   - 実オッズ取得済みなら市場オッズ・人気・期待回収率も表示
+   - 文字重なりを防止
 
-- chass-latest.js の表示バージョンを Ver.8.3 に更新
-- README を1本化する運用へ変更
-- 過去の README-Ver*.txt / 旧パッチJSを増やさない方針に整理
-- 今後の機能追加は原則 chass-latest.js に集約
-- 既存の Ver.8.2 UI、現在オッズ、レース結果、検証導線は維持
+5. CHASS FINALの説明を追加
+   - 総合点順位と最終印が同じではないことを明示
+   - AI勝率・複勝率・展開適性・市場期待値・信頼度を分離して統合する設計を説明
+
+6. レース後検証は独立表示を維持
 
 ## 導入方法
 
-1. このZIPを展開
-2. GitHubの `chass-latest.js` を同名ファイルで置換
-3. `README.md` をこのREADME.mdで置換
-4. Commit changes
-5. Cloudflareのデプロイ成功を確認
-6. Safariを再読み込み
-7. 画面上部が `Ver.8.3` になれば反映完了
+GitHubの `chass-latest.js` を今回の同名ファイルで置き換えてください。
 
-## index.html の推奨末尾
+`index.html` の末尾が以下なら、index.htmlの変更は不要です。
 
 ```html
 <script src="app.js"></script>
@@ -46,44 +44,19 @@ Ver.8.3 は「機能を増やす更新」ではなく、今後の更新を安全
 </html>
 ```
 
-現在すでにこの2本だけを読み込んでいる場合、index.htmlは変更不要です。
+置換後にCommitし、Cloudflareのデプロイ完了後Safariを再読み込みしてください。
+画面上部が `Ver.8.4` なら反映完了です。
 
-## 削除候補
+## 動作確認
 
-以下は、現在の index.html / chass-loader.js / worker.js から参照されていないことを確認した後で削除できます。
+- 予想データファイル読込
+- 現在オッズ取得
+- 全馬比較の文字重なりがない
+- 実オッズ取得後に期待値が表示される
+- CHASS FINAL更新
+- レース結果への移動
+- 検証ダッシュボード表示
 
-- chass-v7.4-patch.js
-- chass-v7.5-patch.js
-- chass-v7.6-patch.js
-- README-Ver7.4.txt
-- README-Ver7.5.txt
-- README-Ver7.6.txt
-- README-Ver7.7.txt
-- README-Ver7.8.txt
-- README-Ver7.9.txt
-- README-Ver8.1.txt
-- README-Ver8.2.txt
-- index-tail-Ver7.7.txt
-- 追加手順.txt
+## ファイル運用
 
-## まだ削除しないもの
-
-- app.js
-- styles.css
-- worker.js
-- index.html
-- chass-latest.js
-- manifest.webmanifest
-- wrangler.jsonc
-- package.json
-- server.mjs
-
-`chass-loader.js` は index.html が読み込んでいる場合は残してください。
-読み込んでいないことを確認できた場合のみ削除候補にできます。
-
-## 重要
-
-旧ファイルがGitHub上に存在しているだけなら、通常はアプリの動作速度へほぼ影響しません。
-問題になるのは、index.html等から旧パッチを同時に読み込んでいる場合です。
-
-削除は必ず「参照されていないこと」を確認してから行ってください。
+今後も旧パッチファイルを増やさず、原則 `chass-latest.js` を置換する方式で更新してください。
