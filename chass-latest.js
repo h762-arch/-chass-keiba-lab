@@ -1,7 +1,7 @@
-/* CHASS KEIBA LAB Ver.8.7 - State Sync / Auto Validation */
+/* CHASS KEIBA LAB Ver.8.8 - State Sync / Auto Validation + Feedback Dashboard */
 (() => {
   'use strict';
-  const VERSION='8.7';
+  const VERSION='8.8';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
   const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -52,7 +52,8 @@
     }else{
       const old=all[idx], merged={...old};
       ['oddsType','oddsCheckedAt','marketSnapshots','marketFirst','marketFinal',
-       'result1','result2','result3','review','resultUpdatedAt'].forEach(k=>{
+       'result1','result2','result3','review','resultUpdatedAt','actualTimes','actualTimeByHorse',
+       'modelSnapshot','finalSnapshot','validationSnapshot'].forEach(k=>{
         if(cur[k]!==undefined&&cur[k]!==null&&cur[k]!=='')merged[k]=cur[k];
       });
       const oldHs=Array.isArray(old.horses)?old.horses:[];
@@ -156,3 +157,218 @@
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
+
+/* CHASS KEIBA LAB Ver.8.8 - VALIDATION FEEDBACK LOOP
+   Additive patch for Ver.8.7+
+   Purpose:
+   1) Expand post-race validation beyond win-only accuracy.
+   2) Track TOP3 capture, marks, value/risk outcomes, calibration and time error.
+   3) Keep existing prediction/result/market flow untouched.
+*/
+(() => {
+  'use strict';
+
+  const VERSION = '8.8';
+  const $ = id => document.getElementById(id);
+  const qsa = (s, r=document) => [...r.querySelectorAll(s)];
+  const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  const pct = (a,b,d=1) => b ? `${(a/b*100).toFixed(d)}%` : '—';
+
+  function setVersion(){
+    document.title = document.title.replace(/Ver\.\d+(?:\.\d+)?/gi, `Ver.${VERSION}`);
+    qsa('.topbar h1 span, h1 span').forEach(el => {
+      if (/Ver\./i.test(el.textContent || '')) el.textContent = `Ver.${VERSION}`;
+    });
+  }
+
+  function injectStyles(){
+    if ($('chass88ValidationStyles')) return;
+    const st=document.createElement('style');
+    st.id='chass88ValidationStyles';
+    st.textContent=`
+      .ch88-section{margin-top:18px;padding-top:18px;border-top:1px solid rgba(130,160,205,.20)}
+      .ch88-title{font-size:1.15rem;font-weight:850;margin:0 0 12px}
+      .ch88-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+      .ch88-card{border:1px solid rgba(130,160,205,.22);border-radius:16px;background:rgba(255,255,255,.02);padding:13px}
+      .ch88-card span{display:block;color:#9cadc7;font-size:.78rem;margin-bottom:4px}
+      .ch88-card strong{font-size:1.28rem;color:#f4f7ff}
+      .ch88-card small{display:block;color:#9cadc7;margin-top:5px;line-height:1.45}
+      .ch88-wide{grid-column:1/-1}
+      .ch88-table{display:grid;gap:8px;margin-top:10px}
+      .ch88-row{display:grid;grid-template-columns:minmax(0,1.3fr) repeat(4,minmax(58px,.6fr));gap:8px;align-items:center;border:1px solid rgba(130,160,205,.18);border-radius:13px;padding:10px 11px}
+      .ch88-row b{font-size:.9rem}.ch88-row span{text-align:right;font-size:.82rem;color:#c4cede}
+      .ch88-note{margin-top:10px;padding:10px 12px;border-radius:13px;border:1px solid rgba(97,223,184,.20);background:rgba(97,223,184,.04);color:#a9b9cf;font-size:.8rem;line-height:1.55}
+      @media(max-width:520px){.ch88-grid{grid-template-columns:1fr 1fr}.ch88-row{grid-template-columns:1fr 1fr}.ch88-row b{grid-column:1/-1}.ch88-row span{text-align:left}.ch88-wide{grid-column:1/-1}}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function getAll(){
+    try { if (typeof window.loadAll === 'function') return window.loadAll() || []; } catch {}
+    for (const key of ['chass_keiba_lab','chass_predictions','keiba_predictions','chass_saved_races']) {
+      try { const v=JSON.parse(localStorage.getItem(key)||'[]'); if(Array.isArray(v)&&v.length) return v; } catch {}
+    }
+    return [];
+  }
+
+  function resultOrder(r){
+    return [r.result1,r.result2,r.result3].map(x=>String(x||'').trim()).filter(Boolean);
+  }
+
+  function horseNo(h){ return String(h?.['horse-no'] ?? h?.horseNo ?? h?.no ?? '').trim(); }
+  function horseName(h){ return String(h?.['horse-name'] ?? h?.horseName ?? h?.name ?? '').trim(); }
+  function mark(h){ return String(h?.mark ?? '').trim(); }
+  function winP(h){ return num(h?.win ?? h?.winRate ?? h?.aiWin); }
+  function placeP(h){ return num(h?.place ?? h?.placeRate ?? h?.aiPlace); }
+  function odds(h){ return num(h?.odds ?? h?.realOdds ?? h?.currentOdds); }
+  function pop(h){ return num(h?.pop ?? h?.popularity); }
+  function predictedTime(h){ return h?.time ?? h?.predictedTime ?? ''; }
+  function actualTime(r,h){
+    const no=horseNo(h);
+    const m=r.actualTimes || r.actualTimeByHorse || {};
+    return m?.[no] ?? h?.actualTime ?? '';
+  }
+
+  function timeSec(v){
+    if(v==null||v==='') return null;
+    if(typeof v==='number') return Number.isFinite(v)?v:null;
+    const s=String(v).trim();
+    if(/^\d+(?:\.\d+)?$/.test(s)) return Number(s);
+    const m=s.match(/^(\d+):([0-5]?\d(?:\.\d+)?)$/); if(!m)return null;
+    return Number(m[1])*60+Number(m[2]);
+  }
+
+  function position(r,h){
+    const order=resultOrder(r), no=horseNo(h), name=horseName(h);
+    let i=no?order.indexOf(no):-1;
+    if(i<0 && name) i=order.indexOf(name);
+    return i>=0?i+1:null;
+  }
+
+  function rankBy(hs, getter){
+    return [...hs].filter(Boolean).sort((a,b)=>(getter(b)??-Infinity)-(getter(a)??-Infinity));
+  }
+
+  function overall(h){ return num(h?.overall ?? h?.score ?? h?.aiOverall); }
+  function expectedReturn(h){
+    const explicit=num(h?.expectedReturn ?? h?.ev ?? h?.expectedValue);
+    if(explicit!=null && explicit>10) return explicit;
+    const w=winP(h), o=odds(h); return (w!=null&&o!=null)?w*o:null;
+  }
+
+  function modelTop(r, key){
+    const snap=r.modelSnapshot?.[key];
+    if(snap?.horseNo) return String(snap.horseNo);
+    const hs=r.horses||[];
+    if(!hs.length)return null;
+    if(key==='winModelTop') return horseNo(rankBy(hs,winP)[0]);
+    if(key==='overallModelTop') return horseNo(rankBy(hs,overall)[0]);
+    if(key==='valueModelTop') return horseNo(rankBy(hs,expectedReturn)[0]);
+    if(key==='finalModelTop'){
+      const marked=hs.find(h=>mark(h).includes('◎'));
+      return horseNo(marked || rankBy(hs,winP)[0]);
+    }
+    return null;
+  }
+
+  function isDiamond(h){
+    const m=mark(h); if(m.includes('💎')) return true;
+    const p=pop(h), ev=expectedReturn(h), pl=placeP(h);
+    return ev!=null && ((p!=null&&p>=8&&(pl??0)>=18&&ev>=125)||(p!=null&&p>=4&&(pl??0)>=20&&ev>=112));
+  }
+  function isWarning(h){
+    const m=mark(h); if(m.includes('⚠')) return true;
+    const p=pop(h), ev=expectedReturn(h); return p!=null&&p<=3&&ev!=null&&ev<82;
+  }
+
+  function stats(){
+    const races=getAll().filter(r=>resultOrder(r).length>=1);
+    const out={races:races.length,horses:0,top3Capture:0,mark:{},diamond:{n:0,win:0,place:0,popSum:0,popN:0,oddsSum:0,oddsN:0},warning:{n:0,out:0},calWinAE:[],calPlaceAE:[],timeErr:[],models:{}};
+    const markKeys=['◎','○','▲','△','☆']; markKeys.forEach(k=>out.mark[k]={n:0,win:0,place:0});
+    ['winModelTop','overallModelTop','valueModelTop','finalModelTop'].forEach(k=>out.models[k]={n:0,win:0,place:0});
+
+    for(const r of races){
+      const hs=r.horses||[]; out.horses+=hs.length;
+      const order=resultOrder(r);
+      const top3Marks=hs.filter(h=>/[◎○▲]/.test(mark(h))).map(h=>horseNo(h));
+      if(order.slice(0,3).some(no=>top3Marks.includes(String(no)))) out.top3Capture++;
+
+      for(const h of hs){
+        const p=position(r,h); const m=mark(h);
+        for(const k of markKeys){ if(m.includes(k)){ const s=out.mark[k]; s.n++; if(p===1)s.win++; if(p&&p<=3)s.place++; } }
+        if(isDiamond(h)){ const d=out.diamond; d.n++; if(p===1)d.win++; if(p&&p<=3)d.place++; const pp=pop(h),oo=odds(h); if(pp!=null){d.popSum+=pp;d.popN++;} if(oo!=null){d.oddsSum+=oo;d.oddsN++;} }
+        if(isWarning(h)){ out.warning.n++; if(!p||p>3)out.warning.out++; }
+
+        const wp=winP(h), pp=placeP(h);
+        if(wp!=null) out.calWinAE.push(Math.abs((p===1?100:0)-wp));
+        if(pp!=null) out.calPlaceAE.push(Math.abs((p&&p<=3?100:0)-pp));
+        const pt=timeSec(predictedTime(h)), at=timeSec(actualTime(r,h)); if(pt!=null&&at!=null) out.timeErr.push(Math.abs(at-pt));
+      }
+
+      for(const k of Object.keys(out.models)){
+        const no=modelTop(r,k); if(!no)continue;
+        const h=hs.find(x=>horseNo(x)===String(no)); if(!h)continue;
+        const p=position(r,h), s=out.models[k]; s.n++; if(p===1)s.win++; if(p&&p<=3)s.place++;
+      }
+    }
+    return out;
+  }
+
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+
+  function findDashboardCard(){
+    const dash=$('dashboardView'); if(!dash)return null;
+    return qsa('section.card',dash).find(s=>/予想検証ダッシュボード/.test(s.textContent||'')) || qsa('section.card',dash)[0] || dash;
+  }
+
+  function ensureSection(){
+    const host=findDashboardCard(); if(!host)return null;
+    let sec=$('chass88Validation'); if(sec)return sec;
+    sec=document.createElement('div'); sec.id='chass88Validation'; sec.className='ch88-section'; host.appendChild(sec); return sec;
+  }
+
+  function render(){
+    setVersion(); const sec=ensureSection(); if(!sec)return;
+    const s=stats();
+    const avgPop=s.diamond.popN?s.diamond.popSum/s.diamond.popN:null;
+    const avgOdds=s.diamond.oddsN?s.diamond.oddsSum/s.diamond.oddsN:null;
+    const winMAE=avg(s.calWinAE), placeMAE=avg(s.calPlaceAE), tm=avg(s.timeErr);
+    const labels={winModelTop:'勝率モデル',overallModelTop:'総合モデル',valueModelTop:'期待値モデル',finalModelTop:'CHASS FINAL'};
+
+    sec.innerHTML=`
+      <div class="ch88-title">検証精度・フィードバック</div>
+      <div class="ch88-grid">
+        <div class="ch88-card"><span>◎○▲ TOP3捕捉率</span><strong>${pct(s.top3Capture,s.races)}</strong><small>${s.races}R中 ${s.top3Capture}Rで1頭以上3着内</small></div>
+        <div class="ch88-card"><span>💎 穴馬 複勝率</span><strong>${pct(s.diamond.place,s.diamond.n)}</strong><small>${s.diamond.n}頭中 ${s.diamond.place}頭</small></div>
+        <div class="ch88-card"><span>💎 平均人気 / 平均単勝</span><strong>${avgPop==null?'—':avgPop.toFixed(1)+'人気'}</strong><small>${avgOdds==null?'実オッズ不足':`平均 ${avgOdds.toFixed(1)}倍`}</small></div>
+        <div class="ch88-card"><span>⚠️ 人気馬 圏外率</span><strong>${pct(s.warning.out,s.warning.n)}</strong><small>${s.warning.n}頭中 ${s.warning.out}頭</small></div>
+        <div class="ch88-card"><span>AI勝率 平均絶対誤差</span><strong>${winMAE==null?'—':winMAE.toFixed(1)+'pt'}</strong><small>0/100結果との差。蓄積で較正確認</small></div>
+        <div class="ch88-card"><span>AI複勝率 平均絶対誤差</span><strong>${placeMAE==null?'—':placeMAE.toFixed(1)+'pt'}</strong><small>3着内0/100結果との差</small></div>
+        <div class="ch88-card ch88-wide"><span>予想TIME 平均絶対誤差</span><strong>${tm==null?'—':tm.toFixed(2)+'秒'}</strong><small>実走TIME保存済みデータのみ集計</small></div>
+      </div>
+      <div class="ch88-title" style="margin-top:18px">印別成績</div>
+      <div class="ch88-table">${Object.entries(s.mark).map(([k,v])=>`<div class="ch88-row"><b>${k}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.win,v.n)}</span><span>複 ${pct(v.place,v.n)}</span><span>3着内 ${v.place}</span></div>`).join('')}</div>
+      <div class="ch88-title" style="margin-top:18px">モデル別成績</div>
+      <div class="ch88-table">${Object.entries(s.models).map(([k,v])=>`<div class="ch88-row"><b>${esc(labels[k])}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.win,v.n)}</span><span>複 ${pct(v.place,v.n)}</span><span>3着内 ${v.place}</span></div>`).join('')}</div>
+      <div class="ch88-note">Ver.8.8は「勝った/外れた」だけでなく、TOP3捕捉・印別複勝・穴馬・危険馬・AI確率誤差・予想TIME誤差を同時に保存データから評価します。少数レースでは数値が大きく振れるため、50R・100R以上の累積値を主判断にしてください。</div>`;
+  }
+
+  function hook(name){
+    const fn=window[name]; if(typeof fn!=='function'||fn.__ch88)return;
+    const wrapped=function(...args){ const out=fn.apply(this,args); Promise.resolve(out).finally(()=>setTimeout(render,40)); return out; };
+    wrapped.__ch88=true; window[name]=wrapped;
+  }
+
+  function boot(){
+    injectStyles(); setVersion();
+    ['renderDashboard','saveCurrent','saveCurrentSilent','autoPersistResult','applyOfficialResult'].forEach(hook);
+    qsa('.tab').forEach(b=>b.addEventListener('click',()=>setTimeout(render,80)));
+    $('recalcDash')?.addEventListener('click',()=>setTimeout(render,50));
+    document.addEventListener('change',e=>{if(e.target?.matches?.('#result1,#result2,#result3,.actual-time,.mark,.win,.place,.odds,.pop'))setTimeout(render,80);});
+    setTimeout(render,120);
+  }
+
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
+
