@@ -1,9 +1,10 @@
-/* CHASS KEIBA LAB Ver.8.4 - FLOW / MARKET / MOBILE UI */
+/* CHASS KEIBA LAB Ver.8.5 - VERIFIED LIVE MARKET / FLOW / MOBILE UI */
 (() => {
   'use strict';
 
-  const VERSION = '8.4';
+  const VERSION = '8.5';
   const $ = id => document.getElementById(id);
+  const LIVE_KEY_PREFIX = 'chass_live_verified_v85:';
   const qsa = (s, r=document) => [...r.querySelectorAll(s)];
   const num = v => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
@@ -79,8 +80,9 @@
     $('chass84OddsBtn')?.addEventListener('click', () => syncCurrentOdds84(false));
     $('chass84ResultBtn')?.addEventListener('click', () => {
       const result = findResultSection();
-      if (result) result.scrollIntoView({behavior:'smooth', block:'start'});
-      else ($('fetchOfficialResult') || $('narSync'))?.click();
+      const fetchBtn = $('fetchOfficialResult') || $('narSync');
+      if (fetchBtn) fetchBtn.click();
+      if (result) setTimeout(()=>result.scrollIntoView({behavior:'smooth', block:'start'}),80);
     });
     $('chass84DashBtn')?.addEventListener('click', () => {
       const btn = qsa('.tab').find(x => x.dataset.view === 'dashboardView');
@@ -109,6 +111,29 @@
     return map[track] || null;
   }
 
+  function raceKey85(){
+    const {track,date,race}=getRaceInfo();
+    return `${date}|${track}|${race}`;
+  }
+  function liveKey85(){ return LIVE_KEY_PREFIX + raceKey85(); }
+  function markLiveVerified85(meta={}){
+    try{
+      sessionStorage.setItem(liveKey85(), JSON.stringify({
+        verified:true,
+        at:meta.acquiredAt || new Date().toISOString(),
+        count:meta.count || 0,
+        source:meta.source || 'NAR'
+      }));
+    }catch{}
+  }
+  function getLiveVerified85(){
+    try{
+      const v=JSON.parse(sessionStorage.getItem(liveKey85())||'null');
+      return v?.verified ? v : null;
+    }catch{return null;}
+  }
+  function clearLiveVerified85(){ try{ sessionStorage.removeItem(liveKey85()); }catch{} }
+
   function applyOddsToLegacyRows(items, acquiredAt){
     const valid = (items || []).map(x => ({no:String(x.horseNo ?? x.no ?? ''), odds:num(x.odds)})).filter(x => x.no && x.odds != null);
     if (!valid.length) return 0;
@@ -136,15 +161,18 @@
     setFlowStatus('NAR公式の現在オッズを確認中…');
     try {
       if (typeof window.syncLiveOdds === 'function') {
-        await window.syncLiveOdds(silent);
+        const out = await window.syncLiveOdds(silent);
+        const hs=currentRows(), count=hs.filter(h=>h.odds!=null).length;
+        if(!count) throw new Error('現在オッズを確認できません');
+        markLiveVerified85({count,source:'NAR-live'});
         setTimeout(() => { renderQuick84(); syncMarketStatus84(); }, 30);
-        setFlowStatus('現在オッズを更新しました。人気・期待値・最終判断を再計算します。','ok');
-        return true;
+        setFlowStatus(`現在オッズ ${count}頭を確認。人気・期待値・最終判断を再計算しました。`,'ok');
+        return out ?? true;
       }
       if ($('liveOddsSync')) {
         $('liveOddsSync').click();
-        setTimeout(() => { renderQuick84(); syncMarketStatus84(); }, 500);
-        setFlowStatus('現在オッズ取得を実行しました。','ok');
+        setFlowStatus('現在オッズ取得を実行しました。反映を確認中…');
+        setTimeout(() => { const count=currentRows().filter(h=>h.odds!=null).length; if(count){markLiveVerified85({count,source:'NAR-live-button'});} renderQuick84(); syncMarketStatus84(); setFlowStatus(count?`現在オッズ ${count}頭を確認しました。`:'現在オッズの反映待ちです。',count?'ok':'warn'); }, 700);
         return true;
       }
       const {track,date,race} = getRaceInfo(), code = narCode(track);
@@ -156,6 +184,7 @@
       else if (typeof window.applyOfficialOdds === 'function') count = window.applyOfficialOdds({...data, odds:data.odds || [], oddsType:'実オッズ', checkedAt:data.acquiredAt}) || 0;
       if (!count) count = applyOddsToLegacyRows(data.odds || [], data.acquiredAt);
       if (!count) throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');
+      markLiveVerified85({count,acquiredAt:data.acquiredAt,source:'NAR-api'});
       renderQuick84(); syncMarketStatus84();
       setFlowStatus(`NAR公式 現在オッズ ${count}頭反映。人気・期待値・最終判断を更新しました。`,'ok');
       return true;
@@ -167,25 +196,57 @@
   window.chassSyncCurrentOdds = syncCurrentOdds84;
 
   function currentRows(){
-    if (window.state?.horses?.length) {
-      return window.state.horses.map((h,i)=>({
-        no:String(h.horseNo ?? h['horse-no'] ?? i+1), name:String(h.horseName ?? h['horse-name'] ?? ''), mark:String(h.mark ?? ''),
-        win:num(h.win), place:num(h.place), time:String(h.predictedTime ?? h.time ?? ''), overall:num(h.overall), odds:num(h.odds), pop:num(h.popularity ?? h.pop)
-      })).filter(h=>h.name);
-    }
-    const rows=qsa('.horse-row');
-    return rows.map((r,i)=>{
+    const domRows=qsa('.horse-row');
+    const domMap=new Map();
+    domRows.forEach((r,i)=>{
       let h=null; try{ h=typeof window.horseFromRow==='function'?window.horseFromRow(r):null; }catch{}
-      const name=String(h?.['horse-name'] ?? r.querySelector('.horse-name')?.value ?? '').trim(); if(!name)return null;
-      const no=String(h?.['horse-no'] ?? r.querySelector('.horse-no')?.value ?? i+1), mark=String(h?.mark ?? r.querySelector('.mark')?.value ?? ''), win=num(h?.win ?? r.querySelector('.win')?.value), place=num(h?.place ?? r.querySelector('.place')?.value), time=String(h?.time ?? r.querySelector('.time')?.value ?? ''), odds=num(h?.odds ?? r.querySelector('.odds')?.value), pop=num(h?.pop ?? r.querySelector('.pop')?.value);
-      let overall=null; try{ if(typeof window.aiBreakdown==='function'){const hs=rows.map(rr=>typeof window.horseFromRow==='function'?window.horseFromRow(rr):{}); overall=num(window.aiBreakdown(h,hs)?.overall);} }catch{}
-      return {no,name,mark,win,place,time,overall,odds,pop};
-    }).filter(Boolean);
+      const no=String(h?.['horse-no'] ?? r.querySelector('.horse-no')?.value ?? i+1);
+      domMap.set(no,{
+        no,
+        name:String(h?.['horse-name'] ?? r.querySelector('.horse-name')?.value ?? '').trim(),
+        mark:String(h?.mark ?? r.querySelector('.mark')?.value ?? ''),
+        win:num(h?.win ?? r.querySelector('.win')?.value),
+        place:num(h?.place ?? r.querySelector('.place')?.value),
+        time:String(h?.time ?? r.querySelector('.time')?.value ?? ''),
+        odds:num(h?.odds ?? r.querySelector('.odds')?.value),
+        pop:num(h?.pop ?? r.querySelector('.pop')?.value),
+        overall:null
+      });
+    });
+    if (window.state?.horses?.length) {
+      return window.state.horses.map((h,i)=>{
+        const no=String(h.horseNo ?? h['horse-no'] ?? i+1), d=domMap.get(no)||{};
+        return {
+          no,
+          name:String(h.horseName ?? h['horse-name'] ?? d.name ?? ''),
+          mark:String(h.mark ?? d.mark ?? ''),
+          win:num(h.win ?? d.win), place:num(h.place ?? d.place),
+          time:String(h.predictedTime ?? h.time ?? d.time ?? ''),
+          overall:num(h.overall ?? d.overall),
+          // DOM values win here because live odds are often written into legacy rows first.
+          odds:d.odds ?? num(h.odds), pop:d.pop ?? num(h.popularity ?? h.pop)
+        };
+      }).filter(h=>h.name);
+    }
+    return [...domMap.values()].filter(h=>h.name).map(h=>{
+      if(h.overall==null){
+        try{
+          const row=domRows.find((r,i)=>String(r.querySelector('.horse-no')?.value||i+1)===h.no);
+          if(row && typeof window.aiBreakdown==='function'){
+            const x=typeof window.horseFromRow==='function'?window.horseFromRow(row):null;
+            const hs=domRows.map(rr=>typeof window.horseFromRow==='function'?window.horseFromRow(rr):{});
+            h.overall=num(window.aiBreakdown(x,hs)?.overall);
+          }
+        }catch{}
+      }
+      return h;
+    });
   }
 
   function marketIsReal(){
-    if (window.state?.race?.oddsType === '実オッズ') return true;
-    return String($('oddsType')?.value || $('oddsTypeDisplay')?.textContent || '').includes('実オッズ');
+    // Ver.8.5: only a successful NAR live fetch is treated as "current real odds".
+    // Imported odds may still be used by the legacy model, but are not labelled as LIVE.
+    return !!getLiveVerified85();
   }
 
   function renderQuick84(){
@@ -203,10 +264,16 @@
   }
 
   function syncMarketStatus84(){
-    const real=marketIsReal(), hs=currentRows(), priced=hs.filter(h=>h.odds!=null).length;
-    const badge=$('marketStatus'); if (badge && real) badge.textContent=`実オッズ ${priced}頭`;
-    const quick=$('quickMarketStatus'); if (quick) quick.textContent=real?`市場データ：実オッズ ${priced}頭反映済`:'市場データ：未取得';
-    const finalStatus=$('chassFinalStatus'); if(finalStatus && real) finalStatus.textContent='市場反映済';
+    const live=getLiveVerified85(), real=!!live, hs=currentRows(), priced=hs.filter(h=>h.odds!=null).length;
+    const badge=$('marketStatus');
+    if (badge) badge.textContent=real?`実オッズ ${priced}頭`:'未取得';
+    const quick=$('quickMarketStatus');
+    if (quick) quick.textContent=real?`市場データ：NAR現在オッズ ${priced}頭反映済`:'市場データ：現在オッズ未取得';
+    // Do not overwrite CHASS FINAL as market-reflected unless LIVE verification succeeded.
+    const finalStatus=$('chassFinalStatus');
+    if(finalStatus) finalStatus.textContent=real?'現在市場反映済':'AI評価';
+    const liveBadge=qsa('.card').find(x=>/現在オッズ/.test(x.querySelector('h2')?.textContent||''))?.querySelector('.badge');
+    if(liveBadge) liveBadge.textContent=real?`取得済 ${priced}頭`:'未取得';
   }
 
   function annotateFinal(){
@@ -237,7 +304,25 @@
     ['chass82Actions','chass83Actions'].forEach(id=>$(id)?.remove());
   }
 
-  function refresh(){ setVersion(); removeOldActionPanels(); ensureFlow(); syncImportStatus(); renderQuick84(); syncMarketStatus84(); annotateFinal(); makeResultIndependent(); }
+  function annotateDashboardEmpty85(){
+    const dash=$('dashboardView'); if(!dash)return;
+    const text=dash.textContent||'';
+    if(!/検証済み\s*0R|検証済みレース[\s\S]*0R/.test(text))return;
+    if($('chass85DashEmptyNote'))return;
+    const sec=dash.querySelector('section.card'); if(!sec)return;
+    const p=document.createElement('p'); p.id='chass85DashEmptyNote'; p.className='muted';
+    p.style.cssText='margin-top:10px;padding:10px 12px;border:1px solid rgba(130,160,205,.18);border-radius:12px;line-height:1.5';
+    p.textContent='まだ「結果を保存・再集計」した完了レースがありません。予想データを読み込んだだけでは検証件数には加算しません。';
+    sec.appendChild(p);
+  }
+
+  function resetLiveOnRaceChange85(){
+    let last=raceKey85();
+    const check=()=>{const now=raceKey85();if(now!==last){last=now;syncMarketStatus84();renderQuick84();}};
+    ['track','raceDate','raceNo'].forEach(id=>$(id)?.addEventListener('change',check));
+  }
+
+  function refresh(){ setVersion(); removeOldActionPanels(); ensureFlow(); syncImportStatus(); renderQuick84(); syncMarketStatus84(); annotateFinal(); makeResultIndependent(); annotateDashboardEmpty85(); }
 
   function hook(name, after){
     const fn=window[name]; if(typeof fn!=='function'||fn.__chass84)return;
@@ -249,7 +334,7 @@
   }
 
   function boot(){
-    injectStyles(); setVersion(); removeOldActionPanels(); ensureFlow(); makeResultIndependent(); annotateFinal(); installHooks(); refresh();
+    injectStyles(); setVersion(); removeOldActionPanels(); ensureFlow(); makeResultIndependent(); annotateFinal(); installHooks(); resetLiveOnRaceChange85(); refresh();
     document.addEventListener('input',e=>{if(e.target?.matches?.('.win,.place,.odds,.pop,.time,.horse-name,.horse-no,.mark,#oddsType')){clearTimeout(window.__ch84Input);window.__ch84Input=setTimeout(()=>{renderQuick84();syncMarketStatus84();},80);}});
     document.addEventListener('change',e=>{if(e.target?.matches?.('.win,.place,.odds,.pop,.time,.horse-name,.horse-no,.mark,#oddsType'))setTimeout(()=>{renderQuick84();syncMarketStatus84();},60);});
     const obs=new MutationObserver(()=>{clearTimeout(window.__ch84Mut);window.__ch84Mut=setTimeout(()=>{removeOldActionPanels();ensureFlow();makeResultIndependent();annotateFinal();renderQuick84();syncMarketStatus84();syncImportStatus();},150);});
