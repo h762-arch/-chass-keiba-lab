@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.3.1</title>
+  <title>チャス競馬研究所 Ver.9.3.2</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.3.1</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.3.2</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -57,7 +57,7 @@
     <section id="finalCard" class="card final-card"><div class="section-head"><div><p class="eyebrow">CHASS FINAL</p><h2>最終判断</h2></div><span id="marketStatus" class="badge">市場待ち</span></div><div id="finalBody" class="empty">予想データを読み込むと自動表示します。</div></section>
     <section class="card"><div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div></div><div id="quickList" class="quick-list empty">馬データを入力すると一覧表示します。</div></section>
     <section class="card"><div class="section-head"><div><p class="eyebrow">HORSE DETAILS</p><h2>各馬詳細</h2></div></div><div id="horseList"></div></section>
-    <section class="card result-card"><p class="eyebrow">RESULT</p><h2>レース後検証</h2><button id="narSync" class="primary wide">NAR公式から結果・最終オッズを取得</button><p id="narStatus" class="muted"></p><div class="grid three"><label>1着 馬番<input id="finish1" type="number"></label><label>2着 馬番<input id="finish2" type="number"></label><label>3着 馬番<input id="finish3" type="number"></label></div><label>検証メモ<textarea id="memo" rows="4" placeholder="展開誤差、予想タイム誤差、穴馬評価の良否など"></textarea></label><button id="saveValidation" class="ghost wide">結果を保存・再集計</button></section>
+    <section class="card result-card"><p class="eyebrow">RESULT</p><h2>レース後検証</h2><button id="narSync" class="primary wide">NAR公式から結果取得・自動保存</button><p id="narStatus" class="muted"></p><div class="grid three"><label>1着 馬番<input id="finish1" type="number"></label><label>2着 馬番<input id="finish2" type="number"></label><label>3着 馬番<input id="finish3" type="number"></label></div><label>検証メモ<textarea id="memo" rows="4" placeholder="展開誤差、予想タイム誤差、穴馬評価の良否など"></textarea></label><button id="saveValidation" class="ghost wide">手動修正を保存・再集計</button></section>
   </section>
   <section id="dashboardView" class="view"><section class="card"><div class="section-head"><div><p class="eyebrow">VALIDATION</p><h2>予想検証ダッシュボード</h2></div><button id="recalcDash" class="primary">再集計</button></div><p class="muted">保存済みレースから自動集計します。</p><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div></section></section>
 </main>
