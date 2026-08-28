@@ -3,6 +3,8 @@
 const $=id=>document.getElementById(id);
 const KEY='chass_v80_races';
 const CURRENT='chass_v80_current';
+const ODDS_HISTORY='chass_v81_odds_history';
+let oddsTimer=null;
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const cleanName=s=>String(s??'').replace(/\s+/g,'').trim();
@@ -139,16 +141,42 @@ function renderHorses(){
 }
 async function importFile(f){
  const text=(await f.text()).replace(/^\uFEFF/,'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');let root;try{root=JSON.parse(text)}catch(e){throw new Error('JSON構文エラー: '+e.message)}
- state=transform(root);fillRace(state.race);persist(false);render();$('importStatus').textContent=`✓ Ver.8.0：${state.horses.length}頭読込 / AI勝率・複勝率計算済 / TIME ${state.horses.filter(x=>x.predictedTime).length}頭 / ${state.race.oddsType}`;
+ state=transform(root);fillRace(state.race);persist(false);render();$('importStatus').textContent=`✓ Ver.8.1：${state.horses.length}頭読込 / AI勝率・複勝率計算済 / TIME ${state.horses.filter(x=>x.predictedTime).length}頭 / ${state.race.oddsType}`;
 }
 function persist(validated=true){
  state.race=raceFromForm();const rid=raceId(state.race);if(!rid)return;const db=store.get(KEY,{});db[rid]={...state,updatedAt:new Date().toISOString(),validated};store.set(KEY,db);store.set(CURRENT,rid);
 }
 function narCode(track){return {'船橋':19,'笠松':22,'園田':27,'姫路':28,'門別':36}[track]||null}
+function applyMarketOdds(items, acquiredAt){
+ if(!Array.isArray(items)||!items.length)return 0;
+ const valid=items.map(x=>({horseNo:String(x.horseNo),odds:num(x.odds)})).filter(x=>x.odds!=null);
+ const pop=[...valid].sort((a,b)=>a.odds-b.odds); const popMap=new Map(pop.map((x,i)=>[x.horseNo,i+1]));
+ const map=new Map(valid.map(x=>[x.horseNo,x.odds]));
+ state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;h.ev=o*h.win;h.fair=h.win>0?100/h.win:null;h.warning='';}});
+ // 能力印を一旦復元し、市場評価を後段で付与
+ state.horses.forEach(h=>{if(h.mark?.includes('💎'))h.mark=''});
+ [...state.horses].sort((a,b)=>b.win-a.win).slice(0,4).forEach((h,i)=>h.mark=['◎','○','▲','△'][i]);
+ state.horses.forEach(h=>{
+   if(h.odds==null)return;
+   if(h.popularity>=10&&h.place>=20&&h.ev>=125)h.mark='💎💎💎';
+   else if(h.popularity>=5&&h.place>=22&&h.ev>=112)h.mark='💎';
+   if(h.popularity>=1&&h.popularity<=3&&h.ev<75)h.warning=h.ev<55?'⚠️⚠️⚠️':h.ev<65?'⚠️⚠️':'⚠️';
+ });
+ state.race.oddsType='実オッズ'; state.race.oddsUpdatedAt=acquiredAt||new Date().toISOString();
+ const rid=raceId(raceFromForm()); if(rid){const hist=store.get(ODDS_HISTORY,{});(hist[rid]??=[]).push({at:state.race.oddsUpdatedAt,odds:valid});hist[rid]=hist[rid].slice(-120);store.set(ODDS_HISTORY,hist)}
+ return valid.length;
+}
+async function syncLiveOdds(silent=false){
+ const r=raceFromForm(),code=narCode(r.track);if(!code){$('liveOddsStatus').textContent='現在オッズ自動取得は現在 船橋/笠松/園田/姫路/門別に対応。';return}
+ if(!r.raceDate||!r.raceNo){$('liveOddsStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
+ if(!silent)$('liveOddsStatus').textContent='NAR公式の現在オッズを確認中…';
+ try{const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;const res=await fetch(u,{cache:'no-store'});const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');render();persist(false);const t=new Date(state.race.oddsUpdatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});$('liveOddsBadge').textContent=`${count}頭反映`;$('liveOddsStatus').textContent=`NAR公式 現在オッズ ${count}頭反映｜更新 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`;}catch(e){$('liveOddsBadge').textContent='取得失敗';$('liveOddsStatus').textContent='取得失敗：'+e.message}
+}
+function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}}
 async function syncNar(){
  const r=raceFromForm(),code=narCode(r.track);if(!code){$('narStatus').textContent='NAR自動取得は現在 船橋/笠松/園田/姫路/門別に対応。';return}
  const u=`/api/nar/sync?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;$('narStatus').textContent='NAR公式を確認中…';
- try{const res=await fetch(u);const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');if(d.finishOrder?.length>=3){$('finish1').value=d.finishOrder[0];$('finish2').value=d.finishOrder[1];$('finish3').value=d.finishOrder[2]}if(Array.isArray(d.odds)&&d.odds.length){const map=new Map(d.odds.map(x=>[String(x.horseNo),num(x.odds)]));state.horses.forEach(h=>{const o=map.get(String(h.horseNo));if(o!=null){h.odds=o;h.ev=o*h.win}});state.race.oddsType='実オッズ';}render();$('narStatus').textContent=`NAR公式反映：着順 ${d.finishOrder?.join('-')||'未確定'} / オッズ ${d.odds?.length||0}頭`;persist(false)}catch(e){$('narStatus').textContent='取得失敗：'+e.message}
+ try{const res=await fetch(u);const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');if(d.finishOrder?.length>=3){$('finish1').value=d.finishOrder[0];$('finish2').value=d.finishOrder[1];$('finish3').value=d.finishOrder[2]}if(Array.isArray(d.odds)&&d.odds.length)applyMarketOdds(d.odds,new Date().toISOString());render();$('narStatus').textContent=`NAR公式反映：着順 ${d.finishOrder?.join('-')||'未確定'} / オッズ ${d.odds?.length||0}頭`;persist(false)}catch(e){$('narStatus').textContent='取得失敗：'+e.message}
 }
 function saveValidation(){
  const f=[num($('finish1').value),num($('finish2').value),num($('finish3').value)].filter(x=>x!=null);if(f.length<3){alert('1〜3着を入力してください');return}state.result={finishOrder:f,memo:$('memo').value,at:new Date().toISOString()};persist(true);renderDashboard();alert('検証結果を保存しました。');
@@ -166,6 +194,6 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 ['category','raceDate','track','raceNo','distance','trackCondition','chaos','pace'].forEach(id=>$(id).addEventListener('input',()=>{state.race=raceFromForm();render()}));
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
-$('narSync').onclick=syncNar;$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
+$('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
 const last=store.get(CURRENT,'');const db=store.get(KEY,{});if(last&&db[last]){state=db[last];fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
 })();
