@@ -1,34 +1,89 @@
-# チャス競馬研究所 Ver.7.1
+# チャス競馬研究所 Ver.8.3
 
-GitHub移行用の再構築版です。
+Ver.8.3 は「機能を増やす更新」ではなく、今後の更新を安全に続けやすくするための整理版です。
 
-## 構成
-- `public/` : 予想入力・全馬比較・6,000回シミュレーション・検証ダッシュボード
-- `server.mjs` : 静的配信 + NAR公式結果取得API
-- `package.json` : Node.js起動設定
+## 基本構成
 
-## NAR公式連携
-`GET /api/nar/sync?code=27&date=2026-08-27&race=1`
+今後は原則として次のファイルを中心に運用します。
 
-NAR公式のレース結果ページ・払戻ページ・単勝オッズページをサーバー側で取得し、
-着順、実走タイム、最終単勝オッズ/人気をアプリへ返します。
+- index.html
+- styles.css
+- app.js
+- chass-latest.js
+- worker.js
+- manifest.webmanifest
+- wrangler.jsonc
+- package.json
+- server.mjs
+- README.md
 
-現在UIでコード自動判定する主な競馬場:
-- 船橋 19
-- 笠松 22
-- 園田 27
-- 姫路 28
-- 門別 36
+予想データJSONなどは必要に応じて残してください。
 
-## 起動
-```bash
-npm start
+## 今回の更新
+
+- chass-latest.js の表示バージョンを Ver.8.3 に更新
+- README を1本化する運用へ変更
+- 過去の README-Ver*.txt / 旧パッチJSを増やさない方針に整理
+- 今後の機能追加は原則 chass-latest.js に集約
+- 既存の Ver.8.2 UI、現在オッズ、レース結果、検証導線は維持
+
+## 導入方法
+
+1. このZIPを展開
+2. GitHubの `chass-latest.js` を同名ファイルで置換
+3. `README.md` をこのREADME.mdで置換
+4. Commit changes
+5. Cloudflareのデプロイ成功を確認
+6. Safariを再読み込み
+7. 画面上部が `Ver.8.3` になれば反映完了
+
+## index.html の推奨末尾
+
+```html
+<script src="app.js"></script>
+<script src="chass-latest.js"></script>
+</body>
+</html>
 ```
-既定ポートは3000。ホスティング側の `PORT` 環境変数にも対応します。
 
-## GitHubへ
-このZIPをiPhoneの「ファイル」で展開し、GitHubリポジトリの
-`uploading an existing file` から中身をアップロードしてください。
+現在すでにこの2本だけを読み込んでいる場合、index.htmlは変更不要です。
 
-## 注意
-NAR公式HTMLの構造変更やアクセス制限がある場合は取得処理の修正が必要です。
+## 削除候補
+
+以下は、現在の index.html / chass-loader.js / worker.js から参照されていないことを確認した後で削除できます。
+
+- chass-v7.4-patch.js
+- chass-v7.5-patch.js
+- chass-v7.6-patch.js
+- README-Ver7.4.txt
+- README-Ver7.5.txt
+- README-Ver7.6.txt
+- README-Ver7.7.txt
+- README-Ver7.8.txt
+- README-Ver7.9.txt
+- README-Ver8.1.txt
+- README-Ver8.2.txt
+- index-tail-Ver7.7.txt
+- 追加手順.txt
+
+## まだ削除しないもの
+
+- app.js
+- styles.css
+- worker.js
+- index.html
+- chass-latest.js
+- manifest.webmanifest
+- wrangler.jsonc
+- package.json
+- server.mjs
+
+`chass-loader.js` は index.html が読み込んでいる場合は残してください。
+読み込んでいないことを確認できた場合のみ削除候補にできます。
+
+## 重要
+
+旧ファイルがGitHub上に存在しているだけなら、通常はアプリの動作速度へほぼ影響しません。
+問題になるのは、index.html等から旧パッチを同時に読み込んでいる場合です。
+
+削除は必ず「参照されていないこと」を確認してから行ってください。

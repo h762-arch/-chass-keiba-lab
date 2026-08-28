@@ -1,7 +1,7 @@
 /* CHASS KEIBA LAB Ver.8.2 UI Update */
 (() => {
   'use strict';
-  const VERSION='8.2';
+  const VERSION='8.3';
   const $=id=>document.getElementById(id);
   const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
   const n=v=>{const x=parseFloat(v);return Number.isFinite(x)?x:null;};
