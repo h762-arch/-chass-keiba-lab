@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.3';
+const APP_VERSION='9.3.1';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -8,6 +8,7 @@ const CURRENT='chass_v90_current';
 const LEGACY_CURRENT='chass_v80_current';
 const ODDS_HISTORY='chass_v90_odds_history';
 let oddsTimer=null;
+let autoRaceSelectTimer=null;
 const NAR_TRACKS={
   '盛岡':10,'水沢':11,'浦和':18,'船橋':19,'大井':20,'川崎':21,'笠松':22,'金沢':23,
   '名古屋':24,'園田':27,'姫路':28,'高知':31,'佐賀':32,'門別':36
@@ -266,10 +267,23 @@ async function loadAutoRace(){
      next.result=old.result||null;next.actualTimes=old.actualTimes||{};
      next.finalSnapshot=old.finalSnapshot||null;next.predictionSnapshot=old.predictionSnapshot||null;
    }
-   state=next;fillRace(state.race);render();persist(old?.validated||false);
+   state=next;fillRace(state.race);
+   let marketCount=0;
+   if(Array.isArray(d.odds)&&d.odds.length){
+     marketCount=applyMarketOdds(d.odds,d.acquiredAt||new Date().toISOString());
+   }
+   render();persist(old?.validated||false);
    $('autoRaceBadge').textContent=`${state.horses.length}頭`;
-   $('autoRaceStatus').textContent=`NAR公式から${state.horses.length}頭を自動生成${(d.odds||[]).length?` / オッズ ${(d.odds||[]).length}頭反映`:''}。手動JSONなしで予想を開始しました。`;
-   $('importStatus').textContent=`✓ Ver.${APP_VERSION} 自動生成：${state.horses.length}頭 / データ源 NAR公式`;
+   $('autoRaceStatus').textContent=`NAR公式から${state.horses.length}頭を自動生成${marketCount?` / 現在オッズ ${marketCount}頭も同時反映`:''}。手動JSONなしで予想を開始しました。`;
+   $('importStatus').textContent=`✓ Ver.${APP_VERSION} 自動生成：${state.horses.length}頭 / データ源 NAR公式${marketCount?` / 現在オッズ ${marketCount}頭反映`:''}`;
+   if(marketCount){
+     $('liveOddsBadge').textContent=`${marketCount}頭反映`;
+     const t=new Date(state.race.oddsUpdatedAt||d.acquiredAt||Date.now()).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+     $('liveOddsStatus').textContent=`NAR公式 現在オッズ ${marketCount}頭をレースデータと同時取得｜更新 ${t}｜人気・期待回収率・穴馬/危険馬まで再計算済み`;
+   }else{
+     $('liveOddsBadge').textContent='未取得';
+     $('liveOddsStatus').textContent='出馬表は取得済み。現在オッズは発売前・未掲載などで取得できませんでした。';
+   }
  }catch(e){
    $('autoRaceBadge').textContent='取得失敗';
    $('autoRaceStatus').textContent='自動生成失敗：'+e.message;
@@ -538,9 +552,19 @@ function migrateLegacy(){
 }
 initAutoRaceControls();
 if($('autoRaceLoad'))$('autoRaceLoad').onclick=loadAutoRace;
-if($('autoTrack'))$('autoTrack').onchange=e=>{if($('track'))$('track').value=e.target.value};
-if($('autoRaceDate'))$('autoRaceDate').onchange=e=>{if($('raceDate'))$('raceDate').value=e.target.value};
-if($('autoRaceNo'))$('autoRaceNo').onchange=e=>{if($('raceNo'))$('raceNo').value=e.target.value};
+if($('autoTrack'))$('autoTrack').onchange=e=>{
+  if($('track'))$('track').value=e.target.value;
+  if($('autoRaceNo')?.value){if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);}
+};
+if($('autoRaceDate'))$('autoRaceDate').onchange=e=>{
+  if($('raceDate'))$('raceDate').value=e.target.value;
+  if($('autoRaceNo')?.value){if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);}
+};
+if($('autoRaceNo'))$('autoRaceNo').onchange=e=>{
+  if($('raceNo'))$('raceNo').value=e.target.value;
+  if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);
+  autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);
+};
 $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{await importFile(f)}catch(err){$('importStatus').textContent='取込失敗：'+err.message;alert($('importStatus').textContent)}e.target.value=''});
 ['category','raceDate','track','raceNo','distance','trackCondition','chaos','pace'].forEach(id=>$(id).addEventListener('input',()=>{state.race=raceFromForm();render()}));
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
