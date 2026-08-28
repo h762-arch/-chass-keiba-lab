@@ -832,3 +832,94 @@
   function boot(){injectCss();setVersion();wrapFetch();refresh();const mo=new MutationObserver(()=>{clearTimeout(mo.__t);mo.__t=setTimeout(refresh,80)});['quickList','quickCompare','horseList','dashboardView'].forEach(id=>{const el=$(id);if(el)mo.observe(el,{childList:true,subtree:true})});document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/現在オッズ|結果・最終オッズ|結果を保存|再集計|予想入力|検証ダッシュボード/.test(t))setTimeout(refresh,750)},true);setTimeout(recoverActualTimes,1200);setInterval(()=>{setVersion();syncHorseDetails()},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
+
+/* CHASS KEIBA LAB Ver.8.9.3 - VALIDATION CORRECTNESS / DASHBOARD CONSOLIDATION */
+(() => {
+  'use strict';
+  const VERSION='8.9.3', DB_KEY='chass_v80_races';
+  const $=id=>document.getElementById(id);
+  const qsa=(s,r=document)=>[...r.querySelectorAll(s)];
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
+  const pct=(a,b)=>b?((a/b)*100).toFixed(1)+'%':'—';
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  const hNo=h=>String(h?.horseNo??h?.['horse-no']??h?.no??'').trim();
+  const hName=h=>String(h?.horseName??h?.['horse-name']??h?.name??'').trim();
+  const hMark=h=>String(h?.mark??'').trim();
+  const hWin=h=>num(h?.win??h?.winRate??h?.aiWin);
+  const hPlace=h=>num(h?.place??h?.placeRate??h?.aiPlace);
+  const hOverall=h=>num(h?.overall??h?.score??h?.aiOverall);
+  const hOdds=h=>num(h?.odds??h?.realOdds??h?.currentOdds);
+  const hPop=h=>num(h?.popularity??h?.pop);
+  const hTime=h=>String(h?.predictedTime??h?.time??'');
+  const hEv=h=>{const x=num(h?.ev??h?.expectedReturn??h?.expectedValue);if(x!=null&&x>10)return x;const w=hWin(h),o=hOdds(h);return w!=null&&o!=null?w*o:null};
+  const timeSec=v=>{if(v==null||v==='')return null;if(typeof v==='number')return Number.isFinite(v)?v:null;const s=String(v).trim();if(/^\d+(?:\.\d+)?$/.test(s))return Number(s);const m=s.match(/^(\d+):([0-5]?\d(?:\.\d+)?)$/);return m?Number(m[1])*60+Number(m[2]):null};
+  function setVersion(){document.title=document.title.replace(/Ver\.\d+(?:\.\d+){0,2}/gi,`Ver.${VERSION}`);qsa('.topbar h1 span,h1 span').forEach(el=>{if(/Ver\./i.test(el.textContent||''))el.textContent=`Ver.${VERSION}`})}
+  function loadDb(){try{const v=JSON.parse(localStorage.getItem(DB_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{}}catch{return {}}}
+  function resultOrder(r){
+    const candidates=[r?.result?.finishOrder,r?.result?.order,r?.finishOrder,[r?.result1,r?.result2,r?.result3],[r?.finish1,r?.finish2,r?.finish3]];
+    for(const c of candidates){if(Array.isArray(c)){const a=c.slice(0,3).map(x=>String(x||'').trim()).filter(Boolean);if(a.length>=3)return a}}
+    return [];
+  }
+  function horses(r){return Array.isArray(r?.horses)?r.horses:[]}
+  function pos(r,h){const o=resultOrder(r),no=hNo(h),name=hName(h);let i=no?o.indexOf(no):-1;if(i<0&&name)i=o.indexOf(name);return i>=0?i+1:null}
+  function actualTime(r,h){const m=r?.actualTimes||r?.result?.actualTimes||r?.actualTimeByHorse||{};return m?.[hNo(h)]??h?.actualTime??''}
+  function normalizeSnapshotHorse(x){if(!x)return null;return {horseNo:String(x.horseNo??x['horse-no']??x.no??'').trim(),horseName:String(x.horseName??x['horse-name']??x.name??'').trim(),mark:String(x.mark??x.label??'').trim()}}
+  function finalTop3(r){
+    const fs=r?.finalSnapshot?.top3||r?.unifiedSnapshot?.finalSnapshot?.top3;
+    if(Array.isArray(fs)&&fs.length){const a=fs.map(normalizeSnapshotHorse).filter(x=>x?.horseNo||x?.horseName).slice(0,3);if(a.length)return a}
+    const hs=horses(r);
+    const byExplicit=['◎','○','▲'].map(m=>hs.find(h=>hMark(h).includes(m))).filter(Boolean).map(normalizeSnapshotHorse);
+    if(byExplicit.length)return byExplicit.slice(0,3);
+    return [...hs].sort((a,b)=>(hWin(b)??-1)-(hWin(a)??-1)).slice(0,3).map(normalizeSnapshotHorse);
+  }
+  function modelTop(r,key){
+    const ms=r?.modelSnapshot||r?.unifiedSnapshot?.modelSnapshot||{};
+    const keyMap={win:'winModelTop',overall:'overallModelTop',value:'valueModelTop',final:'finalModelTop'};
+    const snap=ms[keyMap[key]]||ms[key];
+    if(snap?.horseNo||snap?.horseName)return normalizeSnapshotHorse(snap);
+    if(key==='final')return finalTop3(r)[0]||null;
+    const hs=horses(r);if(!hs.length)return null;
+    const getter=key==='win'?hWin:key==='overall'?hOverall:hEv;
+    return normalizeSnapshotHorse([...hs].sort((a,b)=>(getter(b)??-1)-(getter(a)??-1))[0]);
+  }
+  function findHorse(r,ref){if(!ref)return null;return horses(r).find(h=>(ref.horseNo&&hNo(h)===ref.horseNo)||(ref.horseName&&hName(h)===ref.horseName))||null}
+  function calc(limit=0){
+    let rs=Object.values(loadDb()).filter(r=>resultOrder(r).length>=3);
+    rs.sort((a,b)=>String(b?.result?.at||b?.resultUpdatedAt||b?.updatedAt||'').localeCompare(String(a?.result?.at||a?.resultUpdatedAt||a?.updatedAt||'')));
+    if(limit)rs=rs.slice(0,limit);
+    const s={races:rs.length,atLeast1:0,all3:0,captured:0,marks:{},diamond:{n:0,p:0,pop:[],odds:[]},warn:{n:0,out:0},winAE:[],plAE:[],winBrier:[],plBrier:[],time:[],models:{win:{n:0,w:0,p:0,pos:[]},overall:{n:0,w:0,p:0,pos:[]},value:{n:0,w:0,p:0,pos:[]},final:{n:0,w:0,p:0,pos:[]}}};
+    ['◎','○','▲','△','☆'].forEach(k=>s.marks[k]={n:0,w:0,p:0,pos:[]});
+    for(const r of rs){
+      const hs=horses(r),actual=new Set(resultOrder(r));
+      const preds=finalTop3(r);const hits=preds.filter(x=>actual.has(x.horseNo)||actual.has(x.horseName)).length;
+      s.captured+=hits;if(hits>=1)s.atLeast1++;if(preds.length===3&&hits===3)s.all3++;
+      for(const h of hs){
+        const p=pos(r,h),m=hMark(h),wp=hWin(h),pp=hPlace(h);
+        for(const k of Object.keys(s.marks))if(m.includes(k)){const z=s.marks[k];z.n++;if(p===1)z.w++;if(p&&p<=3)z.p++;if(p)z.pos.push(p)}
+        const pop=hPop(h),ev=hEv(h),diamond=m.includes('💎')||(pop!=null&&ev!=null&&pop>=5&&(pp??0)>=20&&ev>=112);if(diamond){s.diamond.n++;if(p&&p<=3)s.diamond.p++;if(pop!=null)s.diamond.pop.push(pop);if(hOdds(h)!=null)s.diamond.odds.push(hOdds(h))}
+        const warning=m.includes('⚠')||(pop!=null&&pop<=3&&ev!=null&&ev<82);if(warning){s.warn.n++;if(!p||p>3)s.warn.out++}
+        if(wp!=null){const y=p===1?1:0,q=Math.max(0,Math.min(100,wp))/100;s.winAE.push(Math.abs(y*100-wp));s.winBrier.push((q-y)**2)}
+        if(pp!=null){const y=p&&p<=3?1:0,q=Math.max(0,Math.min(100,pp))/100;s.plAE.push(Math.abs(y*100-pp));s.plBrier.push((q-y)**2)}
+        const pt=timeSec(hTime(h)),at=timeSec(actualTime(r,h));if(pt!=null&&at!=null)s.time.push(Math.abs(at-pt));
+      }
+      for(const k of Object.keys(s.models)){const ref=modelTop(r,k),h=findHorse(r,ref);if(!h)continue;const p=pos(r,h),z=s.models[k];z.n++;if(p===1)z.w++;if(p&&p<=3)z.p++;if(p)z.pos.push(p)}
+    }
+    return s;
+  }
+  let currentLimit=0;
+  function injectCss(){if($('chass893Styles'))return;const st=document.createElement('style');st.id='chass893Styles';st.textContent=`
+    #chass892Validation{display:none!important}
+    #chass893Validation{margin:18px 0;padding:16px;border:1px solid rgba(97,223,184,.30);border-radius:20px;background:rgba(15,29,49,.68)}
+    .c893-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.c893-head small{display:block;color:#61dfb8;font-weight:850;letter-spacing:.14em}.c893-head h3{font-size:1.34rem;margin:4px 0}.c893-note{font-size:.75rem;color:#9cadc7;line-height:1.5}.c893-window{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}.c893-window button{border:1px solid rgba(130,160,205,.25);background:transparent;color:#aebbd0;border-radius:999px;padding:8px 11px;font-weight:750}.c893-window button.active{background:#61dfb8;color:#071620;border-color:#61dfb8}
+    .c893-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:10px}.c893-card{border:1px solid rgba(130,160,205,.20);border-radius:15px;padding:12px;min-width:0}.c893-card span,.c893-card small,.c893-card strong{display:block}.c893-card span{color:#9cadc7;font-size:.78rem}.c893-card strong{font-size:1.34rem;margin:5px 0}.c893-card small{color:#8fa1bb;font-size:.71rem;line-height:1.4}.c893-wide{grid-column:1/-1}.c893-title{margin:18px 0 8px;font-size:1rem;font-weight:850}.c893-table{display:grid}.c893-row{display:grid;grid-template-columns:minmax(90px,1.3fr) repeat(4,minmax(0,.85fr));gap:7px;border-top:1px solid rgba(130,160,205,.16);padding:10px 4px;align-items:center;font-size:.76rem}.c893-row span{color:#a9b7cc}.c893-ok{color:#61dfb8!important}
+    @media(max-width:520px){.c893-grid{grid-template-columns:1fr 1fr}.c893-row{grid-template-columns:1fr 1fr}.c893-row b{grid-column:1/-1}}
+  `;document.head.appendChild(st)}
+  function ensure(){const dash=$('dashboardView');if(!dash)return null;let sec=$('chass893Validation');if(sec)return sec;sec=document.createElement('section');sec.id='chass893Validation';sec.className='card';const legacy=qsa('section.card',dash).find(x=>/予想検証ダッシュボード/.test(x.textContent||''));if(legacy)legacy.insertAdjacentElement('afterend',sec);else dash.prepend(sec);return sec}
+  function render(){const sec=ensure();if(!sec)return;const s=calc(currentLimit),ac=s.races?s.captured/s.races:null;const names={win:'勝率',overall:'総合',value:'期待値',final:'FINAL'};
+    sec.innerHTML=`<div class="c893-head"><div><small>VALIDATION 8.9.3</small><h3>検証精度・モデル比較</h3></div><span class="c893-note">予想時点スナップショットを優先</span></div><div class="c893-window"><button data-l="0" class="${currentLimit===0?'active':''}">全期間</button><button data-l="50" class="${currentLimit===50?'active':''}">最新50R</button><button data-l="100" class="${currentLimit===100?'active':''}">最新100R</button></div><div class="c893-note">◎○▲の捕捉は、結果保存後に変化した現在の印ではなく「予想時点の finalSnapshot.top3」を優先して判定します。</div><div class="c893-grid"><div class="c893-card"><span>◎○▲ 1頭以上捕捉率</span><strong>${pct(s.atLeast1,s.races)}</strong><small>${s.races}R中 ${s.atLeast1}R</small></div><div class="c893-card"><span>◎○▲ 3頭完全捕捉率</span><strong>${pct(s.all3,s.races)}</strong><small>着順不問で3頭全て3着内</small></div><div class="c893-card"><span>平均捕捉頭数</span><strong>${ac==null?'—':ac.toFixed(2)+'頭'}</strong><small>1Rあたり最大3頭</small></div><div class="c893-card"><span>💎 穴馬 複勝率</span><strong>${pct(s.diamond.p,s.diamond.n)}</strong><small>${s.diamond.n}頭中 ${s.diamond.p}頭</small></div><div class="c893-card"><span>💎 平均人気 / 単勝</span><strong>${avg(s.diamond.pop)==null?'—':avg(s.diamond.pop).toFixed(1)+'人気'}</strong><small>${avg(s.diamond.odds)==null?'実オッズ不足':'平均 '+avg(s.diamond.odds).toFixed(1)+'倍'}</small></div><div class="c893-card"><span>⚠️ 人気馬 圏外率</span><strong>${pct(s.warn.out,s.warn.n)}</strong><small>${s.warn.n}頭中 ${s.warn.out}頭</small></div><div class="c893-card"><span>AI勝率 MAE / Brier</span><strong>${avg(s.winAE)==null?'—':avg(s.winAE).toFixed(1)+'pt'}</strong><small>Brier ${avg(s.winBrier)==null?'—':avg(s.winBrier).toFixed(3)}</small></div><div class="c893-card"><span>AI複勝率 MAE / Brier</span><strong>${avg(s.plAE)==null?'—':avg(s.plAE).toFixed(1)+'pt'}</strong><small>Brier ${avg(s.plBrier)==null?'—':avg(s.plBrier).toFixed(3)}</small></div><div class="c893-card c893-wide"><span>予想TIME 平均絶対誤差</span><strong>${avg(s.time)==null?'—':avg(s.time).toFixed(2)+'秒'}</strong><small>${s.time.length?`${s.time.length}頭分で集計`:'NAR実走TIMEが保存された馬から自動集計'}</small></div></div><div class="c893-title">モデル別成績</div><div class="c893-table">${Object.entries(s.models).map(([k,v])=>`<div class="c893-row"><b>${names[k]}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.w,v.n)}</span><span>複 ${pct(v.p,v.n)}</span><span>平均着 ${avg(v.pos)==null?'—':avg(v.pos).toFixed(2)}</span></div>`).join('')}</div><div class="c893-title">印別成績</div><div class="c893-table">${Object.entries(s.marks).map(([k,v])=>`<div class="c893-row"><b>${esc(k)}</b><span>対象 ${v.n}</span><span>勝 ${pct(v.w,v.n)}</span><span>複 ${pct(v.p,v.n)}</span><span>平均着 ${avg(v.pos)==null?'—':avg(v.pos).toFixed(2)}</span></div>`).join('')}</div>`;
+    qsa('.c893-window button',sec).forEach(b=>b.onclick=()=>{currentLimit=Number(b.dataset.l||0);render()});
+  }
+  function boot(){injectCss();setVersion();render();document.addEventListener('click',e=>{const t=(e.target?.closest?.('button,label')?.textContent||'').replace(/\s+/g,' ');if(/結果|再集計|検証ダッシュボード/.test(t))setTimeout(()=>{setVersion();render()},700)},true);setInterval(()=>{setVersion()},3000)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
