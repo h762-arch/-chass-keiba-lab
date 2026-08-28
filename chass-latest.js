@@ -1,10 +1,9 @@
-/* CHASS KEIBA LAB Ver.8.5 - VERIFIED LIVE MARKET / FLOW / MOBILE UI */
+/* CHASS KEIBA LAB Ver.8.6 - AUTO MARKET / RESULT / VALIDATION FLOW */
 (() => {
   'use strict';
 
-  const VERSION = '8.5';
+  const VERSION = '8.6';
   const $ = id => document.getElementById(id);
-  const LIVE_KEY_PREFIX = 'chass_live_verified_v85:';
   const qsa = (s, r=document) => [...r.querySelectorAll(s)];
   const num = v => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
@@ -78,19 +77,11 @@
     if (race) race.insertAdjacentElement('beforebegin', sec); else prediction.prepend(sec);
 
     $('chass84OddsBtn')?.addEventListener('click', () => syncCurrentOdds84(false));
-    $('chass84ResultBtn')?.addEventListener('click', () => {
-      const result = findResultSection();
-      const fetchBtn = $('fetchOfficialResult') || $('narSync');
-      if (fetchBtn) fetchBtn.click();
-      if (result) setTimeout(()=>result.scrollIntoView({behavior:'smooth', block:'start'}),80);
-    });
-    $('chass84DashBtn')?.addEventListener('click', () => {
-      const btn = qsa('.tab').find(x => x.dataset.view === 'dashboardView');
-      if (btn) btn.click(); else if (typeof window.showView === 'function') window.showView('dashboardView');
-    });
+    $('chass84ResultBtn')?.addEventListener('click', () => syncResultAndValidate86());
+    $('chass84DashBtn')?.addEventListener('click', () => openDashboard86());
     $('raceImportFile')?.addEventListener('change', () => {
       const f = $('raceImportFile')?.files?.[0]; if (f) setFlowStatus(`${f.name} を読み込み中…`);
-      setTimeout(syncImportStatus, 350); setTimeout(syncImportStatus, 1300);
+      setTimeout(syncImportStatus, 350); setTimeout(syncImportStatus, 1300); scheduleAutoOdds86(1600);
     });
   }
 
@@ -110,29 +101,6 @@
     try { if (typeof window.narTrackCode === 'function') return window.narTrackCode(track); } catch {}
     return map[track] || null;
   }
-
-  function raceKey85(){
-    const {track,date,race}=getRaceInfo();
-    return `${date}|${track}|${race}`;
-  }
-  function liveKey85(){ return LIVE_KEY_PREFIX + raceKey85(); }
-  function markLiveVerified85(meta={}){
-    try{
-      sessionStorage.setItem(liveKey85(), JSON.stringify({
-        verified:true,
-        at:meta.acquiredAt || new Date().toISOString(),
-        count:meta.count || 0,
-        source:meta.source || 'NAR'
-      }));
-    }catch{}
-  }
-  function getLiveVerified85(){
-    try{
-      const v=JSON.parse(sessionStorage.getItem(liveKey85())||'null');
-      return v?.verified ? v : null;
-    }catch{return null;}
-  }
-  function clearLiveVerified85(){ try{ sessionStorage.removeItem(liveKey85()); }catch{} }
 
   function applyOddsToLegacyRows(items, acquiredAt){
     const valid = (items || []).map(x => ({no:String(x.horseNo ?? x.no ?? ''), odds:num(x.odds)})).filter(x => x.no && x.odds != null);
@@ -161,18 +129,21 @@
     setFlowStatus('NAR公式の現在オッズを確認中…');
     try {
       if (typeof window.syncLiveOdds === 'function') {
-        const out = await window.syncLiveOdds(silent);
-        const hs=currentRows(), count=hs.filter(h=>h.odds!=null).length;
-        if(!count) throw new Error('現在オッズを確認できません');
-        markLiveVerified85({count,source:'NAR-live'});
-        setTimeout(() => { renderQuick84(); syncMarketStatus84(); }, 30);
-        setFlowStatus(`現在オッズ ${count}頭を確認。人気・期待値・最終判断を再計算しました。`,'ok');
-        return out ?? true;
+        await window.syncLiveOdds(silent);
+        await new Promise(r=>setTimeout(r,80));
+        renderQuick84(); syncMarketStatus84();
+        if(!marketIsReal()) throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');
+        saveMarketSnapshot86('syncLiveOdds');
+        setFlowStatus('現在オッズを更新しました。人気・期待値・最終判断を再計算しました。','ok');
+        return true;
       }
       if ($('liveOddsSync')) {
         $('liveOddsSync').click();
-        setFlowStatus('現在オッズ取得を実行しました。反映を確認中…');
-        setTimeout(() => { const count=currentRows().filter(h=>h.odds!=null).length; if(count){markLiveVerified85({count,source:'NAR-live-button'});} renderQuick84(); syncMarketStatus84(); setFlowStatus(count?`現在オッズ ${count}頭を確認しました。`:'現在オッズの反映待ちです。',count?'ok':'warn'); }, 700);
+        await new Promise(r=>setTimeout(r,800));
+        renderQuick84(); syncMarketStatus84();
+        if(!marketIsReal()) throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');
+        saveMarketSnapshot86('liveOddsButton');
+        setFlowStatus('現在オッズを更新しました。','ok');
         return true;
       }
       const {track,date,race} = getRaceInfo(), code = narCode(track);
@@ -184,8 +155,7 @@
       else if (typeof window.applyOfficialOdds === 'function') count = window.applyOfficialOdds({...data, odds:data.odds || [], oddsType:'実オッズ', checkedAt:data.acquiredAt}) || 0;
       if (!count) count = applyOddsToLegacyRows(data.odds || [], data.acquiredAt);
       if (!count) throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');
-      markLiveVerified85({count,acquiredAt:data.acquiredAt,source:'NAR-api'});
-      renderQuick84(); syncMarketStatus84();
+      renderQuick84(); syncMarketStatus84(); saveMarketSnapshot86('manual-or-live');
       setFlowStatus(`NAR公式 現在オッズ ${count}頭反映。人気・期待値・最終判断を更新しました。`,'ok');
       return true;
     } catch(e) {
@@ -196,57 +166,29 @@
   window.chassSyncCurrentOdds = syncCurrentOdds84;
 
   function currentRows(){
-    const domRows=qsa('.horse-row');
-    const domMap=new Map();
-    domRows.forEach((r,i)=>{
-      let h=null; try{ h=typeof window.horseFromRow==='function'?window.horseFromRow(r):null; }catch{}
-      const no=String(h?.['horse-no'] ?? r.querySelector('.horse-no')?.value ?? i+1);
-      domMap.set(no,{
-        no,
-        name:String(h?.['horse-name'] ?? r.querySelector('.horse-name')?.value ?? '').trim(),
-        mark:String(h?.mark ?? r.querySelector('.mark')?.value ?? ''),
-        win:num(h?.win ?? r.querySelector('.win')?.value),
-        place:num(h?.place ?? r.querySelector('.place')?.value),
-        time:String(h?.time ?? r.querySelector('.time')?.value ?? ''),
-        odds:num(h?.odds ?? r.querySelector('.odds')?.value),
-        pop:num(h?.pop ?? r.querySelector('.pop')?.value),
-        overall:null
-      });
-    });
     if (window.state?.horses?.length) {
-      return window.state.horses.map((h,i)=>{
-        const no=String(h.horseNo ?? h['horse-no'] ?? i+1), d=domMap.get(no)||{};
-        return {
-          no,
-          name:String(h.horseName ?? h['horse-name'] ?? d.name ?? ''),
-          mark:String(h.mark ?? d.mark ?? ''),
-          win:num(h.win ?? d.win), place:num(h.place ?? d.place),
-          time:String(h.predictedTime ?? h.time ?? d.time ?? ''),
-          overall:num(h.overall ?? d.overall),
-          // DOM values win here because live odds are often written into legacy rows first.
-          odds:d.odds ?? num(h.odds), pop:d.pop ?? num(h.popularity ?? h.pop)
-        };
-      }).filter(h=>h.name);
+      return window.state.horses.map((h,i)=>({
+        no:String(h.horseNo ?? h['horse-no'] ?? i+1), name:String(h.horseName ?? h['horse-name'] ?? ''), mark:String(h.mark ?? ''),
+        win:num(h.win), place:num(h.place), time:String(h.predictedTime ?? h.time ?? ''), overall:num(h.overall), odds:num(h.odds), pop:num(h.popularity ?? h.pop)
+      })).filter(h=>h.name);
     }
-    return [...domMap.values()].filter(h=>h.name).map(h=>{
-      if(h.overall==null){
-        try{
-          const row=domRows.find((r,i)=>String(r.querySelector('.horse-no')?.value||i+1)===h.no);
-          if(row && typeof window.aiBreakdown==='function'){
-            const x=typeof window.horseFromRow==='function'?window.horseFromRow(row):null;
-            const hs=domRows.map(rr=>typeof window.horseFromRow==='function'?window.horseFromRow(rr):{});
-            h.overall=num(window.aiBreakdown(x,hs)?.overall);
-          }
-        }catch{}
-      }
-      return h;
-    });
+    const rows=qsa('.horse-row');
+    return rows.map((r,i)=>{
+      let h=null; try{ h=typeof window.horseFromRow==='function'?window.horseFromRow(r):null; }catch{}
+      const name=String(h?.['horse-name'] ?? r.querySelector('.horse-name')?.value ?? '').trim(); if(!name)return null;
+      const no=String(h?.['horse-no'] ?? r.querySelector('.horse-no')?.value ?? i+1), mark=String(h?.mark ?? r.querySelector('.mark')?.value ?? ''), win=num(h?.win ?? r.querySelector('.win')?.value), place=num(h?.place ?? r.querySelector('.place')?.value), time=String(h?.time ?? r.querySelector('.time')?.value ?? ''), odds=num(h?.odds ?? r.querySelector('.odds')?.value), pop=num(h?.pop ?? r.querySelector('.pop')?.value);
+      let overall=null; try{ if(typeof window.aiBreakdown==='function'){const hs=rows.map(rr=>typeof window.horseFromRow==='function'?window.horseFromRow(rr):{}); overall=num(window.aiBreakdown(h,hs)?.overall);} }catch{}
+      return {no,name,mark,win,place,time,overall,odds,pop};
+    }).filter(Boolean);
   }
 
   function marketIsReal(){
-    // Ver.8.5: only a successful NAR live fetch is treated as "current real odds".
-    // Imported odds may still be used by the legacy model, but are not labelled as LIVE.
-    return !!getLiveVerified85();
+    const hs=currentRows();
+    const priced=hs.filter(h=>h.odds!=null && h.odds>0).length;
+    if (!priced) return false;
+    const stateType=String(window.state?.race?.oddsType || '');
+    const uiType=String($('oddsType')?.value || $('oddsTypeDisplay')?.textContent || '');
+    return stateType === '実オッズ' || uiType.includes('実オッズ');
   }
 
   function renderQuick84(){
@@ -264,16 +206,15 @@
   }
 
   function syncMarketStatus84(){
-    const live=getLiveVerified85(), real=!!live, hs=currentRows(), priced=hs.filter(h=>h.odds!=null).length;
+    const real=marketIsReal(), hs=currentRows(), priced=hs.filter(h=>h.odds!=null && h.odds>0).length;
     const badge=$('marketStatus');
-    if (badge) badge.textContent=real?`実オッズ ${priced}頭`:'未取得';
+    if (badge) badge.textContent=real?`実オッズ ${priced}頭`:'オッズ未取得';
     const quick=$('quickMarketStatus');
-    if (quick) quick.textContent=real?`市場データ：NAR現在オッズ ${priced}頭反映済`:'市場データ：現在オッズ未取得';
-    // Do not overwrite CHASS FINAL as market-reflected unless LIVE verification succeeded.
+    if (quick) quick.textContent=real?`市場データ：実オッズ ${priced}頭反映済`:'市場データ：未取得';
     const finalStatus=$('chassFinalStatus');
-    if(finalStatus) finalStatus.textContent=real?'現在市場反映済':'AI評価';
-    const liveBadge=qsa('.card').find(x=>/現在オッズ/.test(x.querySelector('h2')?.textContent||''))?.querySelector('.badge');
-    if(liveBadge) liveBadge.textContent=real?`取得済 ${priced}頭`:'未取得';
+    if(finalStatus) finalStatus.textContent=real?'市場反映済':'未取得';
+    const integrity = $('marketIntegrityCount') || $('integrityMarketCount');
+    if(integrity) integrity.textContent = `${real?priced:0}/${hs.length}頭`;
   }
 
   function annotateFinal(){
@@ -300,29 +241,70 @@
     }
   }
 
+
+  const SNAP_KEY86='chass_market_snapshots_v86';
+  function raceKey86(){ const r=getRaceInfo(); return `${r.date}|${r.track}|${r.race}`; }
+  function saveMarketSnapshot86(source='live'){
+    if(!marketIsReal()) return;
+    const hs=currentRows().filter(h=>h.odds!=null && h.odds>0);
+    if(!hs.length) return;
+    try{
+      const db=JSON.parse(localStorage.getItem(SNAP_KEY86)||'{}');
+      const key=raceKey86(); if(!key || key==='||') return;
+      db[key] ||= [];
+      const snap={at:new Date().toISOString(),source,horses:hs.map(h=>({no:h.no,name:h.name,odds:h.odds,pop:h.pop}))};
+      const sig=JSON.stringify(snap.horses.map(h=>[h.no,h.odds,h.pop]));
+      const last=db[key][db[key].length-1];
+      if(!last || last.sig!==sig){snap.sig=sig;db[key].push(snap);if(db[key].length>60)db[key]=db[key].slice(-60);localStorage.setItem(SNAP_KEY86,JSON.stringify(db));}
+    }catch{}
+  }
+
+  let autoOddsTimer86=null;
+  function scheduleAutoOdds86(delay=1500){
+    clearTimeout(autoOddsTimer86);
+    autoOddsTimer86=setTimeout(async()=>{
+      const {track,date,race}=getRaceInfo();
+      if(!track||!date||!race||!currentRows().length) return;
+      if(marketIsReal()) return;
+      await syncCurrentOdds84(true);
+      saveMarketSnapshot86('auto-after-import');
+    },delay);
+  }
+
+  function resultFilled86(){
+    return ['result1','result2','result3'].every(id=>String($(id)?.value||'').trim());
+  }
+  async function syncResultAndValidate86(){
+    const result=findResultSection();
+    if(result) result.scrollIntoView({behavior:'smooth',block:'start'});
+    try{
+      let ok=false;
+      if(typeof window.fetchOfficialNar==='function') ok=await window.fetchOfficialNar({silent:false});
+      else if($('fetchOfficialResult')){ $('fetchOfficialResult').click(); await new Promise(r=>setTimeout(r,900)); ok=resultFilled86(); }
+      if(ok || resultFilled86()){
+        try{ if(typeof window.saveCurrentSilent==='function') window.saveCurrentSilent(); }catch{}
+        try{ if(typeof window.renderDashboard==='function') window.renderDashboard(); }catch{}
+        setFlowStatus('レース結果を反映し、検証データを更新しました。','ok');
+        return true;
+      }
+      setFlowStatus('結果はまだ確定していないか、取得できませんでした。','warn');
+      return false;
+    }catch(e){ setFlowStatus(`レース結果取得失敗：${String(e?.message||e)}`,'warn'); return false; }
+  }
+  window.chassSyncResultAndValidate=syncResultAndValidate86;
+
+  function openDashboard86(){
+    try{ if(resultFilled86() && typeof window.saveCurrentSilent==='function') window.saveCurrentSilent(); }catch{}
+    try{ if(typeof window.renderDashboard==='function') window.renderDashboard(); }catch{}
+    const btn=qsa('.tab').find(x=>x.dataset.view==='dashboardView');
+    if(btn) btn.click(); else if(typeof window.showView==='function') window.showView('dashboardView');
+  }
+
   function removeOldActionPanels(){
     ['chass82Actions','chass83Actions'].forEach(id=>$(id)?.remove());
   }
 
-  function annotateDashboardEmpty85(){
-    const dash=$('dashboardView'); if(!dash)return;
-    const text=dash.textContent||'';
-    if(!/検証済み\s*0R|検証済みレース[\s\S]*0R/.test(text))return;
-    if($('chass85DashEmptyNote'))return;
-    const sec=dash.querySelector('section.card'); if(!sec)return;
-    const p=document.createElement('p'); p.id='chass85DashEmptyNote'; p.className='muted';
-    p.style.cssText='margin-top:10px;padding:10px 12px;border:1px solid rgba(130,160,205,.18);border-radius:12px;line-height:1.5';
-    p.textContent='まだ「結果を保存・再集計」した完了レースがありません。予想データを読み込んだだけでは検証件数には加算しません。';
-    sec.appendChild(p);
-  }
-
-  function resetLiveOnRaceChange85(){
-    let last=raceKey85();
-    const check=()=>{const now=raceKey85();if(now!==last){last=now;syncMarketStatus84();renderQuick84();}};
-    ['track','raceDate','raceNo'].forEach(id=>$(id)?.addEventListener('change',check));
-  }
-
-  function refresh(){ setVersion(); removeOldActionPanels(); ensureFlow(); syncImportStatus(); renderQuick84(); syncMarketStatus84(); annotateFinal(); makeResultIndependent(); annotateDashboardEmpty85(); }
+  function refresh(){ setVersion(); removeOldActionPanels(); ensureFlow(); syncImportStatus(); renderQuick84(); syncMarketStatus84(); annotateFinal(); makeResultIndependent(); }
 
   function hook(name, after){
     const fn=window[name]; if(typeof fn!=='function'||fn.__chass84)return;
@@ -330,15 +312,17 @@
     wrapped.__chass84=true; window[name]=wrapped;
   }
   function installHooks(){
-    ['render','renderQuickCompare','renderAllAiBreakdowns','renderValueRanking','applyOfficialOdds','applyMarketOdds','applyOfficialResult','renderDashboard','saveCurrentSilent'].forEach(name=>hook(name,refresh));
+    ['render','renderQuickCompare','renderAllAiBreakdowns','renderValueRanking','applyOfficialOdds','applyMarketOdds','applyOfficialResult','renderDashboard','saveCurrentSilent','syncLiveOdds','fetchOfficialNar'].forEach(name=>hook(name,()=>{refresh();saveMarketSnapshot86('hook');}));
   }
 
   function boot(){
-    injectStyles(); setVersion(); removeOldActionPanels(); ensureFlow(); makeResultIndependent(); annotateFinal(); installHooks(); resetLiveOnRaceChange85(); refresh();
+    injectStyles(); setVersion(); removeOldActionPanels(); ensureFlow(); makeResultIndependent(); annotateFinal(); installHooks(); refresh();
     document.addEventListener('input',e=>{if(e.target?.matches?.('.win,.place,.odds,.pop,.time,.horse-name,.horse-no,.mark,#oddsType')){clearTimeout(window.__ch84Input);window.__ch84Input=setTimeout(()=>{renderQuick84();syncMarketStatus84();},80);}});
     document.addEventListener('change',e=>{if(e.target?.matches?.('.win,.place,.odds,.pop,.time,.horse-name,.horse-no,.mark,#oddsType'))setTimeout(()=>{renderQuick84();syncMarketStatus84();},60);});
+    ['result1','result2','result3'].forEach(id=>$(id)?.addEventListener('change',()=>{if(resultFilled86()){try{if(typeof window.saveCurrentSilent==='function')window.saveCurrentSilent();}catch{} try{if(typeof window.renderDashboard==='function')window.renderDashboard();}catch{}}}));
     const obs=new MutationObserver(()=>{clearTimeout(window.__ch84Mut);window.__ch84Mut=setTimeout(()=>{removeOldActionPanels();ensureFlow();makeResultIndependent();annotateFinal();renderQuick84();syncMarketStatus84();syncImportStatus();},150);});
     obs.observe(document.body,{childList:true,subtree:true});
+    setTimeout(()=>{ if(currentRows().length) scheduleAutoOdds86(500); },700);
   }
 
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
