@@ -208,11 +208,13 @@ function renderMarketDisplayState(){
 function getResultDisplayState(raceState=state){
  const finishOrder=(raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
  const done=finishOrder.length>=3,manual=done&&raceState?.result?.source==='手動修正保存';
- return {done,manual,finishOrder,label:manual?'手動修正あり':done?'取得済':'未取得'};
+ const status=done?'fetched':raceState?.resultStatus||(!raceId(raceState?.race)?'unavailable':'pending');
+ const label=manual?'手動修正あり':done?'取得済':status==='error'?'結果未取得':status==='pending'?'結果待ち':'未取得';
+ return {done,manual,finishOrder,status,label};
 }
 function restoreSavedResultFields(resultState=getResultDisplayState()){
  const rid=raceId(state.race);
- if(resultFormRaceId!==rid){['finish1','finish2','finish3','memo'].forEach(id=>{if($(id))$(id).value=''});resultFormRaceId=rid}
+ if(resultFormRaceId!==rid){['finish1','finish2','finish3','memo'].forEach(id=>{if($(id))$(id).value=''});if($('narStatus'))$('narStatus').textContent='';resultFormRaceId=rid}
  if(!resultState.done)return;
  resultState.finishOrder.forEach((no,i)=>{const input=$(`finish${i+1}`);if(input&&!input.value)input.value=no});
  if($('memo')&&!$('memo').value&&state.result?.memo)$('memo').value=state.result.memo;
@@ -221,6 +223,10 @@ function renderResultDisplayState(){
  const resultState=getResultDisplayState();
  if($('resultStatusBadge')){$('resultStatusBadge').textContent=resultState.label;$('resultStatusBadge').classList.toggle('is-done',resultState.done);$('resultStatusBadge').classList.toggle('is-manual',resultState.manual)}
  if($('resultState'))$('resultState').textContent=resultState.label;
+ if($('narSync'))$('narSync').textContent=resultState.done?'結果を再取得・再検証':resultState.status==='error'?'結果を再取得':'結果を確認・検証';
+ if($('narStatus')&&!$('narStatus').textContent){
+   $('narStatus').textContent=resultState.done?'公式結果を取得済みです。':resultState.status==='error'?'公式結果を確認できませんでした。再取得できます。':'結果待ち｜レース終了後に公式結果を取得できます。';
+ }
  restoreSavedResultFields(resultState);
 }
 function openResultValidation(){
@@ -293,6 +299,13 @@ function mergeExisting(next, existing){
  next.finalSnapshot=existing.finalSnapshot||next.finalSnapshot;
  next.predictionSnapshot=existing.predictionSnapshot||next.predictionSnapshot;
  next.marketSnapshot=existing.marketSnapshot||next.marketSnapshot;
+ next.resultMarketSnapshot=existing.resultMarketSnapshot||next.resultMarketSnapshot;
+ next.predictionSaved=existing.predictionSaved??next.predictionSaved;
+ next.resultStatus=existing.result?.finishOrder?.length>=3?'fetched':existing.resultStatus||next.resultStatus;
+ next.resultFetchedAt=existing.resultFetchedAt||next.resultFetchedAt;
+ next.resultFetchCheckedAt=existing.resultFetchCheckedAt||next.resultFetchCheckedAt;
+ next.validationCompleted=existing.validationCompleted??next.validationCompleted;
+ next.validated=existing.validated??next.validated;
  if(existing.race?.oddsType==='実オッズ'){
    next.race.oddsType='実オッズ'; next.race.oddsUpdatedAt=existing.race.oddsUpdatedAt;
    const oldMap=new Map((existing.horses||[]).map(h=>[String(h.horseNo),h]));
@@ -421,7 +434,11 @@ async function loadAutoRace(){
 
 async function importFile(f){
  const text=(await f.text()).replace(/^\uFEFF/,'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');let root;try{root=JSON.parse(text)}catch(e){throw new Error('JSON構文エラー: '+e.message)}
- let next=transform(root);fillRace(next.race);const rid=raceId(next.race);const db=store.get(KEY,{});const legacy=store.get(LEGACY_KEY,{});next=mergeExisting(next,db[rid]||legacy[rid]);state=next;render(); if(!state.finalSnapshot)makeSnapshot();persist(existingValidated(rid));$('importStatus').textContent=`✓ Ver.${APP_VERSION}：${state.horses.length}頭読込 / AI勝率・複勝率計算済 / TIME ${state.horses.filter(x=>x.predictedTime).length}頭 / ${state.race.oddsType}`;
+ let next=transform(root);fillRace(next.race);const rid=raceId(next.race);const db=store.get(KEY,{});const legacy=store.get(LEGACY_KEY,{});next=mergeExisting(next,db[rid]||legacy[rid]);state=next;render(); if(!state.finalSnapshot)makeSnapshot();
+ state.predictionSaved=true;
+ state.resultStatus=state.result?.finishOrder?.length>=3?'fetched':state.resultStatus||'pending';
+ state.validationCompleted=!!(state.validated&&state.result?.finishOrder?.length>=3);
+ persist(existingValidated(rid));$('importStatus').textContent=`✓ Ver.${APP_VERSION}：${state.horses.length}頭読込 / AI勝率・複勝率計算済 / TIME ${state.horses.filter(x=>x.predictedTime).length}頭 / ${state.race.oddsType}`;
 }
 function existingValidated(rid){
  const db=store.get(KEY,{}),legacy=store.get(LEGACY_KEY,{});
@@ -470,6 +487,10 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
    source,
    autoSaved:true
  };
+ state.predictionSaved=true;
+ state.resultStatus='fetched';
+ state.resultFetchedAt=new Date().toISOString();
+ state.validationCompleted=true;
  persist(true);
  renderResultDisplayState();
  renderDashboard();
@@ -477,12 +498,16 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  return true;
 }
 
-async function syncNar(){
+async function syncNar(options={}){
+ if(options instanceof Event)options={};
+ const auto=!!options.auto;
  const r=raceFromForm(),code=narCode(r.track);if(!code){$('narStatus').textContent='NAR自動取得：この競馬場は未対応です。';return}
  if(!r.raceDate||!r.raceNo){$('narStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
  const u=`/api/nar/sync?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;
  $('narStatus').textContent='NAR公式から結果・最終オッズ・実走TIMEを取得中…';
  try{
+   // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
+   if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
    const res=await fetch(u,{cache:'no-store'}),d=await res.json();
    if(!res.ok)throw new Error(d.error||'取得失敗');
 
@@ -494,15 +519,25 @@ async function syncNar(){
      });
    }
    if(Array.isArray(d.odds)&&d.odds.length){
-     applyMarketOdds(d.odds,d.acquiredAt||new Date().toISOString());
+     // 結果確認時点のオッズは予想用 horses / marketSnapshot へ上書きしない。
+     state.resultMarketSnapshot={
+       createdAt:d.acquiredAt||new Date().toISOString(),
+       oddsSnapshotType:d.oddsSnapshotType||'unknown',
+       horses:d.odds.map(x=>({horseNo:Number(x.horseNo),odds:num(x.odds),popularity:num(x.popularity)}))
+     };
    }
 
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
+   const alreadyComplete=state.result?.finishOrder?.length>=3;
+   state.resultFetchCheckedAt=new Date().toISOString();
    if(complete){
      // 取得時点の結果・最終オッズ・実走TIMEを一体で保存する。
      // 後から手動修正した場合は既存の保存ボタンで上書きできる。
      saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存'});
    }else{
+     state.predictionSaved=true;
+     state.resultStatus=alreadyComplete?'fetched':'pending';
+     state.validationCompleted=alreadyComplete||false;
      persist(existingValidated(raceId(r)));
    }
 
@@ -510,11 +545,21 @@ async function syncNar(){
    const base=`NAR公式反映：着順 ${d.finishOrder?.join('-')||'未確定'} / オッズ ${d.odds?.length||0}頭 / 実走TIME ${Object.keys(d.actualTimes||{}).length}頭`;
    $('narStatus').textContent=complete
      ? `${base} / 検証結果まで自動保存済み`
-     : `${base} / 結果未確定のため保存待ち`;
- }catch(e){
-   $('narStatus').textContent='取得失敗：'+e.message;
+     : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`${base} / 結果未確定のため保存待ち`;
+   return {complete:complete||alreadyComplete,pending:!complete&&!alreadyComplete,status:complete||alreadyComplete?'fetched':'pending',data:d};
+  }catch(e){
+   state.predictionSaved=!!(state.predictionSaved||state.predictionSnapshot);
+   const alreadyComplete=state.result?.finishOrder?.length>=3;
+   state.resultStatus=alreadyComplete?'fetched':'error';
+   state.resultFetchError=String(e.message||e);
+   state.resultFetchCheckedAt=new Date().toISOString();
+   persist(existingValidated(raceId(r)));
+   renderResultDisplayState();
+   $('narStatus').textContent=`結果取得に失敗しました。予想データは保存されています。${auto?'':' '}再取得できます：${e.message}`;
+   return {complete:alreadyComplete,pending:false,status:alreadyComplete?'fetched':'error',error:e};
  }
 }
+window.CHASS_SYNC_RESULT=syncNar;
 function saveValidation(){
  const f=[num($('finish1').value),num($('finish2').value),num($('finish3').value)].filter(x=>x!=null);
  if(f.length<3){alert('1〜3着を入力してください');return}
@@ -798,7 +843,7 @@ if($('autoRaceNo'))$('autoRaceNo').onchange=e=>{
   if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);
   autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);
 };
-$('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{await importFile(f)}catch(err){$('importStatus').textContent='取込失敗：'+err.message;alert($('importStatus').textContent)}e.target.value=''});
+$('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{await importFile(f);window.dispatchEvent(new CustomEvent('chass:prediction-saved',{detail:{raceId:raceId(state.race)}}))}catch(err){window.dispatchEvent(new CustomEvent('chass:prediction-error',{detail:{message:err.message}}));$('importStatus').textContent='取込失敗：'+err.message;alert($('importStatus').textContent)}e.target.value=''});
 ['category','raceDate','track','raceNo','distance','trackCondition','chaos','pace'].forEach(id=>$(id).addEventListener('input',()=>{state.race=raceFromForm();render()}));
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
@@ -814,5 +859,5 @@ if($('quickList')){
 
 migrateLegacy();setVersion();
 const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});
-if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
+if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.predictionSaved=state.predictionSaved??!!state.predictionSnapshot;state.resultStatus=state.result?.finishOrder?.length>=3?'fetched':state.resultStatus||'pending';state.validationCompleted=state.validationCompleted??!!(state.validated&&state.result?.finishOrder?.length>=3);state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
 })();
