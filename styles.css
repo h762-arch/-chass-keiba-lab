@@ -400,3 +400,8 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
  .final-pick-head .final-no{width:32px;height:34px}.final-pick-head .final-name{font-size:12.5px}
  .final-pick-stats{padding-left:62px;gap:5px}.final-pick-stats .final-metric{gap:3px}.final-pick-stats .final-metric b,.final-pick-stats .final-metric:last-child b{font-size:11.5px!important}
 }
+
+/* Ver.9.8.6: iOS native date control intrinsic-size repair */
+.primary-controls .auto-date-field{grid-column:1/-1;width:100%;max-width:100%;min-width:0;min-inline-size:0;contain:inline-size}
+.primary-controls .auto-date-field input[type="date"]{display:block;align-self:stretch;width:auto;inline-size:auto;max-width:100%;max-inline-size:100%;min-width:0;min-inline-size:0;-webkit-min-logical-width:0;margin-inline:0;box-sizing:border-box}
+.primary-controls .auto-date-field input[type="date"]::-webkit-date-and-time-value{min-width:0;text-align:center}
