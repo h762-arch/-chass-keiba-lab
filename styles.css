@@ -104,3 +104,68 @@ body{background:radial-gradient(circle at 12% 0,rgba(27,73,105,.22),transparent 
  .integrity-grid{grid-template-columns:1fr 1fr}.auto-race-grid{grid-template-columns:1fr 1fr}.utility-row>summary,.switch-row{min-height:62px}
 }
 @media(max-width:430px){.topbar{padding:16px 18px 10px}.topbar h1{font-size:24px}.topbar .ghost{padding:10px 12px}.wrap{padding-left:14px;padding-right:14px}.tabs{margin-bottom:12px}.tab{min-height:48px;padding:10px 6px}.final-pick{grid-template-columns:28px 40px minmax(90px,1fr) repeat(4,minmax(38px,1fr));padding:9px 6px}.final-no{width:36px;height:36px}.final-name{font-size:12px}.final-metric b{font-size:12px}.quick-table-head,.quick-row{grid-template-columns:31px minmax(96px,1fr) repeat(4,minmax(36px,1fr))}.quick-name{font-size:12px}}
+
+/* Ver.9.8.3: shared mobile horse columns and compact controls */
+:root{
+ --horse-grid-columns:28px 32px minmax(0,1fr) 42px 44px 51px 30px;
+ --horse-grid-gap:3px;
+}
+.horse-data-grid{
+ display:grid;
+ grid-template-columns:var(--horse-grid-columns)!important;
+ column-gap:var(--horse-grid-gap)!important;
+ align-items:center;
+ width:100%;
+ min-width:0;
+ box-sizing:border-box;
+}
+.horse-data-grid>*{min-width:0;box-sizing:border-box}
+.final-pick{padding:8px 7px;min-height:58px}
+.final-mark,.quick-mark{text-align:center;font-weight:900;font-size:15px;white-space:nowrap}
+.final-no,.quick-no{width:30px;height:34px;border-radius:9px;font-size:15px}
+.final-name,.quick-name{
+ display:-webkit-box;
+ -webkit-box-orient:vertical;
+ -webkit-line-clamp:2;
+ overflow:hidden;
+ white-space:normal;
+ overflow-wrap:anywhere;
+ line-height:1.18;
+ font-size:12px;
+ font-weight:900;
+}
+.final-metric,.quick-stat{text-align:right;min-width:0}
+.final-metric span{font-size:7px;line-height:1.1}
+.final-metric b,.quick-stat strong{font-size:10.5px!important;line-height:1.25;white-space:nowrap;letter-spacing:-.025em}
+.final-metric:last-child b,.quick-stat:last-child strong{font-size:14px!important;color:var(--accent)}
+.quick-table-head{padding:6px 7px;text-align:center;font-size:8px}
+.quick-table-head span:nth-child(3){text-align:left}
+.quick-row{padding:7px;min-height:50px}
+.quick-mark{font-size:11px;letter-spacing:-.08em}
+.quick-stat span{display:none}
+.flags{gap:8px;margin-top:9px}.flag-box{padding:9px 10px;line-height:1.35}
+.race-summary>.muted[hidden]{display:none}.race-summary>.muted{margin-bottom:8px}
+.utility-row>summary,.switch-row{min-height:52px;padding:8px 14px}
+.utility-icon{width:32px;height:32px}.utility-body{padding:0 14px 14px}
+.result-body{display:grid;gap:10px}.result-body .finish-grid{gap:8px}
+.result-body input{height:46px;min-height:46px;padding:8px 10px}
+.result-body textarea{min-height:88px;max-height:100px;padding:10px}
+.result-body button{min-height:50px}
+input,select,textarea{font-size:16px}
+.control-drawer,.utility-row,.horse-row{scroll-margin-top:max(12px,env(safe-area-inset-top))}
+body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
+
+@media(min-width:431px){
+ :root{--horse-grid-columns:32px 38px minmax(0,1fr) 50px 52px 60px 38px;--horse-grid-gap:6px}
+ .final-metric b,.quick-stat strong{font-size:12px!important}
+ .final-name,.quick-name{font-size:13px}
+}
+@media(max-width:390px){
+ .card{padding-left:13px;padding-right:13px}
+ .final-card,.quick-card{padding-left:12px;padding-right:12px}
+ .horse-data-grid{--horse-grid-columns:27px 31px minmax(0,1fr) 41px 43px 49px 29px;--horse-grid-gap:2px}
+ .final-pick,.quick-row,.quick-table-head{padding-left:5px;padding-right:5px}
+ .final-name,.quick-name{font-size:11.5px}
+ .final-metric b,.quick-stat strong{font-size:10px!important}
+ .final-metric:last-child b,.quick-stat:last-child strong{font-size:13px!important}
+}
