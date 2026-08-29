@@ -169,3 +169,60 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
  .final-metric b,.quick-stat strong{font-size:10px!important}
  .final-metric:last-child b,.quick-stat:last-child strong{font-size:13px!important}
 }
+
+/* Ver.9.8.4: quick validation flow */
+.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.summary-action{
+ flex:0 0 auto;
+ min-height:44px;
+ border:1px solid color-mix(in srgb,var(--accent) 48%,var(--line));
+ border-radius:13px;
+ padding:8px 12px;
+ background:rgba(75,224,172,.08);
+ color:var(--accent);
+ font-weight:900;
+ font-size:12px;
+ cursor:pointer;
+}
+.summary-action.is-done{color:var(--good);border-color:color-mix(in srgb,var(--good) 55%,var(--line))}
+.quick-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.quick-actions button{
+ min-width:0;
+ min-height:44px;
+ border:1px solid var(--line);
+ border-radius:12px;
+ background:var(--panel2);
+ color:#d8e3ef;
+ font-weight:900;
+ font-size:12px;
+ cursor:pointer;
+}
+.control-drawer{margin-top:10px;padding-top:10px}
+.control-drawer:not([open])>:not(summary){display:none}
+.final-card{padding-top:15px;padding-bottom:15px}
+.final-card .section-head{margin-bottom:7px}.final-card .section-head h2{margin-bottom:0}
+.final-grid{gap:6px}.final-pick{min-height:53px;padding-top:6px;padding-bottom:6px}
+.flags{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}
+.flag-box{min-width:0;overflow-wrap:anywhere}
+.utility-row>summary,.switch-row{min-height:52px}
+.utility-row>summary:after{margin-left:2px}
+.result-card{scroll-margin-top:max(14px,env(safe-area-inset-top));scroll-margin-bottom:calc(118px + env(safe-area-inset-bottom))}
+.result-body .finish-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.result-body .finish-grid label{min-width:0}
+.result-body input{height:45px;min-height:45px}
+.result-body textarea{min-height:80px;max-height:88px}
+.result-body button{min-height:48px}
+
+@media(max-width:430px){
+ .horse-data-grid{--horse-grid-columns:25px 30px minmax(0,1fr) 40px 42px 49px 28px;--horse-grid-gap:2px}
+ .final-pick,.quick-row,.quick-table-head{padding-left:5px;padding-right:5px}
+ .final-no,.quick-no{width:29px;height:32px}
+ .quick-mark{font-size:10px}
+ .final-name,.quick-name{font-size:11.5px}
+ .final-metric b,.quick-stat strong{font-size:10px!important}
+ .final-metric:last-child b,.quick-stat:last-child strong{font-size:13px!important}
+}
+@media(max-width:389px){
+ .flags{grid-template-columns:1fr}
+ .race-head{gap:8px}.summary-action{padding-left:9px;padding-right:9px}
+}

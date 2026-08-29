@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.8.3';
+const APP_VERSION='9.8.4';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -200,6 +200,17 @@ function renderMarketDisplayState(){
  if($('liveOddsBadge'))$('liveOddsBadge').textContent=m.label;
  return m;
 }
+function hasSavedResult(){return !!(state.result?.finishOrder?.length>=3||existingValidated(raceId(state.race)))}
+function renderResultDisplayState(){
+ const done=hasSavedResult(),label=done?'結果確認済':'結果検証';
+ if($('resultQuick')){$('resultQuick').textContent=label;$('resultQuick').classList.toggle('is-done',done)}
+ if($('resultState'))$('resultState').textContent=done?'取得済':'結果取得';
+}
+function openResultValidation(){
+ const card=$('resultCard');if(!card)return;
+ card.open=true;
+ requestAnimationFrame(()=>card.scrollIntoView({behavior:'smooth',block:'start'}));
+}
 function makeSnapshot(){
  const top3=rankFinal().slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],score:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,odds:h.odds,popularity:h.popularity}));
  state.finalSnapshot={createdAt:new Date().toISOString(),marketType:state.race.oddsType,top3};
@@ -225,7 +236,7 @@ function render(){
  if($('timeSummary'))$('timeSummary').textContent=`TIME ${time}/${h.length||'—'}`;
  if($('modeSummary'))$('modeSummary').textContent=r.dataMode||'データ待ち';
  if($('integrityStatus')){$('integrityStatus').textContent=bad?'要確認':'正常';$('integrityStatus').classList.toggle('good',!bad);$('integrityStatus').classList.toggle('warn',bad);}
- renderMarketDisplayState();renderFinal();renderQuick();renderHorses();
+ renderMarketDisplayState();renderResultDisplayState();renderFinal();renderQuick();renderHorses();
 }
 function renderFinal(){
  const h=state.horses;if(!h.length){$('finalBody').innerHTML='予想データを読み込むと自動表示します。';return}
@@ -444,6 +455,7 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
    autoSaved:true
  };
  persist(true);
+ renderResultDisplayState();
  renderDashboard();
  if(!silent)alert('検証結果を保存しました。');
  return true;
@@ -723,6 +735,9 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
+if($('resultQuick'))$('resultQuick').onclick=openResultValidation;
+if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
+if($('quickOdds'))$('quickOdds').onclick=()=>$('liveOddsSync')?.click();
 if($('quickToggle'))$('quickToggle').onclick=()=>{quickExpanded=!quickExpanded;renderQuick()};
 if($('quickList')){
  $('quickList').onclick=e=>{const row=e.target.closest?.('.quick-row[data-horse-no]');if(row)openHorseDetail(row.dataset.horseNo)};
