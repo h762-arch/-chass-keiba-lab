@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-const VERSION="9.7";
+const VERSION="9.8";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/\s+/g," ").trim()}
@@ -148,11 +148,17 @@ function secToRaceTime(sec){
 }
 function predictTimeFromRuns(runs,targetDistance){
  const exact=(runs||[]).filter(r=>r.distance===targetDistance&&Number.isFinite(r.timeSec)).slice(0,3);
- if(!exact.length)return '';
- const weights=[1,.82,.68].slice(0,exact.length);
- const den=weights.reduce((a,b)=>a+b,0);
- const sec=exact.reduce((s,r,i)=>s+r.timeSec*weights[i],0)/den;
- return secToRaceTime(sec);
+ if(exact.length){
+   const weights=[1,.82,.68].slice(0,exact.length),den=weights.reduce((a,b)=>a+b,0);
+   const sec=exact.reduce((s,r,i)=>s+r.timeSec*weights[i],0)/den;
+   return {time:secToRaceTime(sec),type:'実績',confidence:Math.round(clamp(72+exact.length*7,72,93))};
+ }
+ const near=(runs||[]).filter(r=>Number.isFinite(r.timeSec)&&r.distance&&targetDistance&&Math.abs(r.distance-targetDistance)<=300).slice(0,3);
+ if(!near.length)return {time:'',type:'',confidence:null};
+ const weights=[1,.78,.6].slice(0,near.length),den=weights.reduce((a,b)=>a+b,0);
+ const adjusted=near.reduce((s,r,i)=>s+(r.timeSec*targetDistance/r.distance)*weights[i],0)/den;
+ const avgGap=mean(near.map(r=>Math.abs(r.distance-targetDistance)))||0;
+ return {time:secToRaceTime(adjusted),type:'補正',confidence:Math.round(clamp(66-avgGap/12+near.length*4,42,70))};
 }
 function enrichAbility(detailHtml,horses,targetDistance,trackName){
  const segments=locateHorseSegments(detailHtml,horses);
@@ -163,7 +169,8 @@ function enrichAbility(detailHtml,horses,targetDistance,trackName){
    const avg=mean(recentIndex),distScore=mean(sameD.map(r=>r.score)),courseScore=mean(sameC.map(r=>r.score));
    const firstCorners=runs.map(r=>Number(String(r.corners).split('-')[0])).filter(n=>Number.isFinite(n));
    const cornerAvg=mean(firstCorners);const runningStyle=cornerAvg==null?'不明':cornerAvg<=2.3?'逃げ・先行':cornerAvg<=5?'先行・好位':'差し・追込';
-   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),runningStyle,predictedTime:predictTimeFromRuns(runs,targetDistance),dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
+   const pt=predictTimeFromRuns(runs,targetDistance);
+   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),runningStyle,predictedTime:pt.time,predictedTimeType:pt.type,predictedTimeConfidence:pt.confidence,dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
  });
  const sameDistanceTimes=enriched.flatMap(h=>h.runs.filter(r=>r.sameDistance&&r.timeSec!=null).map(r=>r.timeSec));
  const best=sameDistanceTimes.length?Math.min(...sameDistanceTimes):null,worst=sameDistanceTimes.length?Math.max(...sameDistanceTimes):null;
@@ -201,7 +208,7 @@ export default{
       const merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{};const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();const cardOk=plausibleHorseName(cardName),oddsOk=plausibleHorseName(oddsName);const horseName=cardOk?cardName:oddsOk?oddsName:`馬番${no}`;return {...c,horseNo:no,horseName,odds:o.odds??null,popularity:o.popularity??null,nameSource:cardOk?'出馬表':oddsOk?'オッズ表':'fallback'};});
       const abilityCount=merged.filter(x=>x.abilityScore!=null).length;
       const invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
-      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-row-v9.7",predictedTime:merged.filter(x=>x.predictedTime).length},acquiredAt:new Date().toISOString()});
+      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-row-v9.8",predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length},acquiredAt:new Date().toISOString()});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
