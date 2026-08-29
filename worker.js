@@ -1,6 +1,7 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 const VERSION="9.8";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
+function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(/parse|解析/i.test(raw))errorCode='parser_error';else if(/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode}}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/\s+/g," ").trim()}
 function rowBlocks(html=""){
@@ -24,7 +25,7 @@ function plausibleHorseName(value=""){
  if(/^(?:馬|枠)?番|馬名|馬主|生産牧場|単勝|複勝|オッズ|人気(?:順位)?|金額|払戻|着順|騎手|調教師$/.test(s))return false;
  return /[一-龠々〆ヵヶぁ-んァ-ヶーA-Za-z]/.test(s);
 }
-async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
+async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok){const e=new Error(`NAR HTTP ${r.status}`);e.status=r.status;throw e}return r.text()}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
 
@@ -209,15 +210,15 @@ export default{
       const abilityCount=merged.filter(x=>x.abilityScore!=null).length;
       const invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
       return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-row-v9.8",predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length},acquiredAt:new Date().toISOString()});
-    }catch(e){return json({error:String(e?.message||e)},502)}
+    }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
     const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");if(!code||!date||!race)return json({error:"code,date,race are required"},400);
     const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;const urls={result:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`};
     try{
       if(u.pathname==="/api/nar/odds"){const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});}
-      const [rh,oh]=await Promise.all([fetchText(urls.result).catch(()=>""),fetchText(urls.odds).catch(()=>"")]);const rr=parseResult(rh),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3});
-    }catch(e){return json({error:String(e?.message||e)},502)}
+      const [rh,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]);const rr=parseResult(rh),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'unpublished':'available'});
+    }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
   return new Response("Not Found",{status:404});

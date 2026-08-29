@@ -9,6 +9,8 @@ const LEGACY_CURRENT='chass_v80_current';
 const ODDS_HISTORY='chass_v90_odds_history';
 let oddsTimer=null;
 let autoRaceSelectTimer=null;
+let raceLoadController=null,resultSyncController=null,liveOddsController=null;
+let raceLoadGeneration=0,resultSyncGeneration=0,liveOddsGeneration=0;
 let quickExpanded=false;
 const dashboardUi={
  open:{models:true,calibration:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
@@ -23,6 +25,17 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const cleanName=s=>String(s??'').replace(/\s+/g,'').trim();
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+function requestError(code,message,status=0){const e=new Error(message);e.code=code;e.status=status;return e}
+async function responseJson(res){try{return await res.json()}catch{throw requestError('parser_error','API応答を解析できませんでした。',res.status)}}
+function errorLabel(e){
+ if(e?.code==='race_not_found'||e?.status===404)return '指定レースが見つかりません。';
+ if(e?.code==='parser_error')return '公式ページの解析に失敗しました。';
+ if(e?.code==='nar_temporary'||e?.status===429||e?.status>=500)return 'NAR公式または取得サーバーで一時エラーが発生しました。';
+ if(e?.code==='network_error'||e instanceof TypeError)return '通信に失敗しました。ネットワークを確認してください。';
+ return String(e?.message||'取得に失敗しました。');
+}
+function currentSelectionId(){return raceId({raceDate:$('autoRaceDate')?.value,track:$('autoTrack')?.value,raceNo:Number($('autoRaceNo')?.value)})}
+function setButtonBusy(id,busy,label=''){const b=$(id);if(!b)return;if(busy){b.dataset.idleText=b.textContent;b.disabled=true;b.setAttribute('aria-busy','true');if(label)b.textContent=label}else{b.disabled=false;b.removeAttribute('aria-busy');if(b.dataset.idleText)b.textContent=b.dataset.idleText;delete b.dataset.idleText}}
 const median=a=>{const b=a.filter(x=>x!=null).sort((x,y)=>x-y);if(!b.length)return null;const m=Math.floor(b.length/2);return b.length%2?b[m]:(b[m-1]+b[m])/2};
 const arr=v=>Array.isArray(v)?v.map(num).filter(x=>x!=null):typeof v==='string'?v.split(/[,\s/→>]+/).map(num).filter(x=>x!=null):num(v)==null?[]:[num(v)];
 const store={get(k,d){try{return JSON.parse(localStorage.getItem(k)||'')??d}catch{return d}},set(k,v){localStorage.setItem(k,JSON.stringify(v))}};
@@ -209,7 +222,7 @@ function getResultDisplayState(raceState=state){
  const finishOrder=(raceState?.resultSnapshot?.finishOrder||raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
  const done=finishOrder.length>=3,manual=done&&raceState?.result?.source==='手動修正保存';
  const status=done?'fetched':raceState?.resultStatus||(!raceId(raceState?.race)?'unavailable':'pending');
- const label=manual?'手動修正あり':done?'取得済':status==='error'?'結果未取得':status==='pending'?'結果待ち':'未取得';
+ const label=manual?'手動修正あり':done?'検証済':status==='fetching'?'結果取得中':status==='error'?'取得エラー':status==='pending'?'結果待ち':'未取得';
  return {done,manual,finishOrder,status,label};
 }
 function restoreSavedResultFields(resultState=getResultDisplayState()){
@@ -342,13 +355,18 @@ async function loadAutoRace(){
  const date=$('autoRaceDate')?.value,track=$('autoTrack')?.value,raceNo=Number($('autoRaceNo')?.value);
  const code=narCode(track);
  if(!date||!code||!raceNo){$('autoRaceStatus').textContent='日付・競馬場・レースを確認してください。';return}
+ raceLoadController?.abort();resultSyncController?.abort();liveOddsController?.abort();
+ const controller=new AbortController(),generation=++raceLoadGeneration,requestedId=raceId({raceDate:date,track,raceNo});raceLoadController=controller;
+ const isCurrent=()=>generation===raceLoadGeneration&&!controller.signal.aborted&&currentSelectionId()===requestedId;
+ setButtonBusy('autoRaceLoad',true,'予想取得中…');
  $('autoRaceBadge').textContent='能力取得中';
  $('autoRaceStatus').textContent='NAR公式の過去走・同距離時計・距離/コース適性を解析しています…';
  try{
    const u=`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`;
-   const res=await fetch(u,{cache:'no-store'}),d=await res.json();
-   if(!res.ok)throw new Error(d.error||'取得失敗');
-   if(!Array.isArray(d.horses)||d.horses.length<2)throw new Error('出走馬データを取得できませんでした');
+   const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
+   if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);
+   if(!isCurrent())throw requestError('stale_request','古いレース取得を破棄しました。');
+   if(!Array.isArray(d.horses)||d.horses.length<2)throw requestError('parser_error','出走馬データを取得できませんでした');
    const root=buildAbilityRoot(d,date,track,raceNo);
    const rid=raceId(root.race),db=store.get(KEY,{}),old=db[rid];
    state=mergeExisting(transform(root),old);fillRace(state.race);render();if(!state.finalSnapshot)makeSnapshot();state.predictionSaved=true;state.resultStatus=state.result?.finishOrder?.length>=3?'fetched':state.resultStatus||'pending';state.validationCompleted=!!(state.validationCompleted||state.validated&&state.result?.finishOrder?.length>=3);persist(old?.validated||false);
@@ -356,13 +374,18 @@ async function loadAutoRace(){
    const base=`Ver.${APP_VERSION}：NAR公式 ${d.horses.length}頭｜馬名異常 ${invalidNames}頭｜能力 ${ready}頭｜TIME ${times}頭（実績${actualTimes}・補正${adjustedTimes}）｜能力→市場の順で評価`;
    $('autoRaceStatus').textContent=`${base}｜予想保存済・公式結果確認中…`;
    const resultCheck=await syncNar({auto:true});
+   if(!isCurrent())return;
    $('autoRaceBadge').textContent=`能力 ${ready}/${d.horses.length}`;
    const resultLabel=resultCheck?.complete?'｜公式結果・検証を自動保存':resultCheck?.pending?'｜結果待ち':resultCheck?.status==='error'?'｜予想保存済・結果は再取得可':'';
    $('autoRaceStatus').textContent=base+resultLabel;
    $('importStatus').textContent=`✓ Ver.${APP_VERSION} 自動生成：${state.horses.length}頭 / データ源 NAR公式 / Snapshot固定済`;
  }catch(e){
+   if(e?.name==='AbortError'||e?.code==='stale_request')return;
+   if(!isCurrent())return;
    $('autoRaceBadge').textContent='取得失敗';
-   $('autoRaceStatus').textContent='自動生成失敗：'+e.message;
+   $('autoRaceStatus').textContent=`取得エラー｜${errorLabel(e)} 予想済みデータは削除していません。`;
+ }finally{
+   if(generation===raceLoadGeneration){raceLoadController=null;setButtonBusy('autoRaceLoad',false)}
  }
 }
 
@@ -401,8 +424,17 @@ function applyMarketOdds(items, acquiredAt){
 async function syncLiveOdds(silent=false){
  const r=raceFromForm(),code=narCode(r.track);if(!code){$('liveOddsStatus').textContent='現在オッズ自動取得：この競馬場は未対応です。';return}
  if(!r.raceDate||!r.raceNo){$('liveOddsStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
+ liveOddsController?.abort();const controller=new AbortController(),generation=++liveOddsGeneration,requestedId=raceId(r);liveOddsController=controller;
+ const isCurrent=()=>generation===liveOddsGeneration&&!controller.signal.aborted&&raceId(raceFromForm())===requestedId;
+ if(!silent)setButtonBusy('liveOddsSync',true,'オッズ取得中…');
  if(!silent)$('liveOddsStatus').textContent='NAR公式の現在オッズを確認中…';
- try{const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;const res=await fetch(u,{cache:'no-store'});const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');render();persist(existingValidated(raceId(r)));const t=new Date(state.race.oddsUpdatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=`NAR公式 現在オッズ ${count}頭反映｜更新 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`;}catch(e){renderMarketDisplayState();$('liveOddsStatus').textContent='取得失敗：'+e.message}
+ try{
+   const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`,res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
+   if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);if(!isCurrent())throw requestError('stale_request','古いオッズ取得を破棄しました。');
+   const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw requestError('odds_unpublished','現在オッズはまだ公開されていません。');
+   render();persist(existingValidated(raceId(r)));const t=new Date(state.race.oddsUpdatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=`NAR公式 現在オッズ ${count}頭反映｜更新 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`;
+ }catch(e){if(e?.name==='AbortError'||e?.code==='stale_request'||!isCurrent())return;renderMarketDisplayState();$('liveOddsStatus').textContent=e?.code==='odds_unpublished'?'現在オッズはまだ公開されていません。':`取得エラー｜${errorLabel(e)}`}
+ finally{if(generation===liveOddsGeneration){liveOddsController=null;if(!silent)setButtonBusy('liveOddsSync',false)}}
 }
 function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}if($('autoOddsState')){$('autoOddsState').textContent=on?'ON':'OFF';$('autoOddsState').classList.toggle('is-on',on)}}
 
@@ -432,6 +464,8 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  };
  state.predictionSaved=true;
  state.resultStatus='fetched';
+ state.resultErrorType=null;
+ state.resultFetchError='';
  state.resultFetchedAt=new Date().toISOString();
  state.validationCompleted=true;
  state.validated=true;
@@ -448,13 +482,19 @@ async function syncNar(options={}){
  const auto=!!options.auto;
  const r=raceFromForm(),code=narCode(r.track);if(!code){$('narStatus').textContent='NAR自動取得：この競馬場は未対応です。';return}
  if(!r.raceDate||!r.raceNo){$('narStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
+ resultSyncController?.abort();
+ const controller=new AbortController(),generation=++resultSyncGeneration,requestedId=raceId(r);resultSyncController=controller;
+ const isCurrent=()=>generation===resultSyncGeneration&&!controller.signal.aborted&&raceId(raceFromForm())===requestedId;
  const u=`/api/nar/sync?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;
+ if(!state.result?.finishOrder?.length){state.resultStatus='fetching';renderResultDisplayState()}
+ setButtonBusy('narSync',true,'結果取得中…');
  $('narStatus').textContent='NAR公式から結果・最終オッズ・実走TIMEを取得中…';
  try{
    // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
    if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
-   const res=await fetch(u,{cache:'no-store'}),d=await res.json();
-   if(!res.ok)throw new Error(d.error||'取得失敗');
+   const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
+   if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);
+   if(!isCurrent())throw requestError('stale_request','古い結果取得を破棄しました。');
 
    if(d.actualTimes&&typeof d.actualTimes==='object'){
      state.actualTimes={...state.actualTimes,...d.actualTimes};
@@ -482,6 +522,7 @@ async function syncNar(options={}){
    }else{
      state.predictionSaved=true;
      state.resultStatus=alreadyComplete?'fetched':'pending';
+     state.resultErrorType='result_unpublished';
      state.validationCompleted=alreadyComplete||false;
      persist(existingValidated(raceId(r)));
    }
@@ -490,18 +531,23 @@ async function syncNar(options={}){
    const base=`NAR公式反映：着順 ${d.finishOrder?.join('-')||'未確定'} / オッズ ${d.odds?.length||0}頭 / 実走TIME ${Object.keys(d.actualTimes||{}).length}頭`;
    $('narStatus').textContent=complete
      ? `${base} / 検証結果まで自動保存済み`
-     : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`${base} / 結果未確定のため保存待ち`;
+     : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`結果待ち｜公式結果はまだ公開されていません。予想は保存済みです。`;
    return {complete:complete||alreadyComplete,pending:!complete&&!alreadyComplete,status:complete||alreadyComplete?'fetched':'pending',data:d};
   }catch(e){
+   if(e?.name==='AbortError'||e?.code==='stale_request')return {complete:false,pending:false,status:'cancelled'};
+   if(!isCurrent())return {complete:false,pending:false,status:'cancelled'};
    state.predictionSaved=!!(state.predictionSaved||state.predictionSnapshot);
    const alreadyComplete=state.result?.finishOrder?.length>=3;
    state.resultStatus=alreadyComplete?'fetched':'error';
+   state.resultErrorType=e?.code||'unknown_error';
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
    persist(existingValidated(raceId(r)));
    renderResultDisplayState();
-   $('narStatus').textContent=`結果取得に失敗しました。予想データは保存されています。${auto?'':' '}再取得できます：${e.message}`;
+   $('narStatus').textContent=`取得エラー｜${errorLabel(e)} 予想データは保存されています。再取得できます。`;
    return {complete:alreadyComplete,pending:false,status:alreadyComplete?'fetched':'error',error:e};
+ }finally{
+   if(generation===resultSyncGeneration){resultSyncController=null;setButtonBusy('narSync',false);renderResultDisplayState()}
  }
 }
 function saveValidation(){
