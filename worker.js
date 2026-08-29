@@ -1,9 +1,29 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-const VERSION="9.6";
+const VERSION="9.7";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/\s+/g," ").trim()}
-function tableRows(html=""){return [...String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>{const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>cleanText(x[1]));return {cells,text:cells.join(" ")}})}
+function rowBlocks(html=""){
+ const parts=String(html).split(/<tr\b[^>]*>/i).slice(1);
+ return parts.map(part=>part.split(/(?=<tr\b)|<\/tr\s*>/i)[0]);
+}
+function cellBlocks(rowHtml=""){
+ const out=[];const re=/<t([dh])\b([^>]*)>/gi;const hits=[...String(rowHtml).matchAll(re)];
+ for(let i=0;i<hits.length;i++){
+   const start=hits[i].index+hits[i][0].length,end=i+1<hits.length?hits[i+1].index:String(rowHtml).length;
+   out.push({tag:hits[i][1].toLowerCase(),attrs:hits[i][2]||'',html:String(rowHtml).slice(start,end).replace(/<\/t[dh]\s*>[\s\S]*$/i,''),text:''});
+ }
+ out.forEach(x=>x.text=cleanText(x.html));return out;
+}
+function tableRows(html=""){return rowBlocks(html).map(raw=>{const blocks=cellBlocks(raw),cells=blocks.map(x=>x.text);return {raw,blocks,cells,text:cells.join(" ")}})}
+function plausibleHorseName(value=""){
+ const s=cleanText(value).replace(/^[\s　]+|[\s　]+$/g,'');
+ if(s.length<2||s.length>40)return false;
+ if(/^\d+(?:[.,]\d+)?(?:円|倍|人気|番)?$/.test(s))return false;
+ if(/[¥￥]|\d+\s*円/.test(s))return false;
+ if(/^(?:馬|枠)?番|馬名|馬主|生産牧場|単勝|複勝|オッズ|人気(?:順位)?|金額|払戻|着順|騎手|調教師$/.test(s))return false;
+ return /[一-龠々〆ヵヶぁ-んァ-ヶーA-Za-z]/.test(s);
+}
 async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);return r.text()}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
@@ -22,24 +42,31 @@ function parseResult(html){
 }
 function parseRaceMeta(html){
  const text=cleanText(html);
- const dists=[...text.matchAll(/(?:ダート|芝|右|左|外|内)?\s*(\d{3,4})\s*m/gi)].map(m=>Number(m[1])).filter(v=>v>=800&&v<=3600);
+ const dists=[...text.matchAll(/(?:ダート|芝|右|左|外|内)?\s*(\d{3,4})\s*[mｍ]/gi)].map(m=>Number(m[1])).filter(v=>v>=800&&v<=3600);
  const distance=dists.length?dists[0]:null;
  const weather=text.match(/天候[:：]?\s*(晴|曇|雨|雪)/)?.[1]||'';
  const trackCondition=text.match(/(?:馬場|馬場状態)[:：]?\s*(良|稍重|重|不良)/)?.[1]||'不明';
  const candidates=[...[...String(html).matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)].map(m=>cleanText(m[1])),...[...String(html).matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)].map(m=>cleanText(m[1]))].filter(Boolean);
  let raceName=candidates.find(x=>!/(地方競馬情報サイト|NAR|Keiba|競馬情報)/i.test(x)&&x.length>=2&&x.length<=100)||'';
  raceName=raceName.replace(/^\d{1,2}R\s*/,'').trim();
- return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*m/.test(text)?'芝':'ダート'};
+ return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*[mｍ]/.test(text)?'芝':'ダート'};
 }
 function parseRaceCard(html){
  const out=[];
  for(const row of tableRows(html)){
-   const c=row.cells;if(c.length<3)continue;
-   let no=null,name='',start=0;
-   const c0=String(c[0]||''),c1=String(c[1]||''),c2=String(c[2]||'');
-   if(/^\d{1,2}$/.test(c1)&&Number(c1)>=1&&Number(c1)<=18){no=String(Number(c1));name=c2;start=3;}
-   else if(/^\d{1,2}$/.test(c0)&&Number(c0)>=1&&Number(c0)<=18){no=String(Number(c0));name=c1;start=2;}
-   if(!no||!name||/馬番|馬名/.test(name))continue;
+   const c=row.cells;if(c.length<2)continue;
+   const marked=row.raw.match(/<font\b[^>]*class=["']?bamei["']?[^>]*>[\s\S]*?<b[^>]*>([\s\S]*?)<\/b>/i);
+   const nameIndex=marked?row.blocks.findIndex(x=>/class=["']?bamei/i.test(x.html)):-1;
+   const before=c.slice(0,nameIndex>=0?nameIndex:c.length);
+   const nums=before.map(x=>String(x).trim().match(/^(\d{1,2})$/)?.[1]).filter(x=>x&&Number(x)>=1&&Number(x)<=18);
+   const no=nums.length?String(Number(nums.at(-1))):null;
+   let name=marked?cleanText(marked[1]):'';
+   if(!name&&no){
+     const at=c.findIndex(x=>String(Number(String(x).trim()))===no);
+     name=c.slice(at+1,Math.min(c.length,at+4)).find(plausibleHorseName)||'';
+   }
+   if(!no||!plausibleHorseName(name))continue;
+   const start=Math.max(0,nameIndex+1);
    let weight=null,sexAge='',jockey='',trainer='';
    for(let i=start;i<c.length;i++){
      const s=String(c[i]||'').trim();
@@ -49,7 +76,7 @@ function parseRaceCard(html){
    const texts=c.slice(start).filter(x=>x&&!/^\d+(?:\.\d+)?$/.test(String(x)));
    if(texts.length)jockey=String(texts[0]||'').trim();
    if(texts.length>1)trainer=String(texts[texts.length-1]||'').trim();
-   out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer});
+   out.push({horseNo:no,horseName:cleanText(name),weight,sexAge,jockey,trainer,rowHtml:row.raw});
  }
  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
  return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));
@@ -60,7 +87,7 @@ function parseTanFuku(html){
    const c=row.cells;if(c.length<4)continue;
    const frame=String(c[0]||"").match(/^(\d{1,2})$/)?.[1];
    const no=String(c[1]||"").match(/^(\d{1,2})$/)?.[1];if(!no||Number(no)<1||Number(no)>18)continue;
-   const name=String(c[2]||"").trim();
+   const name=String(c[2]||"").trim();if(!plausibleHorseName(name))continue;
    const cand=String(c[3]||"").replace(/,/g,"").match(/(\d+(?:\.\d+)?)/);if(!cand)continue;
    const odds=Number(cand[1]);if(!Number.isFinite(odds)||odds<1||odds>=1000)continue;
    out.push({frameNo:frame?Number(frame):null,horseNo:String(Number(no)),horseName:name,odds});
@@ -74,15 +101,9 @@ function compactTimeToSec(v){
  if(sec>59)return null;return min*60+sec+tenth/10;
 }
 function locateHorseSegments(detailHtml,horses){
- const text=cleanText(detailHtml);let cursor=0;const parts=[];
- for(let i=0;i<horses.length;i++){
-   const name=String(horses[i].horseName||'').trim();if(!name){parts.push('');continue;}
-   let at=text.indexOf(name,cursor);if(at<0)at=text.indexOf(name);if(at<0){parts.push('');continue;}
-   let end=text.length;
-   for(let j=i+1;j<horses.length;j++){const next=String(horses[j].horseName||'').trim();if(!next)continue;const ni=text.indexOf(next,at+name.length);if(ni>=0){end=ni;break;}}
-   parts.push(text.slice(at,end));cursor=at+name.length;
- }
- return parts;
+ const detailHorses=parseRaceCard(detailHtml),byNo=new Map(detailHorses.map(h=>[String(h.horseNo),h.rowHtml]));
+ const byName=new Map(detailHorses.map(h=>[String(h.horseName),h.rowHtml]));
+ return horses.map(h=>cleanText(byNo.get(String(h.horseNo))||byName.get(String(h.horseName))||''));
 }
 function parseRuns(segment,targetDistance,trackName){
  const runs=[];
@@ -94,11 +115,11 @@ function parseRuns(segment,targetDistance,trackName){
  for(let i=0;i<hits.length;i++){
    const m=hits[i],start=m.index,end=i+1<hits.length?hits[i+1].index:Math.min(segment.length,start+420);
    const chunk=segment.slice(start,end);
-   const finishField=chunk.match(/(?:^|\s)(\d{1,2})\/(\d{1,2})\s+\d+人/);
+   const finishField=chunk.match(/(?:^|\s)(\d{1,2})\/(\d{1,2})\s+(\d{1,2})人/);
    if(!finishField)continue;
    const finish=Number(finishField[1]),fieldSize=Number(finishField[2]);
    if(!Number.isFinite(finish)||finish<1||finish>fieldSize||fieldSize<2)continue;
-   const dist=Number(m[5])||null;
+   const dist=Number(m[5])||null,popularity=Number(finishField[3])||null;
    const compact=chunk.match(/\b(\d{3,4})（[^）]*）/)?.[1]||null;
    const timeSec=compactTimeToSec(compact);
    const corners=chunk.match(/\b(\d{1,2}(?:-\d{1,2}){1,4})\b/)?.[1]||'';
@@ -113,7 +134,7 @@ function parseRuns(segment,targetDistance,trackName){
    if(sameTrack)score+=3;
    if(last3f!=null)score+=clamp((41-last3f)*1.15,-8,8);
    runs.push({
-     finish,fieldSize,date:m[2],condition:m[3],venue,distance:dist,timeSec,last3f,corners,
+     finish,fieldSize,popularity,date:m[2],condition:m[3],direction:m[4]||'',venue,distance:dist,timeSec,last3f,corners,
      exactDistance,nearDistance,sameDistance:exactDistance,sameTrack,
      score:clamp(score,30,110)
    });
@@ -174,12 +195,13 @@ export default{
     const urls={card:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,detail:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTableSmall?${q}`,odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`};
     try{
       const [ch,dh,oh]=await Promise.all([fetchText(urls.card),fetchText(urls.detail).catch(()=>""),fetchText(urls.odds).catch(()=>"")]);
-      const meta=parseRaceMeta(dh||ch),cardHorses=parseRaceCard(ch),odds=parseTanFuku(oh),track=TRACK_NAMES[Number(code)]||"";
+      const meta=parseRaceMeta(dh||ch),detailHorses=parseRaceCard(dh),fallbackHorses=parseRaceCard(ch),cardHorses=detailHorses.length?detailHorses:fallbackHorses,odds=parseTanFuku(oh),track=TRACK_NAMES[Number(code)]||"";
       const enriched=enrichAbility(dh,cardHorses,meta.distance,track),cm=new Map(enriched.map(x=>[String(x.horseNo),x])),om=new Map(odds.map(x=>[String(x.horseNo),x]));
       const numbers=[...new Set([...enriched.map(x=>String(x.horseNo)),...odds.map(x=>String(x.horseNo))])].sort((a,b)=>Number(a)-Number(b));
-      const merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{};const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();const cardBad=!cardName||/^\d{1,2}$/.test(cardName)||/^馬番\d+$/.test(cardName);return {...c,horseNo:no,horseName:(!cardBad?cardName:oddsName)||cardName||`馬番${no}`,odds:o.odds??null,popularity:o.popularity??null,nameSource:(!cardBad?cardName:oddsName)?(!cardBad?'出馬表':'オッズ表'):'fallback'};});
+      const merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{};const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();const cardOk=plausibleHorseName(cardName),oddsOk=plausibleHorseName(oddsName);const horseName=cardOk?cardName:oddsOk?oddsName:`馬番${no}`;return {...c,horseNo:no,horseName,odds:o.odds??null,popularity:o.popularity??null,nameSource:cardOk?'出馬表':oddsOk?'オッズ表':'fallback'};});
       const abilityCount=merged.filter(x=>x.abilityScore!=null).length;
-      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-MM.DD-v9.6",predictedTime:merged.filter(x=>x.predictedTime).length},acquiredAt:new Date().toISOString()});
+      const invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
+      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-row-v9.7",predictedTime:merged.filter(x=>x.predictedTime).length},acquiredAt:new Date().toISOString()});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
