@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.8.4';
+const APP_VERSION='9.8.5';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -202,13 +202,13 @@ function renderMarketDisplayState(){
 }
 function hasSavedResult(){return !!(state.result?.finishOrder?.length>=3||existingValidated(raceId(state.race)))}
 function renderResultDisplayState(){
- const done=hasSavedResult(),label=done?'結果確認済':'結果検証';
- if($('resultQuick')){$('resultQuick').textContent=label;$('resultQuick').classList.toggle('is-done',done)}
- if($('resultState'))$('resultState').textContent=done?'取得済':'結果取得';
+ const done=hasSavedResult(),manual=done&&state.result?.source==='手動修正保存';
+ const label=manual?'手動修正あり':done?'結果取得済':'結果未取得';
+ if($('resultStatusBadge')){$('resultStatusBadge').textContent=label;$('resultStatusBadge').classList.toggle('is-done',done);$('resultStatusBadge').classList.toggle('is-manual',manual)}
+ if($('resultState'))$('resultState').textContent=manual?'手動修正あり':done?'取得済':'未取得';
 }
 function openResultValidation(){
  const card=$('resultCard');if(!card)return;
- card.open=true;
  requestAnimationFrame(()=>card.scrollIntoView({behavior:'smooth',block:'start'}));
 }
 function makeSnapshot(){
@@ -735,9 +735,9 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
-if($('resultQuick'))$('resultQuick').onclick=openResultValidation;
 if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>$('liveOddsSync')?.click();
+if($('quickResult'))$('quickResult').onclick=openResultValidation;
 if($('quickToggle'))$('quickToggle').onclick=()=>{quickExpanded=!quickExpanded;renderQuick()};
 if($('quickList')){
  $('quickList').onclick=e=>{const row=e.target.closest?.('.quick-row[data-horse-no]');if(row)openHorseDetail(row.dataset.horseNo)};
