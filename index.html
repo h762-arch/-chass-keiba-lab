@@ -22,7 +22,11 @@
     <section class="card race-summary">
       <div class="race-head"><h2 id="raceTitle">レース情報未入力</h2><span id="resultStatusBadge" class="summary-status">未取得</span><span id="autoRaceBadge" class="visually-hidden" aria-live="polite">未取得</span></div>
       <p id="raceMeta" class="muted">予想データファイルを読み込むと自動表示します。</p>
-      <div class="summary-chips"><span id="dateSummary" class="badge">日付 —</span><span id="distanceSummary" class="badge">距離 —</span><span id="chaosBadge" class="badge">波乱度 —</span><span id="paceBadge" class="badge">展開 —</span><span id="biasText" class="badge">馬場 —</span><span id="abilitySummary" class="badge">能力 —</span><span id="timeSummary" class="badge">TIME —</span><span id="marketSummary" class="badge">市場 —</span><span id="modeSummary" class="badge wide-chip">データ待ち</span></div>
+      <div class="summary-info">
+        <div class="summary-chips summary-primary" aria-label="レース主要情報"><span id="dateSummary" class="badge">日付 —</span><span id="distanceSummary" class="badge">距離 —</span><span id="chaosBadge" class="badge">波乱度 —</span><span id="paceBadge" class="badge">展開 —</span><span id="biasText" class="badge">馬場 —</span></div>
+        <div class="summary-chips summary-secondary" aria-label="データ取得状況"><span id="abilitySummary" class="badge">能力 —</span><span id="timeSummary" class="badge">TIME —</span><span id="marketSummary" class="badge">市場 —</span></div>
+        <div class="summary-mode"><span id="modeSummary" class="badge wide-chip">データ待ち</span></div>
+      </div>
       <div class="quick-actions" aria-label="レース操作"><button id="quickPredict" type="button">予想更新</button><button id="quickOdds" type="button">現在オッズ</button><button id="quickResult" type="button">結果検証</button></div>
       <section class="primary-controls" aria-labelledby="primaryControlsTitle">
         <div class="primary-controls-head"><strong id="primaryControlsTitle">⚙️ 公式データ取得・予想設定</strong><span>常時操作</span></div>
