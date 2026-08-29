@@ -385,3 +385,18 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
  .primary-controls .auto-race-grid label:first-child{grid-column:1/-1}
  .primary-controls .auto-race-panel{padding-left:8px;padding-right:8px}
 }
+
+/* Ver.9.8.6: two-row CHASS FINAL cards */
+.final-pick.final-pick-two-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;min-width:0;min-height:78px;padding:9px 10px}
+.final-pick-head{display:grid;grid-template-columns:28px 34px minmax(0,1fr) 38px;align-items:center;gap:7px;min-width:0}
+.final-pick-head>*{min-width:0}.final-pick-head .final-mark{font-size:16px}.final-pick-head .final-no{width:34px;height:36px;font-size:16px}
+.final-pick-head .final-name{display:block;-webkit-line-clamp:unset;overflow:visible;white-space:normal;overflow-wrap:anywhere;word-break:normal;font-size:13px;line-height:1.22;font-weight:900}
+.final-overall{flex-shrink:0;text-align:right}.final-overall span{display:block;color:var(--muted);font-size:7px;line-height:1}.final-overall b{display:block;color:var(--accent);font-size:17px;line-height:1.2;font-variant-numeric:tabular-nums}
+.final-pick-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:6px 2px 0 69px;border-top:1px solid color-mix(in srgb,var(--line) 62%,transparent);min-width:0}
+.final-pick-stats .final-metric{display:flex;align-items:baseline;justify-content:flex-start;gap:4px;text-align:left;min-width:0}.final-pick-stats .final-metric span{display:block;flex:0 0 auto;font-size:8px;line-height:1;color:var(--muted)}.final-pick-stats .final-metric b{display:block;min-width:0;font-size:12px!important;line-height:1.2;white-space:nowrap;letter-spacing:0}.final-pick-stats .final-metric:last-child b{color:var(--text);font-size:12px!important}
+@media(max-width:390px){
+ .final-pick.final-pick-two-row{padding-left:8px;padding-right:8px}
+ .final-pick-head{grid-template-columns:25px 32px minmax(0,1fr) 35px;gap:5px}
+ .final-pick-head .final-no{width:32px;height:34px}.final-pick-head .final-name{font-size:12.5px}
+ .final-pick-stats{padding-left:62px;gap:5px}.final-pick-stats .final-metric{gap:3px}.final-pick-stats .final-metric b,.final-pick-stats .final-metric:last-child b{font-size:11.5px!important}
+}
