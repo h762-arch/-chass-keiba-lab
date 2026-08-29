@@ -83,11 +83,7 @@ function addNote(){
  document.getElementById('chass982note')?.remove();
  document.getElementById('chass984note')?.remove();
  document.getElementById('chass985note')?.remove();
- if(document.getElementById('chass986note'))return;
- const n=document.createElement('div');
- n.id='chass986note';n.className='card';
- n.innerHTML='<p class="eyebrow">CHASS 9.8.6 CONSISTENT STATE</p><h2>馬名・結果・市場状態を明瞭化</h2><p class="muted">保存済み着順をフォームへ復元し、状態表示を未取得・取得済・手動修正ありに統一しました。</p>';
- d.prepend(n);
+ document.getElementById('chass986note')?.remove();
 }
 async function loadAbilityRace(){
    const date=document.getElementById('autoRaceDate')?.value;
