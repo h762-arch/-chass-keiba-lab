@@ -206,7 +206,7 @@ function renderMarketDisplayState(){
  return m;
 }
 function getResultDisplayState(raceState=state){
- const finishOrder=(raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
+ const finishOrder=(raceState?.resultSnapshot?.finishOrder||raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
  const done=finishOrder.length>=3,manual=done&&raceState?.result?.source==='手動修正保存';
  const status=done?'fetched':raceState?.resultStatus||(!raceId(raceState?.race)?'unavailable':'pending');
  const label=manual?'手動修正あり':done?'取得済':status==='error'?'結果未取得':status==='pending'?'結果待ち':'未取得';
@@ -233,14 +233,19 @@ function openResultValidation(){
  const card=$('resultCard');if(!card)return;
  requestAnimationFrame(()=>card.scrollIntoView({behavior:'smooth',block:'start'}));
 }
+function snapshotRace(r=state.race){return {category:r.category||'',raceDate:r.raceDate||'',track:r.track||'',raceNo:r.raceNo||'',distance:r.distance||'',surface:r.surface||'',trackCondition:r.trackCondition||'',bias:r.bias||'',pace:r.pace||'',chaos:r.chaos??null}}
+function predictionHorse(h){return {horseNo:Number(h.horseNo),horseName:h.horseName,win:h.win,place:h.place,overall:h.overall,abilityScore:h.abilityScore??h.scores?.timeIndex??null,predictedTime:h.predictedTime,predictedTimeType:h.predictedTimeType||'',predictedTimeConfidence:h.predictedTimeConfidence??null,abilityMark:h.abilityMark,sourceMark:h.sourceMark||'',dataConfidence:h.dataConfidence,runningStyle:h.runningStyle||'',weight:h.weight??null}}
+function marketHorse(h){return {horseNo:Number(h.horseNo),odds:h.odds??null,popularity:h.popularity??null,ev:h.ev??null,valueMark:h.valueMark||'',winValueFlag:h.winValueMark||'',placeValueFlag:h.placeValueMark||'',warningMark:h.warningMark||''}}
 function makeSnapshot(){
- const top3=rankFinal().slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],score:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,odds:h.odds,popularity:h.popularity}));
- state.finalSnapshot={createdAt:new Date().toISOString(),marketType:state.race.oddsType,top3};
+ const now=new Date().toISOString(),ranked=rankFinal();
+ const top3=ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),score:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,odds:h.odds,popularity:h.popularity,predictedTime:h.predictedTime}));
+ if(!state.finalSnapshot||!state.validationCompleted)state.finalSnapshot={schemaVersion:2,modelVersion:APP_VERSION,generatedAt:now,createdAt:now,marketType:state.race.oddsType,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',top3,ranking:ranked.map((h,i)=>({...top3.find(x=>x.horseNo===Number(h.horseNo)),horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime}))};
  const marks=['◎','○','▲']; state.horses.forEach(h=>h.finalMark='');
  top3.forEach((x,i)=>{const h=state.horses.find(z=>Number(z.horseNo)===Number(x.horseNo));if(h)h.finalMark=marks[i]});
  if(!state.predictionSnapshot){
-   state.predictionSnapshot={createdAt:new Date().toISOString(),horses:state.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,win:h.win,place:h.place,overall:h.overall,predictedTime:h.predictedTime,abilityMark:h.abilityMark,sourceMark:h.sourceMark||'',dataConfidence:h.dataConfidence}))};
+   state.predictionSnapshot={schemaVersion:2,modelVersion:APP_VERSION,generatedAt:now,createdAt:now,race:snapshotRace(),horses:state.horses.map(predictionHorse),locked:true};
  }
+ if(!state.marketSnapshot||!state.validationCompleted){state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt||now,createdAt:state.race.oddsUpdatedAt||now,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)}}
 }
 function render(){
  setVersion(); state.race=raceFromForm(); const r=state.race,h=state.horses; const rid=raceId(r);
@@ -294,6 +299,7 @@ function openHorseDetail(no){
 }
 function mergeExisting(next, existing){
  if(!existing)return next;
+ const locked=!!(existing.validationCompleted||existing.validated&&existing.result?.finishOrder?.length>=3);
  next.result=existing.result||next.result;
  next.actualTimes=existing.actualTimes||next.actualTimes||{};
  next.finalSnapshot=existing.finalSnapshot||next.finalSnapshot;
@@ -306,6 +312,7 @@ function mergeExisting(next, existing){
  next.resultFetchCheckedAt=existing.resultFetchCheckedAt||next.resultFetchCheckedAt;
  next.validationCompleted=existing.validationCompleted??next.validationCompleted;
  next.validated=existing.validated??next.validated;
+ if(locked&&Array.isArray(existing.horses)&&existing.horses.length)next.horses=existing.horses.map(h=>({...h}));
  if(existing.race?.oddsType==='実オッズ'){
    next.race.oddsType='実オッズ'; next.race.oddsUpdatedAt=existing.race.oddsUpdatedAt;
    const oldMap=new Map((existing.horses||[]).map(h=>[String(h.horseNo),h]));
@@ -455,10 +462,11 @@ function narCode(track){return NAR_TRACKS[track]||null}
 function applyMarketOdds(items, acquiredAt){
  if(!Array.isArray(items)||!items.length)return 0;
  const valid=items.map(x=>({horseNo:String(x.horseNo),odds:num(x.odds),popularity:num(x.popularity)})).filter(x=>x.horseNo&&x.odds!=null);
+ if(state.validationCompleted){state.resultMarketSnapshot={schemaVersion:2,createdAt:acquiredAt||new Date().toISOString(),oddsSnapshotType:'unknown',horses:valid.map(x=>({horseNo:Number(x.horseNo),odds:x.odds,popularity:x.popularity}))};persist(true);return valid.length}
  const pop=[...valid].sort((a,b)=>a.odds-b.odds),popMap=new Map(pop.map((x,i)=>[x.horseNo,x.popularity??i+1])),map=new Map(valid.map(x=>[x.horseNo,x.odds]));
  state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;h.ev=o*h.win;h.fair=h.win>0?100/h.win:null;}});
  abilityMarks(state.horses); applyValueFlags(state.horses); state.race.oddsType='実オッズ'; state.race.oddsUpdatedAt=acquiredAt||new Date().toISOString();
- state.marketSnapshot={createdAt:state.race.oddsUpdatedAt,horses:state.horses.map(h=>({horseNo:Number(h.horseNo),odds:h.odds,popularity:h.popularity,ev:h.ev,valueMark:h.valueMark,warningMark:h.warningMark}))};
+ if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)};
  makeSnapshot();
  const rid=raceId(raceFromForm()); if(rid){const hist=store.get(ODDS_HISTORY,{});(hist[rid]??=[]).push({at:state.race.oddsUpdatedAt,odds:valid});hist[rid]=hist[rid].slice(-120);store.set(ODDS_HISTORY,hist)}
  return valid.length;
@@ -487,10 +495,20 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
    source,
    autoSaved:true
  };
+ state.resultSnapshot={
+   schemaVersion:2,
+   source,
+   fetchedAt:new Date().toISOString(),
+   finishOrder:[...f],
+   actualTimes:{...state.actualTimes},
+   market:state.resultMarketSnapshot||null
+ };
  state.predictionSaved=true;
  state.resultStatus='fetched';
  state.resultFetchedAt=new Date().toISOString();
  state.validationCompleted=true;
+ state.validated=true;
+ state.validationSnapshot={schemaVersion:2,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...f],diagnoses:failureReasonsForRace(state)};
  persist(true);
  renderResultDisplayState();
  renderDashboard();
@@ -567,9 +585,29 @@ function saveValidation(){
 }
 function getAllRaces(){
  const legacy=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
- const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&x.result?.finishOrder?.length>=3);
+ const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&resultOrder(x).length>=3);
 }
-function horsePosition(r,h){const no=Number(h?.horseNo);const i=(r.result?.finishOrder||[]).map(Number).indexOf(no);return i>=0?i+1:null}
+function frozenHorses(r){
+ const prediction=Array.isArray(r?.predictionSnapshot?.horses)?r.predictionSnapshot.horses:[];
+ if(!prediction.length)return r?.horses||[];
+ const market=new Map((r.marketSnapshot?.horses||[]).map(h=>[Number(h.horseNo),h]));
+ const finals=new Map((r.finalSnapshot?.ranking||r.finalSnapshot?.top3||[]).map(h=>[Number(h.horseNo),h]));
+ return prediction.map(h=>({...h,...market.get(Number(h.horseNo)),...finals.get(Number(h.horseNo)),horseNo:Number(h.horseNo)}));
+}
+function frozenHorseByNo(r,no){return frozenHorses(r).find(h=>Number(h.horseNo)===Number(no))||null}
+function resultOrder(r){return (r?.resultSnapshot?.finishOrder||r?.result?.finishOrder||[]).map(Number)}
+function resultTimes(r){return r?.resultSnapshot?.actualTimes||r?.result?.actualTimes||r?.actualTimes||{}}
+function migrateSnapshotRecord(r){
+ if(!r||typeof r!=='object')return false;
+ let changed=false;const now=r.updatedAt||r.result?.at||new Date().toISOString(),horses=r.horses||[];
+ if(!r.predictionSnapshot?.horses?.length){r.predictionSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,race:snapshotRace(r.race||{}),horses:horses.map(predictionHorse),locked:true,legacyDerived:true};changed=true}
+ if(!r.marketSnapshot?.horses?.length){r.marketSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',acquiredAt:r.race?.oddsUpdatedAt||now,createdAt:r.race?.oddsUpdatedAt||now,oddsSnapshotType:r.race?.oddsSnapshotType||'unknown',horses:horses.map(marketHorse),legacyDerived:true};changed=true}
+ if(!r.finalSnapshot?.top3?.length){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
+ if(r.result?.finishOrder?.length>=3&&!r.resultSnapshot){r.resultSnapshot={schemaVersion:2,source:r.result.source||'legacy',fetchedAt:r.resultFetchedAt||r.result.at||now,finishOrder:r.result.finishOrder.map(Number),actualTimes:{...(r.result.actualTimes||r.actualTimes||{})},legacyDerived:true};changed=true}
+ r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.snapshotSchemaVersion=2;
+ return changed;
+}
+function horsePosition(r,h){const no=Number(h?.horseNo),i=resultOrder(r).indexOf(no);return i>=0?i+1:null}
 
 function timeToSec(v){
  const s=String(v||'').trim();
@@ -578,11 +616,11 @@ function timeToSec(v){
  return Number(m[1])*60+Number(m[2]);
 }
 function pct(n,d){return d?`${(n/d*100).toFixed(1)}%`:'—'}
-function getHorseByNo(r,no){return (r.horses||[]).find(h=>Number(h.horseNo)===Number(no))||null}
+function getHorseByNo(r,no){return frozenHorseByNo(r,no)}
 function top3Snapshot(r){
  const snap=r.finalSnapshot?.top3;
  if(Array.isArray(snap)&&snap.length)return snap.slice(0,3);
- return rankFinalFor(r.horses||[]).slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),mark:['◎','○','▲'][i]}));
+ return rankFinalFor(frozenHorses(r)).slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),mark:['◎','○','▲'][i]}));
 }
 function aggregateAdvanced(races){
  const adv={
@@ -613,7 +651,7 @@ function aggregateAdvanced(races){
    const g=(obj[key]??={n:0,place:0,win:0});g.n++;if(hit)g.place++;if(win)g.win++;
  };
  for(const r of races){
-   const order=(r.result?.finishOrder||[]).map(Number);
+   const order=resultOrder(r);
    const snap=top3Snapshot(r);
    const captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
    if(captured>0)adv.top3Any++;
@@ -626,7 +664,7 @@ function aggregateAdvanced(races){
      if(pos>=0)adv.finalRankAbs.push(Math.abs((i+1)-(pos+1)));
    });
 
-   for(const h of (r.horses||[])){
+   for(const h of frozenHorses(r)){
      const no=Number(h.horseNo), pos=order.indexOf(no), placed=pos>=0, won=pos===0;
      const vm=h.valueMark|| (h.mark?.includes?.('💎')?h.mark:'');
      const wm=h.warningMark||h.warning||'';
@@ -646,7 +684,7 @@ function aggregateAdvanced(races){
        const y=placed?1:0, p=Number(h.place)/100;
        adv.placeMae.push(Math.abs(p-y)*100);adv.placeBrier.push((p-y)**2);
      }
-     const pred=timeToSec(h.predictedTime), actual=timeToSec(h.actualTime||r.actualTimes?.[String(h.horseNo)]||r.result?.actualTimes?.[String(h.horseNo)]);
+     const pred=timeToSec(h.predictedTime), actual=timeToSec(resultTimes(r)[String(h.horseNo)]);
      if(pred!=null&&actual!=null)adv.timeAbs.push(Math.abs(pred-actual));
 
      const dist=String(r.race?.distance||'不明');
@@ -670,7 +708,7 @@ function renderGroupTable(title,obj,key){
 
 
 function failureReasonsForRace(r){
- const order=(r.result?.finishOrder||[]).map(Number);
+ const order=resultOrder(r);
  const snap=top3Snapshot(r);
  const reasons=[];
  const topPick=snap[0] ? getHorseByNo(r,snap[0].horseNo) : null;
@@ -687,7 +725,7 @@ function failureReasonsForRace(r){
      reasons.push({code:'PROB_OVER',label:'AI勝率過大評価',detail:`AI勝率${topPick.win.toFixed(1)}%に対して3着外`});
    }
    const pt=timeToSec(topPick.predictedTime);
-   const at=timeToSec(topPick.actualTime||r.actualTimes?.[String(topPick.horseNo)]||r.result?.actualTimes?.[String(topPick.horseNo)]);
+   const at=timeToSec(resultTimes(r)[String(topPick.horseNo)]);
    if(pt!=null && at!=null && Math.abs(pt-at)>=1.5){
      reasons.push({code:'TIME_ERROR',label:'予想TIME誤差',detail:`FINAL◎のTIME誤差 ${Math.abs(pt-at).toFixed(2)}秒`});
    }
@@ -704,11 +742,11 @@ function failureReasonsForRace(r){
    }
  }
  const pace=String(r.race?.pace||'');
- const bias=String(r.race?.bias||r.race?.trackCondition||'');
+ const bias=String(r.predictionSnapshot?.race?.bias||r.race?.bias||'').trim();
  if(pace && /速|遅|ハイ|スロー/.test(pace)){
    reasons.push({code:'PACE_CHECK',label:'展開検証候補',detail:`事前展開「${pace}」と実際のレース内容を要確認`});
  }
- if(bias && bias!=='不明' && bias!=='—'){
+ if(/^(内有利|外有利|前有利|差し有利|フラット)(?:$|[・／/\s])/u.test(bias)){
    reasons.push({code:'BIAS_CHECK',label:'馬場バイアス検証候補',detail:`事前馬場評価「${bias}」を結果と照合`});
  }
  if(!reasons.length){
@@ -757,10 +795,10 @@ function renderImprovementPoints(races,adv){
 }
 
 function raceTimeMae(r){
- const values=(r.horses||[]).map(h=>{const p=timeToSec(h.predictedTime),a=timeToSec(h.actualTime||r.actualTimes?.[String(h.horseNo)]||r.result?.actualTimes?.[String(h.horseNo)]);return p!=null&&a!=null?Math.abs(p-a):null}).filter(x=>x!=null);
+ const times=resultTimes(r),values=frozenHorses(r).map(h=>{const p=timeToSec(h.predictedTime),a=timeToSec(times[String(h.horseNo)]);return p!=null&&a!=null?Math.abs(p-a):null}).filter(x=>x!=null);
  return values.length?mean(values):null;
 }
-function raceCaptured(r){const order=(r.result?.finishOrder||[]).map(Number);return top3Snapshot(r).filter(x=>order.includes(Number(x.horseNo))).length}
+function raceCaptured(r){const order=resultOrder(r);return top3Snapshot(r).filter(x=>order.includes(Number(x.horseNo))).length}
 function renderSavedRaces(races){
  const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
  let rows=races.filter(r=>dashboardUi.raceType==='all'||(dashboardUi.raceType==='central'?isCentral(r):!isCentral(r)));
@@ -774,9 +812,9 @@ function renderSavedRaces(races){
 }
 
 function renderDashboard(){
- const races=getAllRaces(),horses=races.flatMap(x=>x.horses||[]),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
+ const races=getAllRaces(),horses=races.flatMap(frozenHorses),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
  const hit=(race,h)=>horsePosition(race,h)!=null,win=(race,h)=>horsePosition(race,h)===1;
- let dh=0,wh=0;for(const race of races){(race.horses||[]).filter(h=>h.valueMark||h.mark?.includes?.('💎')).forEach(h=>{if(hit(race,h))dh++});(race.horses||[]).filter(h=>h.warningMark||h.warning).forEach(h=>{if(!hit(race,h))wh++})}
+ let dh=0,wh=0;for(const race of races){frozenHorses(race).filter(h=>h.valueMark||h.mark?.includes?.('💎')).forEach(h=>{if(hit(race,h))dh++});frozenHorses(race).filter(h=>h.warningMark||h.warning).forEach(h=>{if(!hit(race,h))wh++})}
  const adv=aggregateAdvanced(races);
  $('dashKpis').innerHTML=[
    ['検証済み',`${races.length}R`],
@@ -792,10 +830,10 @@ function renderDashboard(){
  $('dashKpis').insertAdjacentHTML('afterend',renderImprovementPoints(races,adv));
 
  const modelStats=[
-  ['勝率モデル',r=>[...(r.horses||[])].sort((a,b)=>b.win-a.win)[0]],
-  ['総合モデル',r=>[...(r.horses||[])].sort((a,b)=>b.overall-a.overall)[0]],
-  ['期待値モデル',r=>[...(r.horses||[])].filter(h=>h.ev!=null).sort((a,b)=>b.ev-a.ev)[0]],
-  ['CHASS FINAL',r=>{const no=r.finalSnapshot?.top3?.[0]?.horseNo;return (r.horses||[]).find(h=>Number(h.horseNo)===Number(no))||rankFinalFor(r.horses||[])[0]}]
+  ['勝率モデル',r=>[...frozenHorses(r)].sort((a,b)=>b.win-a.win)[0]],
+  ['総合モデル',r=>[...frozenHorses(r)].sort((a,b)=>b.overall-a.overall)[0]],
+  ['期待値モデル',r=>[...frozenHorses(r)].filter(h=>h.ev!=null).sort((a,b)=>b.ev-a.ev)[0]],
+  ['CHASS FINAL',r=>{const no=r.finalSnapshot?.top3?.[0]?.horseNo;return frozenHorseByNo(r,no)||rankFinalFor(frozenHorses(r))[0]}]
  ];
  const modelRows=modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[];races.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(hp!=null)p++;if(hp!=null)pos.push(hp)});return `<div class="model-row"><strong>${name}</strong><span>対象 ${target}</span><b>${target?(w/target*100).toFixed(1):'—'}%</b><small>複 ${target?(p/target*100).toFixed(1):'—'}%・平均 ${pos.length?mean(pos).toFixed(2):'—'}</small></div>`}).join('');
  const modelHtml=dashAccordion('models','モデル別成績','4モデル',modelRows,{open:true,summaryText:'勝率・複勝率'});
@@ -825,6 +863,7 @@ function migrateLegacy(){
  const old=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
  let changed=false;
  Object.entries(old).forEach(([rid,r])=>{if(!now[rid]){now[rid]=r;changed=true;}});
+ Object.values(now).forEach(r=>{if(migrateSnapshotRecord(r))changed=true});
  if(changed)store.set(KEY,now);
  const lc=store.get(LEGACY_CURRENT,'');if(!store.get(CURRENT,'')&&lc)store.set(CURRENT,lc);
 }
