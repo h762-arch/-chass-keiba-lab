@@ -1,11 +1,13 @@
 (() => {
 'use strict';
-const VERSION='9.6';
+const VERSION='9.6.1';
 
 function forceVersion(){
-  document.title=`チャス競馬研究所 Ver.${VERSION}`;
+  const title=`チャス競馬研究所 Ver.${VERSION}`;
+  if(document.title!==title) document.title=title;
   document.querySelectorAll('.topbar h1 span,h1 span').forEach(el=>{
-    if(/Ver\./.test(el.textContent||'')) el.textContent=`Ver.${VERSION}`;
+    const next=`Ver.${VERSION}`;
+    if(/Ver\./.test(el.textContent||'') && el.textContent!==next) el.textContent=next;
   });
 }
 function fmt(v,n=1){const x=Number(v);return Number.isFinite(x)?x.toFixed(n):'—';}
@@ -108,8 +110,13 @@ function replaceAutoLoader(){
 function boot(){
  forceVersion();addNote();replaceAutoLoader();
  // app.js 9.4 の render() がヘッダーを戻すため、表示だけは常に9.6へ固定する。
- const mo=new MutationObserver(()=>forceVersion());
- mo.observe(document.documentElement,{subtree:true,childList:true,characterData:true});
+ // iPhone/Safari hotfix: avoid a self-triggering MutationObserver loop.
+ const header=document.querySelector('.topbar')||document.querySelector('header');
+ if(header){
+   const mo=new MutationObserver(()=>forceVersion());
+   mo.observe(header,{subtree:true,childList:true,characterData:true});
+ }
+ setInterval(forceVersion,1500);
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
