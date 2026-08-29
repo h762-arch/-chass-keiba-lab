@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-const VERSION="9.5";
+const VERSION="9.6";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
 function cleanText(html=""){return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<br\s*\/?>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;|&#160;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/\s+/g," ").trim()}
@@ -85,24 +85,53 @@ function locateHorseSegments(detailHtml,horses){
  return parts;
 }
 function parseRuns(segment,targetDistance,trackName){
- const runs=[];const re=/(\d{1,2})\s*(\d{2}\.\d{2}\.\d{2})\s*(良|稍重|重|不良)/g;let m;
- while((m=re.exec(segment))&&runs.length<5){
-   const start=m.index,end=Math.min(segment.length,start+340),chunk=segment.slice(start,end);
-   const dist=Number(chunk.match(/(?:右|左|直|外|内)?\s*(\d{3,4})(?:\s|　)/)?.[1]||0)||null;
+ const runs=[];
+ // NAR DebaTableSmall actual format:
+ // 船橋08.06 良 左 1200 ... 5/7 2人 ... 1159（2.3） 2-2-1 39.5
+ // Ver.9.5 incorrectly expected "着順 YY.MM.DD". Ver.9.6 anchors on the real MM.DD block.
+ const re=/([^\s]{0,8}?)(\d{2}\.\d{2})\s*(良|稍重|重|不良)\s*(?:ナ\s*)?(右|左|直|外|内)?\s*(\d{3,4})/g;
+ const hits=[...segment.matchAll(re)].slice(0,5);
+ for(let i=0;i<hits.length;i++){
+   const m=hits[i],start=m.index,end=i+1<hits.length?hits[i+1].index:Math.min(segment.length,start+420);
+   const chunk=segment.slice(start,end);
+   const finishField=chunk.match(/(?:^|\s)(\d{1,2})\/(\d{1,2})\s+\d+人/);
+   if(!finishField)continue;
+   const finish=Number(finishField[1]),fieldSize=Number(finishField[2]);
+   if(!Number.isFinite(finish)||finish<1||finish>fieldSize||fieldSize<2)continue;
+   const dist=Number(m[5])||null;
    const compact=chunk.match(/\b(\d{3,4})（[^）]*）/)?.[1]||null;
    const timeSec=compactTimeToSec(compact);
    const corners=chunk.match(/\b(\d{1,2}(?:-\d{1,2}){1,4})\b/)?.[1]||'';
    const decimals=[...chunk.matchAll(/\b([2-5]\d\.\d)\b/g)].map(x=>Number(x[1])).filter(v=>v>=30&&v<=55);
    const last3f=decimals.length?decimals[decimals.length-1]:null;
-   const finish=Number(m[1]);
-   const sameDistance=dist&&targetDistance?Math.abs(dist-targetDistance)<=100:false;
-   const sameTrack=trackName?chunk.includes(trackName):false;
-   let score=clamp(102-(finish-1)*7,38,102);
-   if(sameDistance)score+=5;if(sameTrack)score+=3;
-   if(last3f!=null)score+=clamp((42-last3f)*1.2,-7,8);
-   runs.push({finish,date:m[2],condition:m[3],distance:dist,timeSec,last3f,corners,sameDistance,sameTrack,score:clamp(score,30,110)});
+   const venue=(String(m[1]||'').match(/[一-龠々ヶァ-ヶー]+/)||[])[0]||'';
+   const exactDistance=!!(dist&&targetDistance&&dist===targetDistance);
+   const nearDistance=!!(dist&&targetDistance&&Math.abs(dist-targetDistance)<=100);
+   const sameTrack=!!(trackName&&(venue===trackName||chunk.startsWith(trackName)||chunk.includes(trackName+m[2])));
+   let score=clamp(104-(finish-1)*6.5,40,104);
+   if(exactDistance)score+=6;else if(nearDistance)score+=2;
+   if(sameTrack)score+=3;
+   if(last3f!=null)score+=clamp((41-last3f)*1.15,-8,8);
+   runs.push({
+     finish,fieldSize,date:m[2],condition:m[3],venue,distance:dist,timeSec,last3f,corners,
+     exactDistance,nearDistance,sameDistance:exactDistance,sameTrack,
+     score:clamp(score,30,110)
+   });
  }
  return runs;
+}
+function secToRaceTime(sec){
+ if(!Number.isFinite(sec)||sec<=0)return '';
+ const m=Math.floor(sec/60),s=(sec-m*60).toFixed(1).padStart(4,'0');
+ return `${m}:${s}`;
+}
+function predictTimeFromRuns(runs,targetDistance){
+ const exact=(runs||[]).filter(r=>r.distance===targetDistance&&Number.isFinite(r.timeSec)).slice(0,3);
+ if(!exact.length)return '';
+ const weights=[1,.82,.68].slice(0,exact.length);
+ const den=weights.reduce((a,b)=>a+b,0);
+ const sec=exact.reduce((s,r,i)=>s+r.timeSec*weights[i],0)/den;
+ return secToRaceTime(sec);
 }
 function enrichAbility(detailHtml,horses,targetDistance,trackName){
  const segments=locateHorseSegments(detailHtml,horses);
@@ -113,7 +142,7 @@ function enrichAbility(detailHtml,horses,targetDistance,trackName){
    const avg=mean(recentIndex),distScore=mean(sameD.map(r=>r.score)),courseScore=mean(sameC.map(r=>r.score));
    const firstCorners=runs.map(r=>Number(String(r.corners).split('-')[0])).filter(n=>Number.isFinite(n));
    const cornerAvg=mean(firstCorners);const runningStyle=cornerAvg==null?'不明':cornerAvg<=2.3?'逃げ・先行':cornerAvg<=5?'先行・好位':'差し・追込';
-   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),runningStyle,dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
+   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),runningStyle,predictedTime:predictTimeFromRuns(runs,targetDistance),dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
  });
  const sameDistanceTimes=enriched.flatMap(h=>h.runs.filter(r=>r.sameDistance&&r.timeSec!=null).map(r=>r.timeSec));
  const best=sameDistanceTimes.length?Math.min(...sameDistanceTimes):null,worst=sameDistanceTimes.length?Math.max(...sameDistanceTimes):null;
@@ -150,7 +179,7 @@ export default{
       const numbers=[...new Set([...enriched.map(x=>String(x.horseNo)),...odds.map(x=>String(x.horseNo))])].sort((a,b)=>Number(a)-Number(b));
       const merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{};const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();const cardBad=!cardName||/^\d{1,2}$/.test(cardName)||/^馬番\d+$/.test(cardName);return {...c,horseNo:no,horseName:(!cardBad?cardName:oddsName)||cardName||`馬番${no}`,odds:o.odds??null,popularity:o.popularity??null,nameSource:(!cardBad?cardName:oddsName)?(!cardBad?'出馬表':'オッズ表'):'fallback'};});
       const abilityCount=merged.filter(x=>x.abilityScore!=null).length;
-      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true},acquiredAt:new Date().toISOString()});
+      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-MM.DD-v9.6",predictedTime:merged.filter(x=>x.predictedTime).length},acquiredAt:new Date().toISOString()});
     }catch(e){return json({error:String(e?.message||e)},502)}
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
