@@ -438,7 +438,7 @@ async function syncLiveOdds(silent=false){
 }
 function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}if($('autoOddsState')){$('autoOddsState').textContent=on?'ON':'OFF';$('autoOddsState').classList.toggle('is-on',on)}}
 
-function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存'}={}){
+function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存',resultData=null}={}){
  const f=(finishOrder||[]).map(num).filter(x=>x!=null).slice(0,3);
  if(f.length<3)return false;
  $('finish1').value=f[0];$('finish2').value=f[1];$('finish3').value=f[2];
@@ -455,11 +455,15 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
    autoSaved:true
  };
  state.resultSnapshot={
-   schemaVersion:2,
+   schemaVersion:3,
    source,
-   fetchedAt:new Date().toISOString(),
-   finishOrder:[...f],
+   fetchedAt:resultData?.acquiredAt||new Date().toISOString(),
+   finishOrder:(resultData?.finishOrder||f).map(Number).filter(Number.isFinite),
    actualTimes:{...state.actualTimes},
+   horses:Array.isArray(resultData?.results)?resultData.results.map(x=>({...x,horseNo:Number(x.horseNo),position:x.position==null?null:Number(x.position)})):f.map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo})),
+   weather:resultData?.resultMeta?.weather||'',
+   trackCondition:resultData?.resultMeta?.trackCondition||'',
+   quality:resultData?.quality||null,
    market:state.resultMarketSnapshot||null
  };
  state.predictionSaved=true;
@@ -469,7 +473,7 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  state.resultFetchedAt=new Date().toISOString();
  state.validationCompleted=true;
  state.validated=true;
- state.validationSnapshot={schemaVersion:2,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...f],diagnoses:failureReasonsForRace(state)};
+ state.validationSnapshot={schemaVersion:2,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...state.resultSnapshot.finishOrder],diagnoses:failureReasonsForRace(state)};
  persist(true);
  renderResultDisplayState();
  renderDashboard();
@@ -518,7 +522,7 @@ async function syncNar(options={}){
    if(complete){
      // 取得時点の結果・最終オッズ・実走TIMEを一体で保存する。
      // 後から手動修正した場合は既存の保存ボタンで上書きできる。
-     saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存'});
+     saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存',resultData:d});
    }else{
      state.predictionSaved=true;
      state.resultStatus=alreadyComplete?'fetched':'pending';
@@ -528,9 +532,10 @@ async function syncNar(options={}){
    }
 
    render();
-   const base=`NAR公式反映：着順 ${d.finishOrder?.join('-')||'未確定'} / オッズ ${d.odds?.length||0}頭 / 実走TIME ${Object.keys(d.actualTimes||{}).length}頭`;
+   const base=`NAR公式反映：着順 ${d.finishOrder?.slice(0,3).join('-')||'未確定'} / 全馬結果 ${d.results?.length||0}頭 / 実走TIME ${Object.keys(d.actualTimes||{}).length}頭`;
+   const qualityWarning=complete&&d.quality&&(d.quality.actualTimeRate<70||d.quality.resultParseRate<100)?' / データ要確認':'';
    $('narStatus').textContent=complete
-     ? `${base} / 検証結果まで自動保存済み`
+     ? `${base} / 検証結果まで自動保存済み${qualityWarning}`
      : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`結果待ち｜公式結果はまだ公開されていません。予想は保存済みです。`;
    return {complete:complete||alreadyComplete,pending:!complete&&!alreadyComplete,status:complete||alreadyComplete?'fetched':'pending',data:d};
   }catch(e){
@@ -576,6 +581,7 @@ function migrateSnapshotRecord(r){
  if(!r.marketSnapshot?.horses?.length){r.marketSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',acquiredAt:r.race?.oddsUpdatedAt||now,createdAt:r.race?.oddsUpdatedAt||now,oddsSnapshotType:r.race?.oddsSnapshotType||'unknown',horses:horses.map(marketHorse),legacyDerived:true};changed=true}
  if(!r.finalSnapshot?.top3?.length){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
  if(r.result?.finishOrder?.length>=3&&!r.resultSnapshot){r.resultSnapshot={schemaVersion:2,source:r.result.source||'legacy',fetchedAt:r.resultFetchedAt||r.result.at||now,finishOrder:r.result.finishOrder.map(Number),actualTimes:{...(r.result.actualTimes||r.actualTimes||{})},legacyDerived:true};changed=true}
+ if(r.resultSnapshot&&!Array.isArray(r.resultSnapshot.horses)){const times=r.resultSnapshot.actualTimes||r.result?.actualTimes||r.actualTimes||{};r.resultSnapshot.horses=(r.resultSnapshot.finishOrder||[]).map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo:Number(horseNo),time:times[String(horseNo)]||''}));r.resultSnapshot.legacyDerived=true;changed=true}
  r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.snapshotSchemaVersion=2;
  return changed;
 }

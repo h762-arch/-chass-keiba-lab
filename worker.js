@@ -29,17 +29,37 @@ async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":`Mo
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
 
-function parseResult(html){
- const order=[],actualTimes={};
+function resultColumn(headers,...patterns){return headers.findIndex(h=>patterns.some(p=>p.test(String(h||'').replace(/\s+/g,''))))}
+function numericCell(v,min=-Infinity,max=Infinity){const m=String(v??'').replace(/,/g,'').match(/-?\d+(?:\.\d+)?/),n=m?Number(m[0]):null;return Number.isFinite(n)&&n>=min&&n<=max?n:null}
+export function parseResult(html){
+ const results=[],actualTimes={};let headers=[];
  for(const row of tableRows(html)){
-   const c=row.cells;if(c.length<4)continue;
-   const pos=String(c[0]||"").match(/^(\d{1,2})$/);if(!pos)continue;
-   const nums=[];for(let i=1;i<Math.min(c.length,7);i++){const m=String(c[i]||"").match(/^(\d{1,2})$/);if(m&&Number(m[1])>=1&&Number(m[1])<=18)nums.push(m[1]);}
-   const horseNo=nums.length>=2?nums[1]:nums[0];if(!horseNo)continue;
-   const p=Number(pos[1]);if(p>=1&&p<=3)order[p-1]=horseNo;
-   const tm=row.text.match(/\b(\d+):([0-5]\d(?:\.\d+)?)\b/);if(tm)actualTimes[horseNo]=tm[0];
+   const c=row.cells.map(x=>String(x||'').trim()),joined=c.join('|');
+   if(/着順/.test(joined)&&/馬番/.test(joined)){headers=c;continue}
+   if(!headers.length||c.length<4)continue;
+   const ix={position:resultColumn(headers,/^着順$/,/着順/),frameNo:resultColumn(headers,/枠番/,/^枠$/),horseNo:resultColumn(headers,/馬番/),horseName:resultColumn(headers,/馬名/),carriedWeight:resultColumn(headers,/斤量/),jockey:resultColumn(headers,/騎手/),time:resultColumn(headers,/タイム/,/走破時計/),margin:resultColumn(headers,/着差/),last3f:resultColumn(headers,/上り3F/,/上がり3F/,/^上り$/),corner:resultColumn(headers,/コーナー/,/通過順位/),popularity:resultColumn(headers,/人気/),odds:resultColumn(headers,/単勝/,/オッズ/),bodyWeight:resultColumn(headers,/馬体重/)};
+   const at=k=>ix[k]>=0?c[ix[k]]:'';
+   const positionText=at('position'),position=numericCell(positionText,1,99),horseNo=numericCell(at('horseNo'),1,99);
+   if(horseNo==null||(!position&&!/(取消|除外|中止|失格)/.test(positionText)))continue;
+   const horseName=plausibleHorseName(at('horseName'))?at('horseName'):'';
+   const time=at('time').match(/\b\d+:[0-5]\d(?:\.\d+)?\b/)?.[0]||'';
+   const bw=at('bodyWeight').match(/(\d{3,4})(?:\s*\(([+\-−]?\d+)\))?/);
+   const item={position,positionText:position?String(position):positionText,frameNo:numericCell(at('frameNo'),1,8),horseNo,horseName,time,margin:at('margin')||'',last3f:numericCell(at('last3f'),25,60),cornerPositions:at('corner')||'',popularity:numericCell(at('popularity'),1,99),finalOdds:numericCell(at('odds'),1,9999),bodyWeight:bw?Number(bw[1]):null,bodyWeightChange:bw?.[2]!=null?Number(String(bw[2]).replace('−','-')):null,carriedWeight:numericCell(at('carriedWeight'),40,80),jockey:at('jockey')||''};
+   results.push(item);if(time)actualTimes[String(horseNo)]=time;
  }
- return {finishOrder:order.filter(Boolean),actualTimes};
+ if(!results.length){
+   const legacyOrder=[];
+   for(const row of tableRows(html)){
+     const c=row.cells,pos=String(c[0]||'').match(/^(\d{1,2})$/);if(!pos||c.length<4)continue;
+     const nums=[];for(let i=1;i<Math.min(c.length,7);i++){const m=String(c[i]||'').match(/^(\d{1,2})$/);if(m&&Number(m[1])>=1&&Number(m[1])<=18)nums.push(m[1])}
+     const horseNo=Number(nums.length>=2?nums[1]:nums[0]);if(!horseNo)continue;const position=Number(pos[1]),time=row.text.match(/\b\d+:[0-5]\d(?:\.\d+)?\b/)?.[0]||'';
+     if(position>=1&&position<=3)legacyOrder[position-1]=String(horseNo);if(time)actualTimes[String(horseNo)]=time;results.push({position,positionText:String(position),horseNo,horseName:'',time,parserFallback:true});
+   }
+   results.sort((a,b)=>a.position-b.position);return {finishOrder:legacyOrder.filter(Boolean),actualTimes,results,parserFallback:true};
+ }
+ results.sort((a,b)=>(a.position??999)-(b.position??999)||a.horseNo-b.horseNo);
+ const finishOrder=results.filter(x=>x.position!=null).map(x=>String(x.horseNo));
+ return {finishOrder,actualTimes,results};
 }
 function parseRaceMeta(html){
  const text=cleanText(html);
@@ -217,7 +237,10 @@ export default{
     const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;const urls={result:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`};
     try{
       if(u.pathname==="/api/nar/odds"){const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});}
-      const [rh,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]);const rr=parseResult(rh),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'unpublished':'available'});
+      const [rh,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]),rr=parseResult(rh),oo=parseTanFuku(oh),meta=parseRaceMeta(rh),om=new Map(oo.map(x=>[Number(x.horseNo),x]));
+      rr.results=rr.results.map(x=>({...x,finalOdds:x.finalOdds??om.get(Number(x.horseNo))?.odds??null,popularity:x.popularity??om.get(Number(x.horseNo))?.popularity??null}));
+      const total=rr.results.length,timeCount=rr.results.filter(x=>x.time).length,nameCount=rr.results.filter(x=>x.horseName).length,detailCount=rr.results.filter(x=>x.last3f!=null||x.cornerPositions||x.bodyWeight!=null).length;
+      return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,resultMeta:{weather:meta.weather,trackCondition:meta.trackCondition},quality:{resultRows:total,resultParseRate:rr.parserFallback?50:total?100:0,actualTimeRate:total?Math.round(100*timeCount/total):0,resultHorseNameRate:total?Math.round(100*nameCount/total):0,resultDetailRate:total?Math.round(100*detailCount/total):0,parser:rr.parserFallback?'legacy-fallback':'header-mapped-v1'},acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'unpublished':'available'});
     }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
