@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.8.5</title>
+  <title>チャス競馬研究所 Ver.9.8.6</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.8.5</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.8.6</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -20,7 +20,7 @@
   </nav>
   <section id="predictionView" class="view active">
     <section class="card race-summary">
-      <div class="race-head"><h2 id="raceTitle">レース情報未入力</h2><span id="resultStatusBadge" class="summary-status">結果未取得</span><span id="autoRaceBadge" class="visually-hidden" aria-live="polite">未取得</span></div>
+      <div class="race-head"><h2 id="raceTitle">レース情報未入力</h2><span id="resultStatusBadge" class="summary-status">未取得</span><span id="autoRaceBadge" class="visually-hidden" aria-live="polite">未取得</span></div>
       <p id="raceMeta" class="muted">予想データファイルを読み込むと自動表示します。</p>
       <div class="summary-chips"><span id="dateSummary" class="badge">日付 —</span><span id="distanceSummary" class="badge">距離 —</span><span id="chaosBadge" class="badge">波乱度 —</span><span id="paceBadge" class="badge">展開 —</span><span id="biasText" class="badge">馬場 —</span><span id="abilitySummary" class="badge">能力 —</span><span id="timeSummary" class="badge">TIME —</span><span id="marketSummary" class="badge">市場 —</span><span id="modeSummary" class="badge wide-chip">データ待ち</span></div>
       <div class="quick-actions" aria-label="レース操作"><button id="quickPredict" type="button">予想更新</button><button id="quickOdds" type="button">現在オッズ</button><button id="quickResult" type="button">結果検証</button></div>
@@ -39,7 +39,7 @@
     <section class="utility-stack card">
       <details id="integrityCard" class="utility-row"><summary><span class="utility-icon good-bg">✓</span><strong>データ整合性</strong><span id="integrityStatus" class="utility-value good">確認待ち</span></summary><div id="integrityGrid" class="integrity-grid utility-body"></div></details>
       <details class="utility-row market-card"><summary><span class="utility-icon market-bg">▥</span><strong>現在オッズ</strong><span id="liveOddsBadge" class="utility-value">未取得</span></summary><div class="utility-body"><button id="liveOddsSync" class="primary wide">NAR公式から現在オッズを取得</button><p id="liveOddsStatus" class="muted status-line">予想データ読込後に取得できます。</p></div></details>
-      <div class="utility-row switch-row"><span class="utility-icon refresh-bg">↻</span><strong>60秒自動更新</strong><label class="switch"><input id="autoOdds" type="checkbox"><span></span></label></div>
+      <div class="utility-row switch-row"><span class="utility-icon refresh-bg">↻</span><strong>60秒自動更新</strong><span id="autoOddsState" class="auto-odds-state">OFF</span><label class="switch"><input id="autoOdds" type="checkbox"><span></span></label></div>
       <details id="horseDetailsCard" class="utility-row"><summary><span class="utility-icon detail-bg">⌕</span><strong>詳細分析</strong><span class="utility-value">各馬を確認</span></summary><div class="utility-body"><div id="horseList"></div></div></details>
     </section>
     <section id="resultCard" class="card result-panel" aria-labelledby="resultPanelTitle"><div class="result-panel-head"><div><p class="eyebrow">RACE VALIDATION</p><h2 id="resultPanelTitle">レース後検証</h2></div><span id="resultState" class="badge">未取得</span></div><div class="result-body"><button id="narSync" class="primary wide">NAR公式から結果取得・自動保存</button><p id="narStatus" class="muted status-line"></p><div class="grid three finish-grid"><label>1着<input id="finish1" type="number" inputmode="numeric"></label><label>2着<input id="finish2" type="number" inputmode="numeric"></label><label>3着<input id="finish3" type="number" inputmode="numeric"></label></div><label>検証メモ<textarea id="memo" rows="3"></textarea></label><button id="saveValidation" class="ghost wide">手動修正を保存・再集計</button></div></section>

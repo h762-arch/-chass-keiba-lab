@@ -278,3 +278,34 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
  .primary-controls .auto-race-grid{grid-template-columns:1fr .86fr .62fr;gap:5px}
  .primary-controls .primary.wide{font-size:12px}
 }
+
+/* Ver.9.8.6: readable names and unified state feedback */
+.quick-actions{gap:6px}
+.quick-actions button{height:44px;min-height:44px;padding:5px 3px;text-align:center;line-height:1.15;white-space:nowrap}
+.primary-controls .auto-race-panel{padding:8px 9px}
+.primary-controls .auto-race-grid{gap:6px}
+.primary-controls input,.primary-controls select{height:43px;min-height:43px}
+.primary-controls .primary.wide{margin-top:6px}
+.primary-controls #autoRaceStatus{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-height:1.35}
+.final-metric span{font-size:6.5px;letter-spacing:.01em}
+.final-metric b,.quick-stat strong{font-variant-numeric:tabular-nums}
+.flag-box{font-size:11px;padding:8px 9px;display:flex;align-items:center}
+.utility-row>summary,.switch-row{min-height:50px;padding-top:7px;padding-bottom:7px}
+.utility-icon{width:30px;height:30px;font-size:13px}
+.utility-row,.market-card,#horseDetailsCard{scroll-margin-top:max(16px,env(safe-area-inset-top));scroll-margin-bottom:calc(96px + env(safe-area-inset-bottom))}
+.auto-odds-state{margin-left:auto;color:var(--muted);font-size:10px;font-weight:900;transition:.2s}.auto-odds-state.is-on{color:var(--accent)}
+.switch-row .switch{margin-left:4px}
+.result-panel textarea{min-height:70px;max-height:none;resize:vertical}
+.result-panel{margin-bottom:calc(18px + env(safe-area-inset-bottom))}
+.summary-status{min-width:54px;text-align:center}
+.quick-mark{color:var(--muted)}.quick-mark.is-alert{color:var(--warn)}.quick-mark.is-value{color:var(--accent)}
+.quick-no{border-color:color-mix(in srgb,var(--accent) 62%,var(--line));color:var(--accent)}
+
+@media(max-width:430px){
+ .horse-data-grid{--horse-grid-columns:22px 28px minmax(0,1fr) 39px 40px 48px 27px;--horse-grid-gap:2px}
+ .final-no,.quick-no{width:27px;height:31px;font-size:14px}
+ .final-mark{font-size:14px}.quick-mark{font-size:9.5px}
+ .final-name,.quick-name{font-size:11.5px;line-height:1.14;-webkit-line-clamp:2}
+ .final-metric b,.quick-stat strong{font-size:9.8px!important}
+ .final-metric:last-child b,.quick-stat:last-child strong{font-size:13px!important}
+}

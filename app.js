@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.8.5';
+const APP_VERSION='9.8.6';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -24,6 +24,7 @@ const arr=v=>Array.isArray(v)?v.map(num).filter(x=>x!=null):typeof v==='string'?
 const store={get(k,d){try{return JSON.parse(localStorage.getItem(k)||'')??d}catch{return d}},set(k,v){localStorage.setItem(k,JSON.stringify(v))}};
 
 let state={race:{},horses:[],result:null,actualTimes:{},finalSnapshot:null,predictionSnapshot:null,marketSnapshot:null};
+let resultFormRaceId='';
 
 function setVersion(){
   document.title=`チャス競馬研究所 Ver.${APP_VERSION}`;
@@ -200,12 +201,23 @@ function renderMarketDisplayState(){
  if($('liveOddsBadge'))$('liveOddsBadge').textContent=m.label;
  return m;
 }
-function hasSavedResult(){return !!(state.result?.finishOrder?.length>=3||existingValidated(raceId(state.race)))}
+function getResultDisplayState(raceState=state){
+ const finishOrder=(raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
+ const done=finishOrder.length>=3,manual=done&&raceState?.result?.source==='手動修正保存';
+ return {done,manual,finishOrder,label:manual?'手動修正あり':done?'取得済':'未取得'};
+}
+function restoreSavedResultFields(resultState=getResultDisplayState()){
+ const rid=raceId(state.race);
+ if(resultFormRaceId!==rid){['finish1','finish2','finish3','memo'].forEach(id=>{if($(id))$(id).value=''});resultFormRaceId=rid}
+ if(!resultState.done)return;
+ resultState.finishOrder.forEach((no,i)=>{const input=$(`finish${i+1}`);if(input&&!input.value)input.value=no});
+ if($('memo')&&!$('memo').value&&state.result?.memo)$('memo').value=state.result.memo;
+}
 function renderResultDisplayState(){
- const done=hasSavedResult(),manual=done&&state.result?.source==='手動修正保存';
- const label=manual?'手動修正あり':done?'結果取得済':'結果未取得';
- if($('resultStatusBadge')){$('resultStatusBadge').textContent=label;$('resultStatusBadge').classList.toggle('is-done',done);$('resultStatusBadge').classList.toggle('is-manual',manual)}
- if($('resultState'))$('resultState').textContent=manual?'手動修正あり':done?'取得済':'未取得';
+ const resultState=getResultDisplayState();
+ if($('resultStatusBadge')){$('resultStatusBadge').textContent=resultState.label;$('resultStatusBadge').classList.toggle('is-done',resultState.done);$('resultStatusBadge').classList.toggle('is-manual',resultState.manual)}
+ if($('resultState'))$('resultState').textContent=resultState.label;
+ restoreSavedResultFields(resultState);
 }
 function openResultValidation(){
  const card=$('resultCard');if(!card)return;
@@ -242,7 +254,7 @@ function renderFinal(){
  const h=state.horses;if(!h.length){$('finalBody').innerHTML='予想データを読み込むと自動表示します。';return}
  const picks=rankFinal().slice(0,3), marks=['◎','○','▲']; const diamond=h.filter(x=>x.valueMark).sort((a,b)=>(b.ev||0)-(a.ev||0))[0]; const warn=h.filter(x=>x.warningMark).sort((a,b)=>(a.ev||999)-(b.ev||999))[0];
  renderMarketDisplayState();
- $('finalBody').innerHTML=`<div class="final-grid">${picks.map((x,i)=>`<div class="final-pick horse-data-grid"><div class="final-mark">${marks[i]}</div><div class="final-no">${x.horseNo}</div><div class="final-name">${esc(x.horseName)}</div><div class="final-metric"><span>勝</span><b>${x.win.toFixed(1)}%</b></div><div class="final-metric"><span>複</span><b>${x.place.toFixed(1)}%</b></div><div class="final-metric"><span>TIME</span><b>${esc(x.predictedTime||'—')}</b></div><div class="final-metric"><span>総合</span><b>${x.overall}</b></div></div>`).join('')}</div><div class="flags"><div class="flag-box diamond">${diamond?`💎${diamond.horseNo} 勝ち穴：${esc(diamond.horseName)} ｜ 能力 ${diamond.overall} ｜ 期待 ${diamond.ev.toFixed(0)}%`:'💎 穴馬：能力下限を満たす市場乖離なし'}</div><div class="flag-box warning">${warn?`⚠️${warn.horseNo} 人気馬注意：${esc(warn.horseName)} ｜ 期待 ${warn.ev.toFixed(0)}%`:'⚠️ 人気馬リスク：強い該当なし'}</div></div>`;
+ $('finalBody').innerHTML=`<div class="final-grid">${picks.map((x,i)=>`<div class="final-pick horse-data-grid"><div class="final-mark">${marks[i]}</div><div class="final-no">${x.horseNo}</div><div class="final-name">${esc(x.horseName)}</div><div class="final-metric"><span>勝</span><b>${x.win.toFixed(1)}%</b></div><div class="final-metric"><span>複</span><b>${x.place.toFixed(1)}%</b></div><div class="final-metric"><span>TIME</span><b>${esc(x.predictedTime||'—')}</b></div><div class="final-metric"><span>総合</span><b>${x.overall}</b></div></div>`).join('')}</div><div class="flags"><div class="flag-box diamond">${diamond?`💎 ${diamond.horseNo} ${esc(diamond.horseName)}｜期待${diamond.ev.toFixed(0)}%`:'💎 穴馬なし'}</div><div class="flag-box warning">${warn?`⚠ ${warn.horseNo} ${esc(warn.horseName)}｜期待${warn.ev.toFixed(0)}%`:'⚠ 注意馬なし'}</div></div>`;
 }
 function displayMark(h){return [h.finalMark||h.abilityMark,h.valueMark,h.warningMark].filter(Boolean).join(' ')}
 function compactMark(h){
@@ -254,7 +266,7 @@ function renderQuick(){
  const h=state.horses;if(!h.length){$('quickList').innerHTML='馬データを入力すると一覧表示します。';return}
  const rows=[...h].sort((a,b)=>b.overall-a.overall);
  $('quickList').classList.toggle('show-all',quickExpanded);
- $('quickList').innerHTML=`<div class="quick-table-head horse-data-grid"><span>印</span><span>馬番</span><span>馬名</span><span>勝</span><span>複</span><span>TIME</span><span>総合</span></div>`+rows.map((x,i)=>`<div class="quick-row horse-data-grid${i>=4?' is-extra':''}" data-horse-no="${x.horseNo}" role="button" tabindex="0" aria-label="${esc(x.horseName)}の詳細分析を開く"><div class="quick-mark">${esc(compactMark(x))}</div><div class="quick-no">${x.horseNo}</div><div class="quick-name">${esc(x.horseName)}</div><div class="quick-stat"><span>勝</span><strong>${x.win.toFixed(1)}%</strong></div><div class="quick-stat"><span>複</span><strong>${x.place.toFixed(1)}%</strong></div><div class="quick-stat"><span>TIME${x.predictedTimeType?`(${esc(x.predictedTimeType)})`:''}</span><strong>${esc(x.predictedTime||'—')}</strong></div><div class="quick-stat"><span>総合</span><strong>${x.overall}</strong></div></div>`).join('');
+ $('quickList').innerHTML=`<div class="quick-table-head horse-data-grid"><span>印</span><span>馬番</span><span>馬名</span><span>勝</span><span>複</span><span>TIME</span><span>総合</span></div>`+rows.map((x,i)=>`<div class="quick-row horse-data-grid${i>=4?' is-extra':''}" data-horse-no="${x.horseNo}" role="button" tabindex="0" aria-label="${esc(x.horseName)}の詳細分析を開く"><div class="quick-mark${x.valueMark?' is-value':x.warningMark?' is-alert':''}">${esc(compactMark(x))}</div><div class="quick-no">${x.horseNo}</div><div class="quick-name">${esc(x.horseName)}</div><div class="quick-stat"><span>勝</span><strong>${x.win.toFixed(1)}%</strong></div><div class="quick-stat"><span>複</span><strong>${x.place.toFixed(1)}%</strong></div><div class="quick-stat"><span>TIME${x.predictedTimeType?`(${esc(x.predictedTimeType)})`:''}</span><strong>${esc(x.predictedTime||'—')}</strong></div><div class="quick-stat"><span>総合</span><strong>${x.overall}</strong></div></div>`).join('');
  if($('quickToggle'))$('quickToggle').textContent=quickExpanded?'上位4頭に戻す':'全'+rows.length+'頭を見る ›';
 }
 function renderHorses(){
@@ -434,9 +446,9 @@ async function syncLiveOdds(silent=false){
  const r=raceFromForm(),code=narCode(r.track);if(!code){$('liveOddsStatus').textContent='現在オッズ自動取得：この競馬場は未対応です。';return}
  if(!r.raceDate||!r.raceNo){$('liveOddsStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
  if(!silent)$('liveOddsStatus').textContent='NAR公式の現在オッズを確認中…';
- try{const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;const res=await fetch(u,{cache:'no-store'});const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');render();persist(existingValidated(raceId(r)));const t=new Date(state.race.oddsUpdatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=`NAR公式 現在オッズ ${count}頭反映｜更新 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`;}catch(e){$('liveOddsBadge').textContent='取得失敗';$('liveOddsStatus').textContent='取得失敗：'+e.message}
+ try{const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;const res=await fetch(u,{cache:'no-store'});const d=await res.json();if(!res.ok)throw new Error(d.error||'取得失敗');const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw new Error('現在オッズを確認できません（発売前・未掲載の可能性）');render();persist(existingValidated(raceId(r)));const t=new Date(state.race.oddsUpdatedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=`NAR公式 現在オッズ ${count}頭反映｜更新 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`;}catch(e){renderMarketDisplayState();$('liveOddsStatus').textContent='取得失敗：'+e.message}
 }
-function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}}
+function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}if($('autoOddsState')){$('autoOddsState').textContent=on?'ON':'OFF';$('autoOddsState').classList.toggle('is-on',on)}}
 
 function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存'}={}){
  const f=(finishOrder||[]).map(num).filter(x=>x!=null).slice(0,3);
@@ -705,7 +717,8 @@ function renderDashboard(){
  $('dashRaces').innerHTML='<div class="dash-section"><h3>保存レース</h3>'+races.slice().reverse().map(r=>{
    const snap=top3Snapshot(r),order=(r.result?.finishOrder||[]).map(Number),captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
    const terr=(r.horses||[]).map(h=>{const p=timeToSec(h.predictedTime),a=timeToSec(h.actualTime||r.actualTimes?.[String(h.horseNo)]||r.result?.actualTimes?.[String(h.horseNo)]);return p!=null&&a!=null?Math.abs(p-a):null}).filter(x=>x!=null);
-   return `<div class="dash-race-card"><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span><span>結果 ${r.result.finishOrder.join('-')}</span><span>◎○▲捕捉 ${captured}/3</span><span>TIME MAE ${terr.length?mean(terr).toFixed(2)+'秒':'—'}</span></div>`;
+   const resultState=getResultDisplayState(r);
+   return `<div class="dash-race-card"><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span><span>${resultState.label} ${resultState.finishOrder.join('-')}</span><span>◎○▲捕捉 ${captured}/3</span><span>TIME MAE ${terr.length?mean(terr).toFixed(2)+'秒':'—'}</span></div>`;
  }).join('')+'</div>';
 }
 function migrateLegacy(){
@@ -736,7 +749,7 @@ $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
 if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
-if($('quickOdds'))$('quickOdds').onclick=()=>$('liveOddsSync')?.click();
+if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
 if($('quickToggle'))$('quickToggle').onclick=()=>{quickExpanded=!quickExpanded;renderQuick()};
 if($('quickList')){
