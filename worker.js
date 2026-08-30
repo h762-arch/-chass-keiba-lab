@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-const VERSION="9.8";
+export const VERSION="9.8.6";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(/parse|解析/i.test(raw))errorCode='parser_error';else if(/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode}}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
@@ -61,7 +61,7 @@ export function parseResult(html){
  const finishOrder=results.filter(x=>x.position!=null).map(x=>String(x.horseNo));
  return {finishOrder,actualTimes,results};
 }
-function parseRaceMeta(html){
+export function parseRaceMeta(html){
  const text=cleanText(html);
  const dists=[...text.matchAll(/(?:ダート|芝|右|左|外|内)?\s*(\d{3,4})\s*[mｍ]/gi)].map(m=>Number(m[1])).filter(v=>v>=800&&v<=3600);
  const distance=dists.length?dists[0]:null;
@@ -72,7 +72,7 @@ function parseRaceMeta(html){
  raceName=raceName.replace(/^\d{1,2}R\s*/,'').trim();
  return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*[mｍ]/.test(text)?'芝':'ダート'};
 }
-function parseRaceCard(html){
+export function parseRaceCard(html){
  const out=[];
  for(const row of tableRows(html)){
    const c=row.cells;if(c.length<2)continue;
@@ -102,7 +102,7 @@ function parseRaceCard(html){
  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
  return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));
 }
-function parseTanFuku(html){
+export function parseTanFuku(html){
  const out=[];
  for(const row of tableRows(html)){
    const c=row.cells;if(c.length<4)continue;
@@ -116,7 +116,7 @@ function parseTanFuku(html){
  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
  const result=[...byNo.values()];[...result].sort((a,b)=>a.odds-b.odds).forEach((x,i)=>x.popularity=i+1);return result;
 }
-function compactTimeToSec(v){
+export function compactTimeToSec(v){
  const s=String(v||'').replace(/\D/g,'');if(s.length<3||s.length>4)return null;
  const tenth=Number(s.at(-1)),sec=Number(s.slice(-3,-1)),min=Number(s.slice(0,-3)||0);
  if(sec>59)return null;return min*60+sec+tenth/10;
@@ -126,7 +126,7 @@ function locateHorseSegments(detailHtml,horses){
  const byName=new Map(detailHorses.map(h=>[String(h.horseName),h.rowHtml]));
  return horses.map(h=>cleanText(byNo.get(String(h.horseNo))||byName.get(String(h.horseName))||''));
 }
-function parseRuns(segment,targetDistance,trackName){
+export function parseRuns(segment,targetDistance,trackName){
  const runs=[];
  // NAR DebaTableSmall actual format:
  // 船橋08.06 良 左 1200 ... 5/7 2人 ... 1159（2.3） 2-2-1 39.5

@@ -874,6 +874,13 @@ function migrateLegacy(){
  if(changed)store.set(KEY,now);
  const lc=store.get(LEGACY_CURRENT,'');if(!store.get(CURRENT,'')&&lc)store.set(CURRENT,lc);
 }
+if(typeof window!=='undefined'&&window.__CHASS_TEST__){
+ window.CHASS_TEST={
+   APP_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,aggregateAdvanced,frozenHorses,
+   makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
+ };
+ return;
+}
 initAutoRaceControls();
 if($('autoRaceLoad'))$('autoRaceLoad').onclick=loadAutoRace;
 if($('autoTrack'))$('autoTrack').onchange=e=>{

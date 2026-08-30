@@ -1,10 +1,12 @@
 {
   "name": "chass-keiba-lab",
-  "version": "7.1.0",
+  "version": "9.8.6",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "test": "node --test",
+    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --test"
   },
   "engines": {
     "node": ">=20"

@@ -27,3 +27,15 @@
 5. 全馬比較に実オッズ・期待値が反映されることを確認
 6. レース後にSTEP 3を押し、結果取得→保存・再集計
 7. STEP 4で検証ダッシュボード件数を確認
+# CHASS KEIBA LAB
+
+## Development checks
+
+Node.js 20以上で、外部テストライブラリなしに回帰チェックを実行できます。
+
+```sh
+npm test
+npm run check
+```
+
+テストは保存済みfixtureを使用し、ライブNARへの通信は行いません。
