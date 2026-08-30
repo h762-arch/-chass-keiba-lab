@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.8.6";
+export const VERSION="9.8.7";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(/parse|解析/i.test(raw))errorCode='parser_error';else if(/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode}}
 function fmtDate(d){return String(d||"").replaceAll("-","/")}
@@ -28,6 +28,7 @@ function plausibleHorseName(value=""){
 async function fetchText(url){const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow"});if(!r.ok){const e=new Error(`NAR HTTP ${r.status}`);e.status=r.status;throw e}return r.text()}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
+const stddev=a=>{const values=(a||[]).filter(Number.isFinite);if(values.length<2)return null;const avg=mean(values);return Math.sqrt(mean(values.map(x=>(x-avg)**2)))};
 
 function resultColumn(headers,...patterns){return headers.findIndex(h=>patterns.some(p=>p.test(String(h||'').replace(/\s+/g,''))))}
 function numericCell(v,min=-Infinity,max=Infinity){const m=String(v??'').replace(/,/g,'').match(/-?\d+(?:\.\d+)?/),n=m?Number(m[0]):null;return Number.isFinite(n)&&n>=min&&n<=max?n:null}
@@ -162,24 +163,50 @@ export function parseRuns(segment,targetDistance,trackName){
  }
  return runs;
 }
-function secToRaceTime(sec){
+export function secToRaceTime(sec){
  if(!Number.isFinite(sec)||sec<=0)return '';
- const m=Math.floor(sec/60),s=(sec-m*60).toFixed(1).padStart(4,'0');
+ const rounded=Math.round(sec*10)/10,m=Math.floor(rounded/60),s=(rounded-m*60).toFixed(1).padStart(4,'0');
  return `${m}:${s}`;
 }
-function predictTimeFromRuns(runs,targetDistance){
+export function buildAbilityFeatures(runs,targetDistance,currentWeight=null){
+ const valid=(runs||[]).filter(r=>Number.isFinite(r.score)),sameDistance=valid.filter(r=>r.sameDistance),nearDistance=valid.filter(r=>r.nearDistance),sameTrack=valid.filter(r=>r.sameTrack);
+ const weights=[.35,.25,.20,.12,.08],recent=valid.slice(0,5),weightSum=weights.slice(0,recent.length).reduce((a,b)=>a+b,0)||1;
+ const recentFormScore=recent.length?recent.reduce((sum,r,i)=>sum+r.score*weights[i],0)/weightSum:null;
+ const fit=(primary,fallback)=>{const source=primary.length?primary:fallback;if(!source.length)return null;const coverage=Math.min(1,source.length/3);return clamp((mean(source.map(r=>r.score))||0)*.72+coverage*28,30,100)};
+ const last3f=valid.map(r=>r.last3f).filter(Number.isFinite),firstCorners=valid.map(r=>Number(String(r.corners||'').split('-')[0])).filter(Number.isFinite);
+ const scoreSpread=stddev(valid.map(r=>r.score)),cornerSpread=stddev(firstCorners);
+ return {
+   schemaVersion:1,
+   recentFormScore:recentFormScore==null?null:Number(recentFormScore.toFixed(2)),
+   distanceFit:sameDistance.length||nearDistance.length?Number(fit(sameDistance,nearDistance).toFixed(2)):null,
+   courseFit:sameTrack.length?Number(fit(sameTrack,[]).toFixed(2)):null,
+   timeAbility:null,
+   last3fAbility:last3f.length?Number(clamp(100-(mean(last3f)-35)*5,30,100).toFixed(2)):null,
+   paceFit:cornerSpread==null?null:Number(clamp(100-cornerSpread*12,35,100).toFixed(2)),
+   runningStyleFit:null,
+   weightEffect:Number.isFinite(Number(currentWeight))?Number(clamp(50+(56-Number(currentWeight))*2,35,65).toFixed(2)):null,
+   classStrength:null,
+   consistencyScore:scoreSpread==null?null:Number(clamp(100-scoreSpread*4,30,100).toFixed(2)),
+   restPattern:null,
+   trainerJockeyScore:null,
+   evidence:{runs:valid.length,sameDistance:sameDistance.length,nearDistance:nearDistance.length,sameTrack:sameTrack.length,last3f:last3f.length}
+ };
+}
+export function predictTimeFromRuns(runs,targetDistance){
  const exact=(runs||[]).filter(r=>r.distance===targetDistance&&Number.isFinite(r.timeSec)).slice(0,3);
  if(exact.length){
    const weights=[1,.82,.68].slice(0,exact.length),den=weights.reduce((a,b)=>a+b,0);
    const sec=exact.reduce((s,r,i)=>s+r.timeSec*weights[i],0)/den;
-   return {time:secToRaceTime(sec),type:'実績',confidence:Math.round(clamp(72+exact.length*7,72,93))};
+   const observedSpread=stddev(exact.map(r=>r.timeSec)),spread=clamp(observedSpread??.6,.4,1.8);
+   return {time:secToRaceTime(sec),type:'実績',confidence:Math.round(clamp(72+exact.length*7,72,93)),scenarios:{standard:secToRaceTime(sec),paceFavored:secToRaceTime(sec-spread),paceAdverse:secToRaceTime(sec+spread),spreadSeconds:Number(spread.toFixed(2)),basis:'同距離実走TIMEのばらつき'}};
  }
  const near=(runs||[]).filter(r=>Number.isFinite(r.timeSec)&&r.distance&&targetDistance&&Math.abs(r.distance-targetDistance)<=300).slice(0,3);
- if(!near.length)return {time:'',type:'',confidence:null};
+ if(!near.length)return {time:'',type:'',confidence:null,scenarios:null};
  const weights=[1,.78,.6].slice(0,near.length),den=weights.reduce((a,b)=>a+b,0);
- const adjusted=near.reduce((s,r,i)=>s+(r.timeSec*targetDistance/r.distance)*weights[i],0)/den;
+ const adjustedValues=near.map(r=>r.timeSec*targetDistance/r.distance),adjusted=adjustedValues.reduce((s,value,i)=>s+value*weights[i],0)/den;
  const avgGap=mean(near.map(r=>Math.abs(r.distance-targetDistance)))||0;
- return {time:secToRaceTime(adjusted),type:'補正',confidence:Math.round(clamp(66-avgGap/12+near.length*4,42,70))};
+ const observedSpread=stddev(adjustedValues),spread=clamp(observedSpread??1,.6,2.2);
+ return {time:secToRaceTime(adjusted),type:'補正',confidence:Math.round(clamp(66-avgGap/12+near.length*4,42,70)),scenarios:{standard:secToRaceTime(adjusted),paceFavored:secToRaceTime(adjusted-spread),paceAdverse:secToRaceTime(adjusted+spread),spreadSeconds:Number(spread.toFixed(2)),basis:'近距離TIMEの距離補正後ばらつき'}};
 }
 function enrichAbility(detailHtml,horses,targetDistance,trackName){
  const segments=locateHorseSegments(detailHtml,horses);
@@ -190,14 +217,15 @@ function enrichAbility(detailHtml,horses,targetDistance,trackName){
    const avg=mean(recentIndex),distScore=mean(sameD.map(r=>r.score)),courseScore=mean(sameC.map(r=>r.score));
    const firstCorners=runs.map(r=>Number(String(r.corners).split('-')[0])).filter(n=>Number.isFinite(n));
    const cornerAvg=mean(firstCorners);const runningStyle=cornerAvg==null?'不明':cornerAvg<=2.3?'逃げ・先行':cornerAvg<=5?'先行・好位':'差し・追込';
-   const pt=predictTimeFromRuns(runs,targetDistance);
-   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),runningStyle,predictedTime:pt.time,predictedTimeType:pt.type,predictedTimeConfidence:pt.confidence,dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
+   const pt=predictTimeFromRuns(runs,targetDistance),features=buildAbilityFeatures(runs,targetDistance,h.weight);
+   return {...h,runs,recentIndex,fiveRaceAvgIndex:avg==null?null:Math.round(avg),distanceIndex:distScore==null?null:Math.round(distScore),courseIndex:courseScore==null?null:Math.round(courseScore),features,runningStyle,predictedTime:pt.time,predictedTimeType:pt.type,predictedTimeConfidence:pt.confidence,predictedTimeScenarios:pt.scenarios,dataConfidence:Math.round(clamp(38+runs.length*8+sameD.length*4+sameC.length*2,38,92))};
  });
  const sameDistanceTimes=enriched.flatMap(h=>h.runs.filter(r=>r.sameDistance&&r.timeSec!=null).map(r=>r.timeSec));
  const best=sameDistanceTimes.length?Math.min(...sameDistanceTimes):null,worst=sameDistanceTimes.length?Math.max(...sameDistanceTimes):null;
  enriched.forEach(h=>{
    const own=h.runs.filter(r=>r.sameDistance&&r.timeSec!=null).map(r=>r.timeSec);const ownBest=own.length?Math.min(...own):null;
    h.timeIndex=ownBest==null?null:(best===worst?78:Math.round(clamp(95-35*(ownBest-best)/(worst-best),55,95)));
+   h.features.timeAbility=h.timeIndex;
    const abilityParts=[h.timeIndex,h.fiveRaceAvgIndex,h.distanceIndex,h.courseIndex].filter(v=>v!=null);
    h.abilityScore=abilityParts.length?mean(abilityParts):null;
    const facts=[];if(h.recentIndex.length)facts.push(`近${h.recentIndex.length}走指数 ${h.recentIndex.join('→')}`);if(h.timeIndex!=null)facts.push(`同距離時計指数 ${h.timeIndex}`);if(h.distanceIndex!=null)facts.push(`距離適性 ${h.distanceIndex}`);if(h.courseIndex!=null)facts.push(`コース適性 ${h.courseIndex}`);
@@ -229,7 +257,7 @@ export default{
       const merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{};const cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim();const cardOk=plausibleHorseName(cardName),oddsOk=plausibleHorseName(oddsName);const horseName=cardOk?cardName:oddsOk?oddsName:`馬番${no}`;return {...c,horseNo:no,horseName,odds:o.odds??null,popularity:o.popularity??null,nameSource:cardOk?'出馬表':oddsOk?'オッズ表':'fallback'};});
       const abilityCount=merged.filter(x=>x.abilityScore!=null).length;
       const invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
-      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,marketSeparated:true,parser:"DebaTableSmall-row-v9.8",predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length},acquiredAt:new Date().toISOString()});
+      return json({source:"NAR公式",version:VERSION,track,code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,featureData:merged.filter(x=>x.features?.evidence?.runs>0).length,marketSeparated:true,parser:"DebaTableSmall-row-v9.8",predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length,predictedTimeScenarios:merged.filter(x=>x.predictedTimeScenarios).length},acquiredAt:new Date().toISOString()});
     }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
