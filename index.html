@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.2</title>
+  <title>チャス競馬研究所 Ver.9.9.3</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.2</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.3</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -39,6 +39,7 @@
       </section>
     </section>
     <section id="finalCard" class="card final-card"><div class="section-head"><div><p class="eyebrow">CHASS FINAL</p><h2>最終判断</h2></div><span id="marketStatus" class="badge">市場待ち</span></div><div id="finalBody" class="empty">予想データを読み込むと自動表示します。</div></section>
+    <section id="valuePicksCard" class="card value-picks-card"><div class="section-head"><div><p class="eyebrow">VALUE PICKS</p><h2>穴馬候補</h2></div><span class="badge">別レイヤー</span></div><div id="valuePicksBody" class="value-picks-body"><div class="value-empty">💎 有力穴馬なし</div></div></section>
     <section id="quickCard" class="card quick-card"><div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div><button id="quickToggle" class="text-button" type="button">全頭を見る ›</button></div><div id="quickList" class="quick-list empty">馬データを入力すると一覧表示します。</div></section>
     <section class="utility-stack card">
       <details id="integrityCard" class="utility-row"><summary><span class="utility-icon good-bg">✓</span><strong>データ整合性</strong><span id="integrityStatus" class="utility-value good">確認待ち</span></summary><div id="integrityGrid" class="integrity-grid utility-body"></div></details>
