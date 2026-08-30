@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.8.7';
+const APP_VERSION='9.8.8';
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -14,7 +14,7 @@ let raceLoadGeneration=0,resultSyncGeneration=0,liveOddsGeneration=0;
 let quickExpanded=false;
 const dashboardUi={
  open:{models:true,calibration:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
- diagnosisFilter:'',raceType:'all',raceSort:'new',raceLimit:10
+ diagnosisFilter:'',raceType:'all',track:'all',period:'all',quality:'all',raceSort:'new',raceLimit:10
 };
 const NAR_TRACKS={
   '盛岡':10,'水沢':11,'浦和':18,'船橋':19,'大井':20,'川崎':21,'笠松':22,'金沢':23,
@@ -31,6 +31,7 @@ async function responseJson(res){try{return await res.json()}catch{throw request
 function errorLabel(e){
  if(e?.code==='race_not_found'||e?.status===404)return '指定レースが見つかりません。';
  if(e?.code==='parser_error')return '公式ページの解析に失敗しました。';
+ if(e?.code==='nar_timeout')return 'NAR公式への接続がタイムアウトしました。再取得できます。';
  if(e?.code==='nar_temporary'||e?.status===429||e?.status>=500)return 'NAR公式または取得サーバーで一時エラーが発生しました。';
  if(e?.code==='network_error'||e instanceof TypeError)return '通信に失敗しました。ネットワークを確認してください。';
  return String(e?.message||'取得に失敗しました。');
@@ -309,7 +310,7 @@ function renderFinal(){
  const h=state.horses;if(!h.length){$('finalBody').innerHTML='予想データを読み込むと自動表示します。';return}
  const picks=rankFinal().slice(0,3), marks=['◎','○','▲']; const diamond=h.filter(x=>x.valueMark).sort((a,b)=>(b.ev||0)-(a.ev||0))[0]; const warn=h.filter(x=>x.warningMark).sort((a,b)=>(a.ev||999)-(b.ev||999))[0];
  renderMarketDisplayState();
- $('finalBody').innerHTML=`<div class="final-grid">${picks.map((x,i)=>`<div class="final-pick final-pick-two-row"><div class="final-pick-head"><div class="final-mark">${marks[i]}</div><div class="final-no">${x.horseNo}</div><div class="final-name">${esc(x.horseName)}</div><div class="final-overall"><span>総合</span><b>${x.overall}</b></div></div><div class="final-pick-stats"><div class="final-metric"><span>勝</span><b>${x.win.toFixed(1)}%</b></div><div class="final-metric"><span>複</span><b>${x.place.toFixed(1)}%</b></div><div class="final-metric"><span>TIME</span><b>${esc(x.predictedTime||'—')}</b></div></div></div>`).join('')}</div><div class="flags"><div class="flag-box diamond">${diamond?`💎 ${diamond.horseNo} ${esc(diamond.horseName)}｜期待${diamond.ev.toFixed(0)}%`:'💎 穴馬なし'}</div><div class="flag-box warning">${warn?`⚠ ${warn.horseNo} ${esc(warn.horseName)}｜期待${warn.ev.toFixed(0)}%`:'⚠ 注意馬なし'}</div></div>`;
+ $('finalBody').innerHTML=`<div class="final-grid">${picks.map((x,i)=>`<div class="final-pick final-pick-two-row"><div class="final-pick-head"><div class="final-mark">${marks[i]}</div><div class="final-no">${x.horseNo}</div><div class="final-name">${esc(x.horseName)}</div><div class="final-overall"><span>総合</span><b>${x.overall}</b></div></div><div class="final-pick-stats"><div class="final-metric"><span>勝</span><b>${x.win.toFixed(1)}%</b></div><div class="final-metric"><span>3着内</span><b>${x.place.toFixed(1)}%</b></div><div class="final-metric"><span>TIME</span><b>${esc(x.predictedTime||'—')}</b></div></div></div>`).join('')}</div><div class="flags"><div class="flag-box diamond">${diamond?`💎 ${diamond.horseNo} ${esc(diamond.horseName)}｜期待${diamond.ev.toFixed(0)}%`:'💎 穴馬なし'}</div><div class="flag-box warning">${warn?`⚠ ${warn.horseNo} ${esc(warn.horseName)}｜期待${warn.ev.toFixed(0)}%`:'⚠ 注意馬なし'}</div></div>`;
 }
 function displayMark(h){return [h.finalMark||h.abilityMark,h.valueMark,h.warningMark].filter(Boolean).join(' ')}
 function compactMark(h){
@@ -321,7 +322,7 @@ function renderQuick(){
  const h=state.horses;if(!h.length){$('quickList').innerHTML='馬データを入力すると一覧表示します。';return}
  const rows=[...h].sort((a,b)=>b.overall-a.overall);
  $('quickList').classList.toggle('show-all',quickExpanded);
- $('quickList').innerHTML=`<div class="quick-table-head horse-data-grid"><span>印</span><span>馬番</span><span>馬名</span><span>勝</span><span>複</span><span>TIME</span><span>総合</span></div>`+rows.map((x,i)=>`<div class="quick-row horse-data-grid${i>=4?' is-extra':''}" data-horse-no="${x.horseNo}" role="button" tabindex="0" aria-label="${esc(x.horseName)}の詳細分析を開く"><div class="quick-mark${x.valueMark?' is-value':x.warningMark?' is-alert':''}">${esc(compactMark(x))}</div><div class="quick-no">${x.horseNo}</div><div class="quick-name">${esc(x.horseName)}</div><div class="quick-stat"><span>勝</span><strong>${x.win.toFixed(1)}%</strong></div><div class="quick-stat"><span>複</span><strong>${x.place.toFixed(1)}%</strong></div><div class="quick-stat"><span>TIME${x.predictedTimeType?`(${esc(x.predictedTimeType)})`:''}</span><strong>${esc(x.predictedTime||'—')}</strong></div><div class="quick-stat"><span>総合</span><strong>${x.overall}</strong></div></div>`).join('');
+ $('quickList').innerHTML=`<div class="quick-table-head horse-data-grid"><span>印</span><span>馬番</span><span>馬名</span><span>勝</span><span>3着内</span><span>TIME</span><span>総合</span></div>`+rows.map((x,i)=>`<div class="quick-row horse-data-grid${i>=4?' is-extra':''}" data-horse-no="${x.horseNo}" role="button" tabindex="0" aria-label="${esc(x.horseName)}の詳細分析を開く"><div class="quick-mark${x.valueMark?' is-value':x.warningMark?' is-alert':''}">${esc(compactMark(x))}</div><div class="quick-no">${x.horseNo}</div><div class="quick-name">${esc(x.horseName)}</div><div class="quick-stat"><span>勝</span><strong>${x.win.toFixed(1)}%</strong></div><div class="quick-stat"><span>3着内</span><strong>${x.place.toFixed(1)}%</strong></div><div class="quick-stat"><span>TIME${x.predictedTimeType?`(${esc(x.predictedTimeType)})`:''}</span><strong>${esc(x.predictedTime||'—')}</strong></div><div class="quick-stat"><span>総合</span><strong>${x.overall}</strong></div></div>`).join('');
  if($('quickToggle'))$('quickToggle').textContent=quickExpanded?'上位4頭に戻す':'全'+rows.length+'頭を見る ›';
 }
 function renderHorses(){
@@ -506,7 +507,8 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  state.resultFetchedAt=new Date().toISOString();
  state.validationCompleted=true;
  state.validated=true;
- state.validationSnapshot={schemaVersion:2,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...state.resultSnapshot.finishOrder],diagnoses:failureReasonsForRace(state)};
+ const diagnostics=diagnosticsForRace(state);
+ state.validationSnapshot={schemaVersion:3,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...state.resultSnapshot.finishOrder],failures:diagnostics.failures,checks:diagnostics.checks,dataQuality:diagnostics.quality};
  persist(true);
  renderResultDisplayState();
  renderDashboard();
@@ -606,6 +608,8 @@ function frozenHorses(r){
 }
 function frozenHorseByNo(r,no){return frozenHorses(r).find(h=>Number(h.horseNo)===Number(no))||null}
 function resultOrder(r){return (r?.resultSnapshot?.finishOrder||r?.result?.finishOrder||[]).map(Number)}
+function resultTop3(r){return resultOrder(r).slice(0,3)}
+function isTop3(r,horseNo){return resultTop3(r).includes(Number(horseNo))}
 function resultTimes(r){return r?.resultSnapshot?.actualTimes||r?.result?.actualTimes||r?.actualTimes||{}}
 function migrateSnapshotRecord(r){
  if(!r||typeof r!=='object')return false;
@@ -638,12 +642,16 @@ function aggregateAdvanced(races){
    races:races.length,
    top3Any:0,top3Perfect:0,top3Captured:0,
    diamondN:0,diamondPlace:0,diamondWin:0,diamondPop:[],diamondOdds:[],
-   warningN:0,warningOut:0,
+   valueTypes:{},warningN:0,warningOut:0,warningBaseN:0,warningBaseOut:0,
    ev100N:0,ev100Win:0,ev100Place:0,
    winMae:[],placeMae:[],winBrier:[],placeBrier:[],
-   timeAbs:[],finalRankAbs:[],
+   winCalibration:{},placeCalibration:{},
+   timeAbs:[],timeError:[],timeByType:{実績:[],補正:[]},timeScenario:{standard:0,paceFavored:0,paceAdverse:0},finalRankAbs:[],
    byDistance:{},byPopularity:{},byEvBand:{}
  };
+ const confidence=n=>n<10?'低信頼':n<30?'参考':n<100?'中':'高';
+ const calibrationBand=(kind,p)=>kind==='win'?(p<10?'0-9%':p<20?'10-19%':p<30?'20-29%':p<40?'30-39%':p<50?'40-49%':'50%以上'):(p<20?'0-19%':p<40?'20-39%':p<60?'40-59%':p<80?'60-79%':'80%以上');
+ const pushCalibration=(obj,key,p,y)=>{const g=(obj[key]??={n:0,predicted:0,actual:0});g.n++;g.predicted+=p;g.actual+=y};
  const band=(o)=>{
    if(o==null)return '不明';
    if(o<=3)return '1-3人気';
@@ -658,13 +666,14 @@ function aggregateAdvanced(races){
    if(e<250)return '150-249%';
    return '250%以上';
  };
- const pushGroup=(obj,key,hit,win)=>{
-   const g=(obj[key]??={n:0,place:0,win:0});g.n++;if(hit)g.place++;if(win)g.win++;
+ const pushGroup=(obj,key,hit,win,winError=null,placeError=null,timeError=null)=>{
+   const g=(obj[key]??={n:0,place:0,win:0,winError:[],placeError:[],timeError:[]});g.n++;if(hit)g.place++;if(win)g.win++;if(winError!=null)g.winError.push(winError);if(placeError!=null)g.placeError.push(placeError);if(timeError!=null)g.timeError.push(timeError);
  };
  for(const r of races){
    const order=resultOrder(r);
+   const top3=resultTop3(r);
    const snap=top3Snapshot(r);
-   const captured=snap.filter(x=>order.includes(Number(x.horseNo))).length;
+   const captured=snap.filter(x=>top3.includes(Number(x.horseNo))).length;
    if(captured>0)adv.top3Any++;
    if(captured===3)adv.top3Perfect++;
    adv.top3Captured+=captured;
@@ -676,131 +685,147 @@ function aggregateAdvanced(races){
    });
 
    for(const h of frozenHorses(r)){
-     const no=Number(h.horseNo), pos=order.indexOf(no), placed=pos>=0, won=pos===0;
+     const no=Number(h.horseNo), pos=order.indexOf(no), placed=top3.includes(no), won=pos===0;
      const vm=h.valueMark|| (h.mark?.includes?.('💎')?h.mark:'');
      const wm=h.warningMark||h.warning||'';
      if(vm){
        adv.diamondN++; if(placed)adv.diamondPlace++; if(won)adv.diamondWin++;
+       const type=h.valueType||((h.winValueFlag||h.winValueMark)?'勝ち穴':(h.placeValueFlag||h.placeValueMark)?'相手穴':String(vm).length>=6?'大穴':'未分類');
+       const value=(adv.valueTypes[type]??={n:0,win:0,top3:0,pop:[],odds:[],ev:[]});value.n++;if(won)value.win++;if(placed)value.top3++;if(h.popularity!=null)value.pop.push(Number(h.popularity));if(h.odds!=null)value.odds.push(Number(h.odds));if(h.ev!=null)value.ev.push(Number(h.ev));
        if(h.popularity!=null)adv.diamondPop.push(Number(h.popularity));
        if(h.odds!=null)adv.diamondOdds.push(Number(h.odds));
      }
      if(wm){adv.warningN++; if(!placed)adv.warningOut++;}
+     if(h.popularity!=null&&h.popularity<=3&&!wm){adv.warningBaseN++;if(!placed)adv.warningBaseOut++;}
      if(h.ev!=null&&h.ev>=100){adv.ev100N++; if(won)adv.ev100Win++; if(placed)adv.ev100Place++;}
 
      if(h.win!=null){
        const y=won?1:0, p=Number(h.win)/100;
        adv.winMae.push(Math.abs(p-y)*100);adv.winBrier.push((p-y)**2);
+       pushCalibration(adv.winCalibration,calibrationBand('win',Number(h.win)),Number(h.win),y);
      }
      if(h.place!=null){
        const y=placed?1:0, p=Number(h.place)/100;
        adv.placeMae.push(Math.abs(p-y)*100);adv.placeBrier.push((p-y)**2);
+       pushCalibration(adv.placeCalibration,calibrationBand('place',Number(h.place)),Number(h.place),y);
      }
      const pred=timeToSec(h.predictedTime), actual=timeToSec(resultTimes(r)[String(h.horseNo)]);
-     if(pred!=null&&actual!=null)adv.timeAbs.push(Math.abs(pred-actual));
+     let signedTimeError=null;
+     if(pred!=null&&actual!=null){signedTimeError=pred-actual;adv.timeAbs.push(Math.abs(signedTimeError));adv.timeError.push(signedTimeError);const type=h.predictedTimeType;if(adv.timeByType[type])adv.timeByType[type].push(signedTimeError);const scenarios=h.predictedTimeScenarios;if(scenarios){const options=['standard','paceFavored','paceAdverse'].map(key=>({key,diff:Math.abs((timeToSec(scenarios[key])??Infinity)-actual)})).sort((a,b)=>a.diff-b.diff);if(Number.isFinite(options[0].diff))adv.timeScenario[options[0].key]++;}}
 
      const dist=String(r.race?.distance||'不明');
-     pushGroup(adv.byDistance,dist,placed,won);
+     const winError=h.win==null?null:Math.abs(Number(h.win)-(won?100:0)),placeError=h.place==null?null:Math.abs(Number(h.place)-(placed?100:0));
+     pushGroup(adv.byDistance,dist,placed,won,winError,placeError,signedTimeError==null?null:Math.abs(signedTimeError));
      pushGroup(adv.byPopularity,band(h.popularity),placed,won);
      pushGroup(adv.byEvBand,evBand(h.ev),placed,won);
    }
  }
+ adv.confidence=confidence;
  return adv;
 }
 function dashAccordion(key,title,count,body,{open=false,summaryText=''}={}){
  const isOpen=dashboardUi.open[key]??open;
  return `<details class="dash-section stat-section dash-accordion" data-dash-key="${key}" ${isOpen?'open':''}><summary><strong>${title}</strong>${summaryText?`<span class="accordion-summary">${esc(summaryText)}</span>`:''}${count?`<b>${esc(count)}</b>`:''}<i></i></summary><div class="accordion-body">${body}</div></details>`;
 }
+function sampleLabel(n){return n<10?'低信頼':n<30?'参考':n<100?'中':'高'}
 function renderGroupTable(title,obj,key){
- const entries=Object.entries(obj),row=([k,g])=>`<div class="condition-row"><strong>${esc(k)}</strong><span>対象 ${g.n}</span><span>勝 ${pct(g.win,g.n)}</span><span>複 ${pct(g.place,g.n)}</span></div>`;
+ const entries=Object.entries(obj),row=([k,g])=>`<div class="condition-row"><strong>${esc(k)}</strong><span>対象 ${g.n}・${sampleLabel(g.n)}</span><span>勝 ${pct(g.win,g.n)}</span><span>TOP3 ${pct(g.place,g.n)}${g.timeError?.length?`・TIME ${mean(g.timeError).toFixed(2)}秒`:''}</span></div>`;
  const notable=[...entries].sort((a,b)=>b[1].n-a[1].n)[0];
  const note=notable?`${notable[0]} 複${pct(notable[1].place,notable[1].n)}`:'データなし';
  return dashAccordion(key,title,entries.length?`${entries.length}件`:'',entries.map(row).join('')||'<p class="muted">データなし</p>',{summaryText:note});
 }
 
 
-function failureReasonsForRace(r){
+function validationQuality(r){
+ const horses=frozenHorses(r),times=resultTimes(r),prob=horses.filter(h=>h.win!=null&&h.place!=null).length,market=horses.filter(h=>h.odds!=null&&h.popularity!=null).length,time=horses.filter(h=>times[String(h.horseNo)]).length,detail=(r.resultSnapshot?.horses||[]).filter(h=>h.last3f!=null||h.cornerPositions||h.bodyWeight!=null).length,total=horses.length;
+ const issues=[];if(prob<total)issues.push({code:'PROB_MISSING',label:'AI確率不足',detail:`${prob}/${total}頭`});if(!market)issues.push({code:'MARKET_MISSING',label:'実オッズ不足',detail:'予想時点の市場Snapshotなし'});if(time<Math.max(1,Math.ceil(total*.7)))issues.push({code:'TIME_MISSING',label:'実TIME不足',detail:`${time}/${total}頭`});if(detail<Math.max(1,Math.ceil(total*.5)))issues.push({code:'RESULT_DETAIL_MISSING',label:'結果詳細不足',detail:`${detail}/${total}頭`});
+ const score=[prob===total,market===total,time>=total*.7,detail>=total*.5].filter(Boolean).length,grade=score===4?'A':score>=2?'B':'C';
+ return {grade,score,total,probabilityCount:prob,marketCount:market,timeCount:time,detailCount:detail,issues};
+}
+function diagnosticsForRace(r){
  const order=resultOrder(r);
  const snap=top3Snapshot(r);
- const reasons=[];
+ const failures=[],checks=[];
  const topPick=snap[0] ? getHorseByNo(r,snap[0].horseNo) : null;
  const winner=getHorseByNo(r,order[0]);
 
  if(topPick && Number(topPick.horseNo)!==order[0]){
    if(topPick.popularity!=null && topPick.popularity<=3 && topPick.ev!=null && topPick.ev<90){
-     reasons.push({code:'MARKET_OVER',label:'人気・市場過大評価',detail:`FINAL◎ ${topPick.horseNo}番は${topPick.popularity}人気・期待${Math.round(topPick.ev)}%`});
+     failures.push({code:'MARKET_OVER',label:'人気・市場過大評価',detail:`FINAL◎ ${topPick.horseNo}番は${topPick.popularity}人気・期待${Math.round(topPick.ev)}%`});
    }
    if(topPick.valueMark){
-     reasons.push({code:'VALUE_OVER',label:'穴馬/期待値過大評価',detail:`FINAL◎に${topPick.valueMark}が重なり市場妙味を強く見過ぎた可能性`});
+     failures.push({code:'VALUE_OVER',label:'穴馬/期待値過大評価',detail:`FINAL◎に${topPick.valueMark}が重なり市場妙味を強く見過ぎた可能性`});
    }
-   if(topPick.win!=null && topPick.win>=35 && !order.includes(Number(topPick.horseNo))){
-     reasons.push({code:'PROB_OVER',label:'AI勝率過大評価',detail:`AI勝率${topPick.win.toFixed(1)}%に対して3着外`});
+   if(topPick.win!=null && topPick.win>=35 && !isTop3(r,topPick.horseNo)){
+     checks.push({code:'PROB_CHECK',label:'AI勝率高評価馬敗退',detail:`AI勝率${topPick.win.toFixed(1)}%でTOP3外。単発では過大評価と断定しません。`});
    }
    const pt=timeToSec(topPick.predictedTime);
    const at=timeToSec(resultTimes(r)[String(topPick.horseNo)]);
    if(pt!=null && at!=null && Math.abs(pt-at)>=1.5){
-     reasons.push({code:'TIME_ERROR',label:'予想TIME誤差',detail:`FINAL◎のTIME誤差 ${Math.abs(pt-at).toFixed(2)}秒`});
+     failures.push({code:'TIME_ERROR',label:'予想TIME誤差',detail:`FINAL◎のTIME誤差 ${Math.abs(pt-at).toFixed(2)}秒`});
    }
  }
  if(winner){
    const winnerSnapRank=snap.findIndex(x=>Number(x.horseNo)===Number(winner.horseNo));
    if(winnerSnapRank<0){
      if(winner.overall!=null && topPick?.overall!=null && winner.overall+10 < topPick.overall){
-       reasons.push({code:'ABILITY_UNDER',label:'勝ち馬能力過小評価',detail:`勝ち馬${winner.horseNo}番の総合${winner.overall}を上位評価できず`});
+       failures.push({code:'ABILITY_UNDER',label:'勝ち馬能力過小評価',detail:`勝ち馬${winner.horseNo}番の総合${winner.overall}を上位評価できず`});
      }
      if(winner.popularity!=null && winner.popularity>=5){
-       reasons.push({code:'LONGSHOT_MISS',label:'穴馬取りこぼし',detail:`勝ち馬${winner.horseNo}番は${winner.popularity}人気`});
+       failures.push({code:'LONGSHOT_MISS',label:'穴馬取りこぼし',detail:`勝ち馬${winner.horseNo}番は${winner.popularity}人気`});
      }
    }
  }
  const pace=String(r.race?.pace||'');
  const bias=String(r.predictionSnapshot?.race?.bias||r.race?.bias||'').trim();
  if(pace && /速|遅|ハイ|スロー/.test(pace)){
-   reasons.push({code:'PACE_CHECK',label:'展開検証候補',detail:`事前展開「${pace}」と実際のレース内容を要確認`});
+   checks.push({code:'PACE_CHECK',label:'展開確認',detail:`事前展開「${pace}」と実際のレース内容を要確認`});
  }
  if(/^(内有利|外有利|前有利|差し有利|フラット)(?:$|[・／/\s])/u.test(bias)){
-   reasons.push({code:'BIAS_CHECK',label:'馬場バイアス検証候補',detail:`事前馬場評価「${bias}」を結果と照合`});
+   checks.push({code:'BIAS_CHECK',label:'馬場バイアス確認',detail:`事前馬場評価「${bias}」を結果と照合`});
  }
- if(!reasons.length){
-   reasons.push({code:'NO_CLEAR',label:'明確な単一原因なし',detail:'現保存データだけでは主要因を特定できません。検証メモやラップ追加で精度向上。'});
- }
- return reasons.slice(0,4);
+ const quality=validationQuality(r);
+ return {failures:failures.slice(0,4),checks:checks.slice(0,4),data:quality.issues,quality};
 }
-function aggregateFailureReasons(races){
+function failureReasonsForRace(r){return diagnosticsForRace(r).failures}
+function aggregateDiagnostics(races,key='failures'){
  const map={};
- races.forEach(r=>failureReasonsForRace(r).forEach(x=>{
+ races.forEach(r=>diagnosticsForRace(r)[key].forEach(x=>{
    const g=(map[x.code]??={code:x.code,label:x.label,count:0});g.count++;
  }));
  return Object.values(map).sort((a,b)=>b.count-a.count);
 }
 function diagnosisSeverity(reasons){
  const codes=new Set(reasons.map(x=>x.code));
- if(['TIME_ERROR','PROB_OVER','ABILITY_UNDER'].some(x=>codes.has(x)))return {key:'major',label:'重大'};
+ if(['TIME_ERROR','ABILITY_UNDER'].some(x=>codes.has(x)))return {key:'major',label:'重大'};
  if(['MARKET_OVER','VALUE_OVER','LONGSHOT_MISS'].some(x=>codes.has(x)))return {key:'check',label:'要確認'};
  return {key:'minor',label:'軽微'};
 }
 function renderFailureAnalysis(races){
- const agg=aggregateFailureReasons(races);
+ const agg=aggregateDiagnostics(races,'failures'),checkAgg=aggregateDiagnostics(races,'checks'),dataAgg=aggregateDiagnostics(races,'data');
  const ranks=agg.length?agg.slice(0,6).map((x,i)=>{const rate=races.length?x.count/races.length*100:0;return `<button class="failure-rank${i<3?' is-top':''}" type="button" data-failure-code="${esc(x.code||'')}"><span class="rank-no">${i+1}</span><strong>${esc(x.label)}</strong><span>${x.count}R</span><b>${rate.toFixed(1)}%</b><i style="--rank-rate:${Math.min(100,rate)}%"></i></button>`}).join(''):'<p class="muted">データなし</p>';
  const summary=dashAccordion('failures','失敗原因ランキング',agg.length?`${agg.length}件`:'',ranks,{open:true,summaryText:agg[0]?.label||''});
+ const compact=(list,label,key)=>dashAccordion(key,label,list.length?`${list.length}件`:'',list.map(x=>`<div class="condition-row"><strong>${esc(x.label)}</strong><span>${x.count}R</span><span>${races.length?(x.count/races.length*100).toFixed(1)+'%':'—'}</span></div>`).join('')||'<p class="muted">該当なし</p>',{summaryText:list[0]?.label||''});
  const filter=dashboardUi.diagnosisFilter;
- const rows=races.map(r=>({r,reasons:failureReasonsForRace(r)})).filter(x=>!filter||x.reasons.some(y=>y.code===filter)).sort((a,b)=>{
+ const rows=races.map(r=>{const diagnostics=diagnosticsForRace(r);return {r,diagnostics,reasons:[...diagnostics.failures,...diagnostics.checks,...diagnostics.data]}}).filter(x=>!filter||x.reasons.some(y=>y.code===filter)).sort((a,b)=>{
    const ac=a.reasons.filter(x=>x.code!=='NO_CLEAR').length,bc=b.reasons.filter(x=>x.code!=='NO_CLEAR').length;
    return bc-ac||String(b.r.race?.raceDate||'').localeCompare(String(a.r.race?.raceDate||''));
  });
- const cards=rows.map(({r,reasons})=>{
-   const issues=reasons.filter(x=>x.code!=='NO_CLEAR'),severity=diagnosisSeverity(issues.length?issues:reasons);
-   return `<details class="failure-card diagnosis-card severity-${severity.key}"><summary><span><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><small>${esc(r.race?.raceDate)}</small></span><b class="severity"><i></i>${severity.label}</b><em>問題 ${issues.length}件</em></summary><div class="diagnosis-card-body">${reasons.map(x=>`<div class="failure-item"><strong>${esc(x.label)}</strong><span>${esc(x.detail)}</span></div>`).join('')}</div></details>`;
+ const cards=rows.map(({r,reasons,diagnostics})=>{
+   const severity=diagnosisSeverity(diagnostics.failures),issueCount=diagnostics.failures.length;
+   const section=(title,items)=>items.length?`<h4>${title}</h4>${items.map(x=>`<div class="failure-item"><strong>${esc(x.label)}</strong><span>${esc(x.detail)}</span></div>`).join('')}`:'';
+   return `<details class="failure-card diagnosis-card severity-${severity.key}"><summary><span><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><small>${esc(r.race?.raceDate)}・品質${diagnostics.quality.grade}</small></span><b class="severity"><i></i>${issueCount?severity.label:'検証候補'}</b><em>失敗 ${issueCount}件</em></summary><div class="diagnosis-card-body">${section('実績ベースの失敗',diagnostics.failures)}${section('検証候補',diagnostics.checks)}${section('データ不足',diagnostics.data)}</div></details>`;
  }).join('')||'<p class="muted">該当レースはありません。</p>';
  const filterNote=filter?`<div class="diagnosis-filter-note"><span>${esc(agg.find(x=>x.code===filter)?.label||filter)}のみ表示</span><button type="button" id="clearDiagnosisFilter">解除</button></div>`:'';
  const detail=dashAccordion('diagnosis','レース別自動診断',`${rows.length}R`,`${filterNote}<div class="diagnosis-list">${cards}</div>`,{summaryText:filter?'絞り込み中':'問題レースを確認'}).replace('class="dash-section','id="diagnosisSection" class="dash-section');
- return summary+detail;
+ return summary+compact(checkAgg,'検証候補','validationChecks')+compact(dataAgg,'データ品質','dataQuality')+detail;
 }
 
 function renderImprovementPoints(races,adv){
- const agg=aggregateFailureReasons(races),items=[];
+ const agg=aggregateDiagnostics(races,'failures'),items=[];
  if(agg[0])items.push({tone:'warn',text:`${agg[0].label} ${agg[0].count}R`});
- const high=adv.byEvBand['250%以上'];if(high)items.push({tone:high.place/high.n<.15?'warn':'good',text:`期待値250%以上 複${pct(high.place,high.n)}`});
- const low=adv.byPopularity['10人気以下'];if(low)items.push({tone:low.place/low.n<.15?'warn':'good',text:`10人気以下 複${pct(low.place,low.n)}`});
+ const high=adv.byEvBand['250%以上'];if(high)items.push({tone:high.place/high.n<.15?'warn':'good',text:`期待値250%以上 TOP3 ${pct(high.place,high.n)}（n=${high.n}・${sampleLabel(high.n)}）`});
+ const low=adv.byPopularity['10人気以下'];if(low)items.push({tone:low.place/low.n<.15?'warn':'good',text:`10人気以下 TOP3 ${pct(low.place,low.n)}（n=${low.n}・${sampleLabel(low.n)}）`});
  if(adv.timeAbs.length)items.push({tone:mean(adv.timeAbs)<=2?'good':'warn',text:`TIME MAE ${mean(adv.timeAbs).toFixed(2)}秒`});
  return `<section class="improvement-card"><div><p class="eyebrow">NEXT FOCUS</p><h3>今回の重要改善ポイント</h3></div><div class="improvement-list">${items.slice(0,4).map(x=>`<span class="is-${x.tone}">${x.tone==='good'?'✓':'⚠'} ${esc(x.text)}</span>`).join('')||'<span>検証データがありません。</span>'}</div></section>`;
 }
@@ -809,33 +834,39 @@ function raceTimeMae(r){
  const times=resultTimes(r),values=frozenHorses(r).map(h=>{const p=timeToSec(h.predictedTime),a=timeToSec(times[String(h.horseNo)]);return p!=null&&a!=null?Math.abs(p-a):null}).filter(x=>x!=null);
  return values.length?mean(values):null;
 }
-function raceCaptured(r){const order=resultOrder(r);return top3Snapshot(r).filter(x=>order.includes(Number(x.horseNo))).length}
+function raceCaptured(r){const top3=resultTop3(r);return top3Snapshot(r).filter(x=>top3.includes(Number(x.horseNo))).length}
 function renderSavedRaces(races){
  const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
  let rows=races.filter(r=>dashboardUi.raceType==='all'||(dashboardUi.raceType==='central'?isCentral(r):!isCentral(r)));
  rows=rows.map(r=>({r,mae:raceTimeMae(r),captured:raceCaptured(r)}));
  rows.sort((a,b)=>dashboardUi.raceSort==='old'?String(a.r.race?.raceDate||'').localeCompare(String(b.r.race?.raceDate||'')):dashboardUi.raceSort==='mae'?(b.mae??-1)-(a.mae??-1):dashboardUi.raceSort==='capture'?a.captured-b.captured:String(b.r.race?.raceDate||'').localeCompare(String(a.r.race?.raceDate||'')));
  const visible=rows.slice(0,dashboardUi.raceLimit);
- const cards=visible.map(({r,mae,captured})=>{const resultState=getResultDisplayState(r);return `<details class="dash-race-card"><summary><div><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span></div><div><b>${resultState.finishOrder.join('-')}</b><span>結果</span></div><div><strong>◎○▲ ${captured}/3</strong><span>捕捉</span></div><div><strong>${mae!=null?mae.toFixed(2)+'秒':'—'}</strong><span>TIME MAE</span></div></summary><div class="saved-race-detail"><span>${esc(r.race?.category||'区分不明')}</span><span>${esc(resultState.label)}</span></div></details>`}).join('')||'<p class="muted">該当する保存レースはありません。</p>';
+ const cards=visible.map(({r,mae,captured})=>{const resultState=getResultDisplayState(r),quality=validationQuality(r),timeN=Object.keys(resultTimes(r)).length,version=r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy';return `<details class="dash-race-card"><summary><div><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span></div><div><b>${resultState.finishOrder.join('-')}</b><span>結果</span></div><div><strong>◎○▲ ${captured}/3</strong><span>捕捉</span></div><div><strong>${mae!=null?mae.toFixed(2)+'秒':'—'}</strong><span>TIME MAE</span></div></summary><div class="saved-race-detail"><span>品質 ${quality.grade}</span><span>モデル ${esc(version)}</span><span>市場 ${quality.marketCount}/${quality.total}</span><span>実TIME ${timeN}頭</span><button type="button" class="open-saved-race" data-race-id="${esc(raceId(r.race))}">この予想を開く</button></div></details>`}).join('')||'<p class="muted">該当する保存レースはありません。</p>';
  const controls=`<div class="saved-filters"><label>区分<select id="savedRaceType"><option value="all">すべて</option><option value="central">中央</option><option value="local">地方</option></select></label><label>並び順<select id="savedRaceSort"><option value="new">新しい順</option><option value="old">古い順</option><option value="mae">TIME誤差大</option><option value="capture">捕捉低い順</option></select></label></div>`;
  const more=visible.length<rows.length?`<button type="button" id="moreSavedRaces" class="more-races">さらに${Math.min(10,rows.length-visible.length)}件表示</button>`:'';
  return dashAccordion('saved','保存レース',`${rows.length}件`,`${controls}<div class="saved-race-list">${cards}</div>${more}`,{summaryText:'10件ずつ表示'});
 }
 
 function renderDashboard(){
- const races=getAllRaces(),horses=races.flatMap(frozenHorses),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
- const hit=(race,h)=>horsePosition(race,h)!=null,win=(race,h)=>horsePosition(race,h)===1;
+ const allRaces=getAllRaces(),tracks=[...new Set(allRaces.map(r=>r.race?.track).filter(Boolean))].sort(),now=new Date();
+ const daysAgo=date=>{const d=new Date(`${date}T00:00:00`);return Number.isFinite(d.getTime())?Math.floor((now-d)/86400000):Infinity};
+ const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
+ const races=allRaces.filter(r=>(dashboardUi.raceType==='all'||(dashboardUi.raceType==='central'?isCentral(r):!isCentral(r)))&&(dashboardUi.track==='all'||r.race?.track===dashboardUi.track)&&(dashboardUi.period==='all'||daysAgo(r.race?.raceDate)<=Number(dashboardUi.period))&&(dashboardUi.quality==='all'||validationQuality(r).grade===dashboardUi.quality));
+ const filterBar=`<div class="dashboard-filterbar"><label>区分<select id="dashTypeFilter"><option value="all">全体</option><option value="central">中央</option><option value="local">地方</option></select></label><label>競馬場<select id="dashTrackFilter"><option value="all">全競馬場</option>${tracks.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label><label>期間<select id="dashPeriodFilter"><option value="all">全期間</option><option value="0">今日</option><option value="7">直近7日</option><option value="30">直近30日</option></select></label><label>品質<select id="dashQualityFilter"><option value="all">全品質</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label></div>`;
+ document.querySelector('.dashboard-filterbar')?.remove();$('dashKpis').insertAdjacentHTML('beforebegin',filterBar);
+ const horses=races.flatMap(frozenHorses),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
+ const hit=(race,h)=>isTop3(race,h.horseNo),win=(race,h)=>horsePosition(race,h)===1;
  let dh=0,wh=0;for(const race of races){frozenHorses(race).filter(h=>h.valueMark||h.mark?.includes?.('💎')).forEach(h=>{if(hit(race,h))dh++});frozenHorses(race).filter(h=>h.warningMark||h.warning).forEach(h=>{if(!hit(race,h))wh++})}
  const adv=aggregateAdvanced(races);
  $('dashKpis').innerHTML=[
    ['検証済み',`${races.length}R`],
    ['評価馬数',`${horses.length}頭`],
-   ['◎○▲ 1頭以上',pct(adv.top3Any,adv.races)],
+   ['◎○▲ 1頭以上',`${pct(adv.top3Any,adv.races)}（${adv.top3Any}/${adv.races}）`],
    ['平均捕捉',adv.races?`${(adv.top3Captured/adv.races).toFixed(2)}頭`:'—'],
-   ['💎複勝率',diamonds.length?`${(dh/diamonds.length*100).toFixed(1)}%`:'—'],
-   ['⚠️圏外率',warnings.length?`${(wh/warnings.length*100).toFixed(1)}%`:'—'],
-   ['TIME MAE',adv.timeAbs.length?`${mean(adv.timeAbs).toFixed(2)}秒`:'—'],
-   ['期待100%+複',pct(adv.ev100Place,adv.ev100N)]
+   ['💎TOP3率',diamonds.length?`${(dh/diamonds.length*100).toFixed(1)}%（${dh}/${diamonds.length}）`:'—'],
+   ['⚠️圏外率',warnings.length?`${(wh/warnings.length*100).toFixed(1)}%（${wh}/${warnings.length}）`:'—'],
+   ['TIME MAE',adv.timeAbs.length?`${mean(adv.timeAbs).toFixed(2)}秒（n=${adv.timeAbs.length}）`:'—'],
+   ['期待100%+TOP3',adv.ev100N?`${pct(adv.ev100Place,adv.ev100N)}（${adv.ev100Place}/${adv.ev100N}）`:'—']
  ].map(([a,b],i)=>`<div class="kpi dashboard-kpi kpi-${i+1}"><span>${a}</span><strong>${b}</strong></div>`).join('');
  document.querySelector('.improvement-card')?.remove();
  $('dashKpis').insertAdjacentHTML('afterend',renderImprovementPoints(races,adv));
@@ -846,17 +877,25 @@ function renderDashboard(){
   ['期待値モデル',r=>[...frozenHorses(r)].filter(h=>h.ev!=null).sort((a,b)=>b.ev-a.ev)[0]],
   ['CHASS FINAL',r=>{const no=r.finalSnapshot?.top3?.[0]?.horseNo;return frozenHorseByNo(r,no)||rankFinalFor(frozenHorses(r))[0]}]
  ];
- const modelRows=modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[];races.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(hp!=null)p++;if(hp!=null)pos.push(hp)});return `<div class="model-row"><strong>${name}</strong><span>対象 ${target}</span><b>${target?(w/target*100).toFixed(1):'—'}%</b><small>複 ${target?(p/target*100).toFixed(1):'—'}%・平均 ${pos.length?mean(pos).toFixed(2):'—'}</small></div>`}).join('');
+ const modelRows=modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[],pop=[],odds=[];races.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(isTop3(r,h.horseNo))p++;if(hp!=null)pos.push(hp);if(h.popularity!=null)pop.push(Number(h.popularity));if(h.odds!=null)odds.push(Number(h.odds))});return `<div class="model-row"><strong>${name}</strong><span>対象 ${target}・${sampleLabel(target)}</span><b>${target?(w/target*100).toFixed(1):'—'}%</b><small>TOP3 ${target?(p/target*100).toFixed(1):'—'}%・平均着順 ${pos.length?mean(pos).toFixed(2):'—'}・人気 ${pop.length?mean(pop).toFixed(1):'—'}・オッズ ${odds.length?mean(odds).toFixed(1):'—'}</small></div>`}).join('');
  const modelHtml=dashAccordion('models','モデル別成績','4モデル',modelRows,{open:true,summaryText:'勝率・複勝率'});
 
+ const calibrationRows=(title,obj)=>`<h4>${title}</h4>`+Object.entries(obj).map(([band,g])=>{const predicted=g.predicted/g.n,actual=g.actual/g.n*100,diff=actual-predicted;return `<div class="calibration-row"><strong>${band}</strong><span>n=${g.n}・${sampleLabel(g.n)}</span><span>平均 ${predicted.toFixed(1)}% / 実績 ${actual.toFixed(1)}% / ${diff>=0?'+':''}${diff.toFixed(1)}pt</span></div>`}).join('');
+ const valueRows=Object.entries(adv.valueTypes).map(([type,g])=>`<div class="calibration-row"><strong>${esc(type)}</strong><span>n=${g.n}・${sampleLabel(g.n)}</span><span>勝 ${pct(g.win,g.n)} / TOP3 ${pct(g.top3,g.n)} / 人気 ${g.pop.length?mean(g.pop).toFixed(1):'—'} / オッズ ${g.odds.length?mean(g.odds).toFixed(1):'—'}</span></div>`).join('');
+ const warningRate=adv.warningN?adv.warningOut/adv.warningN*100:null,warningBase=adv.warningBaseN?adv.warningBaseOut/adv.warningBaseN*100:null;
  const calRows=`
    <div class="calibration-row"><strong>AI勝率</strong><span>Brier <b>${adv.winBrier.length?mean(adv.winBrier).toFixed(3):'—'}</b></span><span>MAE <b>${adv.winMae.length?mean(adv.winMae).toFixed(1)+'pt':'—'}</b></span></div>
-   <div class="calibration-row"><strong>AI複勝率</strong><span>Brier <b>${adv.placeBrier.length?mean(adv.placeBrier).toFixed(3):'—'}</b></span><span>MAE <b>${adv.placeMae.length?mean(adv.placeMae).toFixed(1)+'pt':'—'}</b></span></div>
+   <div class="calibration-row"><strong>AI TOP3率</strong><span>Brier <b>${adv.placeBrier.length?mean(adv.placeBrier).toFixed(3):'—'}</b></span><span>MAE <b>${adv.placeMae.length?mean(adv.placeMae).toFixed(1)+'pt':'—'}</b></span></div>
    <div class="calibration-row"><strong>FINAL順位差</strong><span>平均 <b>${adv.finalRankAbs.length?mean(adv.finalRankAbs).toFixed(2):'—'}</b></span><span></span></div>
-   <div class="calibration-row"><strong>💎成績</strong><span>対象 <b>${adv.diamondN}</b></span><span>勝 ${pct(adv.diamondWin,adv.diamondN)}・複 ${pct(adv.diamondPlace,adv.diamondN)}</span></div>`;
+   <div class="calibration-row"><strong>💎成績</strong><span>対象 <b>${adv.diamondN}</b></span><span>勝 ${pct(adv.diamondWin,adv.diamondN)}・TOP3 ${pct(adv.diamondPlace,adv.diamondN)}</span></div><div class="calibration-row"><strong>⚠圏外比較</strong><span>対象 ${warningRate==null?'—':warningRate.toFixed(1)+'%'}（${adv.warningOut}/${adv.warningN}）</span><span>同人気帯参考 ${warningBase==null?'—':warningBase.toFixed(1)+'%'} / 差 ${warningRate==null||warningBase==null?'—':`${warningRate-warningBase>=0?'+':''}${(warningRate-warningBase).toFixed(1)}pt`}</span></div>${valueRows?`<h4>穴馬タイプ別</h4>${valueRows}`:''}${calibrationRows('AI勝率帯別',adv.winCalibration)}${calibrationRows('AI TOP3率帯別',adv.placeCalibration)}`;
  const calHtml=dashAccordion('calibration','確率較正・精度','4指標',calRows,{summaryText:adv.winMae.length?`AI勝率 MAE ${mean(adv.winMae).toFixed(1)}pt`:''});
 
- $('dashModels').innerHTML=`<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${modelHtml}${calHtml}${renderFailureAnalysis(races)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
+ const timeN=adv.timeError.length,timeMae=adv.timeAbs.length?mean(adv.timeAbs):null,timeMe=timeN?mean(adv.timeError):null,fast=adv.timeError.filter(x=>x<0).length,slow=adv.timeError.filter(x=>x>0).length,within1=adv.timeError.filter(x=>Math.abs(x)<=1).length,within2=adv.timeError.filter(x=>Math.abs(x)<=2).length,scenarioN=Object.values(adv.timeScenario).reduce((a,b)=>a+b,0);
+ const timeRows=`<div class="calibration-row"><strong>全体</strong><span>n=${timeN}</span><span>MAE ${timeMae==null?'—':timeMae.toFixed(2)+'秒'} / ME ${timeMe==null?'—':timeMe.toFixed(2)+'秒'}</span></div><div class="calibration-row"><strong>方向</strong><span>速すぎ ${pct(fast,timeN)} / 遅すぎ ${pct(slow,timeN)}</span><span>±1秒 ${pct(within1,timeN)} / ±2秒 ${pct(within2,timeN)}</span></div>${['実績','補正'].map(type=>`<div class="calibration-row"><strong>${type}TIME</strong><span>n=${adv.timeByType[type].length}</span><span>MAE ${adv.timeByType[type].length?mean(adv.timeByType[type].map(Math.abs)).toFixed(2)+'秒':'—'}</span></div>`).join('')}<div class="calibration-row"><strong>最接近シナリオ</strong><span>標準 ${pct(adv.timeScenario.standard,scenarioN)} / 有利 ${pct(adv.timeScenario.paceFavored,scenarioN)}</span><span>不利 ${pct(adv.timeScenario.paceAdverse,scenarioN)}</span></div>`;
+ const timeHtml=dashAccordion('timeValidation','TIME検証',timeN?`n=${timeN}`:'',timeRows,{summaryText:timeMae==null?'データ不足':`MAE ${timeMae.toFixed(2)}秒`});
+ const versions={};races.forEach(r=>{const version=r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy';versions[version]=(versions[version]||0)+1});
+ const versionHtml=dashAccordion('modelVersions','モデルバージョン別',`${Object.keys(versions).length}件`,Object.entries(versions).map(([version,n])=>`<div class="condition-row"><strong>${esc(version)}</strong><span>${n}R</span><span>${sampleLabel(n)}</span></div>`).join('')||'<p class="muted">データなし</p>',{summaryText:Object.entries(versions).sort((a,b)=>b[1]-a[1])[0]?.[0]||''});
+ $('dashModels').innerHTML=`<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${modelHtml}${versionHtml}${calHtml}${timeHtml}${renderFailureAnalysis(races)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
  $('dashRaces').innerHTML=renderSavedRaces(races);
  bindDashboardUi();
 }
@@ -869,6 +908,9 @@ function bindDashboardUi(){
  if($('savedRaceType')){$('savedRaceType').value=dashboardUi.raceType;$('savedRaceType').onchange=e=>{dashboardUi.raceType=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}}
  if($('savedRaceSort')){$('savedRaceSort').value=dashboardUi.raceSort;$('savedRaceSort').onchange=e=>{dashboardUi.raceSort=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}}
  if($('moreSavedRaces'))$('moreSavedRaces').onclick=()=>{dashboardUi.raceLimit+=10;dashboardUi.open.saved=true;renderDashboard()};
+ const filters=[['dashTypeFilter','raceType'],['dashTrackFilter','track'],['dashPeriodFilter','period'],['dashQualityFilter','quality']];
+ filters.forEach(([id,key])=>{const el=$(id);if(!el)return;el.value=dashboardUi[key];el.onchange=e=>{dashboardUi[key]=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}});
+ document.querySelectorAll('.open-saved-race').forEach(button=>button.onclick=()=>{const saved=store.get(KEY,{})[button.dataset.raceId]||store.get(LEGACY_KEY,{})[button.dataset.raceId];if(!saved)return;state=cloneData(saved);state.actualTimes=state.actualTimes||state.result?.actualTimes||{};fillRace(state.race);document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view==='predictionView'));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='predictionView'));render();requestAnimationFrame(()=>$('finalCard')?.scrollIntoView({behavior:'smooth',block:'start'}))});
 }
 function migrateLegacy(){
  const old=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
@@ -880,7 +922,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,aggregateAdvanced,frozenHorses,
+   APP_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,initResearchStorage,getStorageMode(){return researchStorageMode},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;

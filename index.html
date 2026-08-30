@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.8.7</title>
+  <title>チャス競馬研究所 Ver.9.8.8</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.8.7</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.8.8</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -50,7 +50,7 @@
   </section>
   <section id="dashboardView" class="view dashboard-view"><section class="card dashboard-shell"><header class="dashboard-header"><div><p class="eyebrow">VALIDATION</p><h2>予想検証ダッシュボード</h2><p class="muted">保存済みレースから自動集計します。予想精度・傾向・失敗原因を確認できます。</p></div><div class="dashboard-actions"><button id="recalcDash" class="primary">再集計</button><a href="#dashRaces">保存レース</a></div></header><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div><p class="dashboard-footnote">※ 数値は保存済みレースの集計に基づきます。</p></section></section>
 </main>
-<template id="horseTpl"><article class="horse-row"><div class="horse-head"><div class="horse-no"></div><div><strong class="horse-mark-name"></strong><small class="muted horse-sub"></small></div><div class="score-pill overall-pill"></div></div><div class="horse-metrics"><div><span>AI勝率</span><strong class="m-win">—</strong></div><div><span>複勝率</span><strong class="m-place">—</strong></div><div><span>TIME</span><strong class="m-time">—</strong></div><div><span>総合</span><strong class="m-overall">—</strong></div></div><details class="horse-details"><summary>詳細分析を見る</summary><div class="horse-details-body"><div class="facts"></div><div class="logic"></div><p class="reason"></p></div></details></article></template>
+<template id="horseTpl"><article class="horse-row"><div class="horse-head"><div class="horse-no"></div><div><strong class="horse-mark-name"></strong><small class="muted horse-sub"></small></div><div class="score-pill overall-pill"></div></div><div class="horse-metrics"><div><span>AI勝率</span><strong class="m-win">—</strong></div><div><span>AI TOP3率</span><strong class="m-place">—</strong></div><div><span>TIME</span><strong class="m-time">—</strong></div><div><span>総合</span><strong class="m-overall">—</strong></div></div><details class="horse-details"><summary>詳細分析を見る</summary><div class="horse-details-body"><div class="facts"></div><div class="logic"></div><p class="reason"></p></div></details></article></template>
 <script src="/app.js"></script>
 </body>
 </html>

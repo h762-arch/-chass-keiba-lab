@@ -406,3 +406,5 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 .primary-controls .auto-date-field{grid-column:1/-1;width:100%;max-width:100%;min-width:0;min-inline-size:0;contain:inline-size}
 .primary-controls .auto-date-field input[type="date"]{display:block;align-self:stretch;width:auto;inline-size:auto;max-width:100%;max-inline-size:100%;min-width:0;min-inline-size:0;-webkit-min-logical-width:0;margin-inline:0;box-sizing:border-box}
 .primary-controls .auto-date-field input[type="date"]::-webkit-date-and-time-value{min-width:0;text-align:center}
+.dashboard-filterbar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 14px}.dashboard-filterbar label{min-width:0;font-size:11px;color:var(--muted)}.dashboard-filterbar select{width:100%;min-width:0;height:42px;margin-top:4px;padding:0 8px;font-size:14px}.saved-race-detail{flex-wrap:wrap}.saved-race-detail .open-saved-race{width:100%;min-height:44px;margin-top:6px}.diagnosis-card-body h4{margin:12px 0 6px;color:var(--mint);font-size:12px}.diagnosis-card-body h4:first-child{margin-top:0}
+@media(max-width:430px){.dashboard-filterbar{grid-template-columns:repeat(2,minmax(0,1fr))}}

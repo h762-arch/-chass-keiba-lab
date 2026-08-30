@@ -1,0 +1,29 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import vm from 'node:vm';
+import {parseResult,parseRaceCard,parseTanFuku,parseRuns,predictTimeFromRuns,VERSION} from './worker.js';
+import {resultHtml,raceCardHtml,oddsHtml,debaTableText} from './nar-fixtures.mjs';
+
+async function loadCore(){const source=await readFile(new URL('./app.js',import.meta.url),'utf8'),memory=new Map(),window={__CHASS_TEST__:true};const context={window,console,Date,JSON,Math,Number,String,Array,Object,Map,Set,RegExp,parseFloat,localStorage:{getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v)}};vm.createContext(context);vm.runInContext(source,context,{filename:'app.js'});return window.CHASS_TEST}
+const horses=()=>[
+ {horseNo:1,horseName:'一号馬',win:45,place:70,overall:92,ev:110,predictedTime:'1:40.0',predictedTimeType:'実績',predictedTimeScenarios:{standard:'1:40.0',paceFavored:'1:39.4',paceAdverse:'1:40.6'},dataConfidence:90,abilityMark:'◎',odds:2.4,popularity:1},
+ {horseNo:2,horseName:'二号馬',win:30,place:58,overall:85,ev:105,predictedTime:'1:40.5',predictedTimeType:'補正',dataConfidence:85,abilityMark:'○',odds:3.5,popularity:2},
+ {horseNo:3,horseName:'三号馬',win:20,place:45,overall:80,ev:98,predictedTime:'1:41.0',dataConfidence:80,abilityMark:'▲',odds:5,popularity:3},
+ {horseNo:4,horseName:'四号馬',win:5,place:20,overall:60,ev:80,predictedTime:'1:42.0',dataConfidence:70,odds:10,popularity:4}
+];
+const race=()=>({race:{raceDate:'2026-08-30',track:'船橋',raceNo:4,trackCondition:'良',bias:'',pace:'標準',distance:1500},horses:horses(),predictionSnapshot:{modelVersion:'9.8.8',race:{bias:''},horses:horses().map(({odds,popularity,ev,...prediction})=>prediction)},marketSnapshot:{horses:horses().map(h=>({horseNo:h.horseNo,odds:h.odds,popularity:h.popularity,ev:h.ev}))},finalSnapshot:{top3:[{horseNo:1},{horseNo:2},{horseNo:3}]},resultSnapshot:{finishOrder:[2,3,4,1],actualTimes:{'1':'1:42.0','2':'1:40.7','3':'1:41.2','4':'1:41.5'},horses:horses().map((h,i)=>({horseNo:h.horseNo,position:[4,1,2,3][i],last3f:38+i}))}});
+
+test('version is unified',async()=>{const core=await loadCore(),pkg=JSON.parse(await readFile(new URL('./package.json',import.meta.url)));assert.equal(core.APP_VERSION,'9.8.8');assert.equal(VERSION,pkg.version)});
+test('raceId and TIME conversion are stable',async()=>{const c=await loadCore();assert.equal(c.raceId({raceDate:'2026/08/30',track:'船橋',raceNo:'4R'}),'2026-08-30|船橋|4');assert.equal(c.timeToSec('1:40.3'),100.3)});
+test('NAR result fixture parses full order and details',()=>{const r=parseResult(resultHtml);assert.deepEqual(r.finishOrder,['12','11','3','1']);assert.equal(r.results[0].last3f,38.1);assert.equal(r.results[0].cornerPositions,'2-2-1-1')});
+test('card, odds and DebaTable fixtures parse expected fields',()=>{assert.equal(parseRaceCard(raceCardHtml)[1].horseName,'テストホース');assert.equal(parseTanFuku(oddsHtml)[0].popularity,2);const runs=parseRuns(debaTableText,1500,'船橋');assert.equal(runs[0].sameTrack,true);assert.equal(predictTimeFromRuns(runs,1500).scenarios.standard,'1:40.3')});
+test('prediction and market snapshots remain frozen',async()=>{const c=await loadCore();c.setState({race:{raceDate:'2026-08-30',track:'船橋',raceNo:4},horses:horses(),predictionSnapshot:null,marketSnapshot:null,finalSnapshot:null,validationCompleted:false});c.makeSnapshot();const before=JSON.stringify(c.getState().predictionSnapshot),market=JSON.stringify(c.getState().marketSnapshot);c.getState().horses[0].win=1;c.getState().validationCompleted=true;c.makeSnapshot();assert.equal(JSON.stringify(c.getState().predictionSnapshot),before);assert.equal(JSON.stringify(c.getState().marketSnapshot),market)});
+test('full finish order still treats only first three as TOP3',async()=>{const c=await loadCore(),r=race();assert.equal(c.isTop3(r,1),false);assert.equal(c.isTop3(r,4),true);const a=c.aggregateAdvanced([r]);assert.equal(a.placeMae.length,4)});
+test('single high-probability loss is a check, not overrating failure',async()=>{const c=await loadCore(),d=c.diagnosticsForRace(race());assert.equal(d.failures.some(x=>x.code==='PROB_OVER'),false);assert.equal(d.checks.some(x=>x.code==='PROB_CHECK'),true)});
+test('track condition alone is not bias failure or check',async()=>{const c=await loadCore(),d=c.diagnosticsForRace(race());assert.equal([...d.failures,...d.checks].some(x=>x.code==='BIAS_CHECK'),false)});
+test('calibration and TIME metrics use frozen predictions',async()=>{const c=await loadCore(),a=c.aggregateAdvanced([race()]);assert.ok(Object.keys(a.winCalibration).length>0);assert.equal(a.timeError.length,4);assert.equal(a.timeByType['実績'].length,1);assert.equal(a.timeByType['補正'].length,1)});
+test('validation quality never converts missing data to successful zero',async()=>{const c=await loadCore(),r=race();r.marketSnapshot={horses:[]};const q=c.validationQuality(r);assert.equal(q.grade,'B');assert.equal(q.issues.some(x=>x.code==='MARKET_MISSING'),true)});
+test('same race ID updates one cache record',async()=>{const c=await loadCore(),id='2026-08-30|船橋|4';c.saveRaceRecord(id,{updatedAt:'2026-08-30T00:00:00Z'});c.saveRaceRecord(id,{validated:true,updatedAt:'2026-08-30T01:00:00Z'});assert.equal(Object.keys(c.getRaceCache()).length,1);assert.equal(c.getRaceCache()[id].validated,true)});
+test('legacy migration is idempotent and preserves horses',async()=>{const c=await loadCore(),r={race:{raceDate:'2026-08-30',track:'船橋',raceNo:4},horses:horses()},before=JSON.stringify(r.horses);assert.equal(c.migrateSnapshotRecord(r),true);assert.equal(JSON.stringify(r.horses),before);assert.equal(c.migrateSnapshotRecord(r),false)});
+test('IndexedDB unavailable falls back without deleting local data',async()=>{const c=await loadCore();await c.initResearchStorage();assert.equal(c.getStorageMode(),'localStorage-fallback')});

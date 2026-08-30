@@ -1,41 +1,42 @@
-# チャス競馬研究所 Ver.8.5
+# CHASS KEIBA LAB Ver.9.8.8
 
-## 今回の修正
-- 「現在オッズ未取得」と「CHASS FINAL 市場反映済」が同時に出る矛盾を修正。
-- LIVE MARKET は **NAR現在オッズ取得が成功した場合だけ**「取得済」と表示。
-- JSONに入っている予想/参考オッズは、LIVE取得済とは扱わない。
-- state側と旧horse-row側のデータを統合し、取得した現在オッズを全馬比較へ確実に反映。
-- STEP 3「レース結果」は結果取得を実行してからレース後検証へ移動。
-- 検証ダッシュボード0R時に「結果保存前なので0R」と分かる説明を追加。
-- Ver.8.4のモバイルUI、4ステップ導線、独立レース後検証は継続。
+地方競馬の予想、予想時点Snapshot固定、NAR公式結果取得、レース後検証を行う研究アプリです。
 
-## 更新方法
-既存GitHubの `chass-latest.js` を、このZIP内の `chass-latest.js` で置き換えてCommitしてください。
+## 現在の保存構造
 
-`index.html` が以下なら変更不要です。
+- IndexedDBを主保存先として使用
+- IndexedDBが利用できない場合はlocalStorageへフォールバック
+- 既存localStorageデータは削除せず移行
+- predictionSnapshot / marketSnapshot / finalSnapshot / resultSnapshot / validationSnapshotを分離
+- 結果取得後も予想時点Snapshotを自動上書きしない
 
-```html
-<script src="app.js"></script>
-<script src="chass-latest.js"></script>
-```
+## TIME
 
-## 確認手順
-1. 予想データを読込
-2. LIVE MARKETが「未取得」であることを確認
-3. 「現在オッズ」を押す
-4. 成功時だけ「取得済 ○頭」「現在市場反映済」に変わることを確認
-5. 全馬比較に実オッズ・期待値が反映されることを確認
-6. レース後にSTEP 3を押し、結果取得→保存・再集計
-7. STEP 4で検証ダッシュボード件数を確認
-# CHASS KEIBA LAB
+- 標準TIME
+- 展開ハマりTIME
+- 展開不利TIME
+- 実績TIMEと距離補正TIMEを区別
+- ダッシュボードでMAE、Mean Error、方向別誤差、シナリオ最接近率を検証
+
+## 検証ダッシュボード
+
+- 実績ベースの失敗、検証候補、データ不足を分離
+- AI勝率・AI TOP3率を確率帯別に較正
+- 率には成功数/対象数と母数信頼度を表示
+- 中央/地方、競馬場、期間、データ品質で絞り込み
+- 保存レースから当時の予想画面へ戻ることが可能
 
 ## Development checks
 
-Node.js 20以上で、外部テストライブラリなしに回帰チェックを実行できます。
+Node.js 20以上で、外部テストライブラリやライブNAR通信なしに回帰テストを実行できます。
 
 ```sh
 npm test
 npm run check
 ```
 
-テストは保存済みfixtureを使用し、ライブNARへの通信は行いません。
+`regression.test.mjs`が`nar-fixtures.mjs`の固定fixtureを読み込み、Snapshot固定、TOP3判定、診断分類、較正、TIME、NAR Parser、旧データ移行を検証します。
+
+## Compatibility
+
+`chass-latest.js`は旧配置との互換性を維持するためのlegacy compatibility placeholderです。現在の本体処理は`app.js`に統合されています。
