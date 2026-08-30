@@ -1,12 +1,12 @@
 {
   "name": "chass-keiba-lab",
-  "version": "9.9.5",
+  "version": "9.9.6",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test regression.test.mjs",
-    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --test regression.test.mjs"
+    "test": "node --test regression.test.mjs tests/*.test.mjs",
+    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --test regression.test.mjs tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

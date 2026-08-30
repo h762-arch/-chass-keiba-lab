@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.5
+# CHASS KEIBA LAB Ver.9.9.6
+
+## Ver.9.9.6 D1 Differential Sync Optimization
+
+- `/api/db/manifest` の軽量指紋Manifestで同期前に差分を判定
+- Worker側でも同一Snapshot・結果・検証の再書き込みを防止
+- 手動同期は新規・更新・変更なしを区別し、変更のないレース本体を送信しない
+- 同期やD1読込だけでは `updatedAt` を更新しない
+- 固定済みpredictionSnapshotは結果取得・再同期時に上書きしない
 
 ## Ver.9.9.5 D1 Binding Fix
 

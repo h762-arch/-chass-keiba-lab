@@ -50,9 +50,9 @@ test('same race ID updates one cache record instead of duplicating it',async()=>
 
 test('track condition alone never creates a bias diagnosis',async()=>{
   const core=await loadCore(),base={race:{trackCondition:'良',bias:'',pace:'標準'},predictionSnapshot:{race:{bias:''},horses:horses()},marketSnapshot:{horses:[]},finalSnapshot:{top3:[{horseNo:1},{horseNo:2},{horseNo:3}]},resultSnapshot:{finishOrder:[1,2,3],actualTimes:{}}};
-  assert.equal(core.failureReasonsForRace(base).some(x=>x.code==='BIAS_CHECK'),false);
+  assert.equal(core.diagnosticsForRace(base).checks.some(x=>x.code==='BIAS_CHECK'),false);
   base.predictionSnapshot.race.bias='内有利';
-  assert.equal(core.failureReasonsForRace(base).some(x=>x.code==='BIAS_CHECK'),true);
+  assert.equal(core.diagnosticsForRace(base).checks.some(x=>x.code==='BIAS_CHECK'),true);
 });
 
 test('legacy record migration creates locked snapshots without changing horses',async()=>{
