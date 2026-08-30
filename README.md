@@ -1,4 +1,13 @@
-# CHASS KEIBA LAB Ver.9.9.3
+# CHASS KEIBA LAB Ver.9.9.4
+
+## Ver.9.9.4 Cloud Research Sync
+
+- Cloudflare D1 binding `env["chass-keiba-lab-db"]` をそのまま利用
+- D1をクラウド研究データ保存先、IndexedDBをローカルキャッシュ兼オフライン退避先として併用
+- `/api/db/health`、`/api/db/races`、`/api/db/sync` を追加（DELETE APIなし）
+- `predictionSnapshot` はD1でも挿入後に更新せず、結果・検証データだけを追記更新
+- D1失敗時はローカル保存を成功させ、同期待ちとして次回再送
+- `d1-schema.sql` とWorkerの安全な初期化処理に `races`、`predictions`、`results` を定義
 
 ## Ver.9.9.3 Longshot Discovery
 

@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.3';
+const APP_VERSION='9.9.4';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -51,13 +51,21 @@ const localStore={get(k,d){try{return JSON.parse(localStorage.getItem(k)||'')??d
 const RESEARCH_DB='chass-keiba-research',RESEARCH_DB_VERSION=1;
 let researchDb=null,researchStorageMode='localStorage',storageReady=false;
 let raceCache=localStore.get(KEY,{}),oddsHistoryCache=localStore.get(ODDS_HISTORY,{}),currentRaceCache=localStore.get(CURRENT,'');
+const CLOUD_PENDING_KEY='chass_cloud_pending_v1';
+let cloudPending=new Set(localStore.get(CLOUD_PENDING_KEY,[])),cloudState={available:false,source:'local',status:'local',error:'',lastSyncedAt:null};
 function idbRequest(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB request failed'))})}
 function openResearchDb(){return new Promise((resolve,reject)=>{if(!('indexedDB' in window)){reject(new Error('IndexedDB unavailable'));return}const req=indexedDB.open(RESEARCH_DB,RESEARCH_DB_VERSION);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('races'))db.createObjectStore('races',{keyPath:'id'});if(!db.objectStoreNames.contains('oddsHistory'))db.createObjectStore('oddsHistory',{keyPath:'raceId'});if(!db.objectStoreNames.contains('settings'))db.createObjectStore('settings',{keyPath:'key'})};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB open failed'));req.onblocked=()=>reject(new Error('IndexedDB upgrade blocked'))})}
 async function idbGetAll(name){return idbRequest(researchDb.transaction(name,'readonly').objectStore(name).getAll())}
 function idbPut(name,value){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite');tx.objectStore(name).put(value);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
 function idbPutMany(name,values){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite'),objectStore=tx.objectStore(name);values.forEach(value=>objectStore.put(value));tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
 function queueStorageWrite(promise,fallback){promise.catch(()=>{researchStorageMode='localStorage-fallback';fallback?.()})}
-function saveRaceRecord(id,data){raceCache[id]=data;if(researchDb)queueStorageWrite(idbPut('races',{id,data,updatedAt:data.updatedAt||new Date().toISOString()}),()=>localStore.set(KEY,raceCache));else localStore.set(KEY,raceCache)}
+function setCloudPending(id,pending=true){if(pending)cloudPending.add(id);else cloudPending.delete(id);localStore.set(CLOUD_PENDING_KEY,[...cloudPending]);renderCloudSyncState()}
+function hydrateCloudRecord(record){if(!record)return record;const p=record.predictionSnapshot?.horses||[],m=new Map((record.marketSnapshot?.horses||[]).map(h=>[Number(h.horseNo),h])),f=new Map((record.finalSnapshot?.ranking||record.finalSnapshot?.top3||[]).map(h=>[Number(h.horseNo),h]));record.horses=p.map(h=>({...h,...m.get(Number(h.horseNo)),...f.get(Number(h.horseNo))}));record.actualTimes=record.resultSnapshot?.actualTimes||{};record.result=record.resultSnapshot?{finishOrder:record.resultSnapshot.finishOrder||[],actualTimes:record.actualTimes}:null;return record}
+async function cloudRequest(path,options={}){const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}}),data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{status:response.status,code:data.error});return data}
+async function syncRaceToCloud(id,data){if(typeof fetch!=='function'||!id||!data?.predictionSnapshot)return false;setCloudPending(id,true);try{await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({raceId:id,record:data})});cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:'',lastSyncedAt:new Date().toISOString()};setCloudPending(id,false);return true}catch(e){cloudState={...cloudState,status:cloudState.available?'error':'local',error:e.code||e.message};renderCloudSyncState();return false}}
+async function syncAllResearchToCloud(){const entries=Object.entries(raceCache).filter(([,record])=>record?.predictionSnapshot);if(!entries.length)return {synced:0,total:0};cloudState.status='syncing';renderCloudSyncState();let synced=0;for(let i=0;i<entries.length;i+=25){const batch=entries.slice(i,i+25).map(([raceId,record])=>({raceId,record}));batch.forEach(x=>setCloudPending(x.raceId,true));try{const result=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})});synced+=result.synced||0;batch.forEach(x=>setCloudPending(x.raceId,false))}catch(e){cloudState={...cloudState,status:'error',error:e.code||e.message};break}}if(synced===entries.length)cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:'',lastSyncedAt:new Date().toISOString()};renderCloudSyncState();return {synced,total:entries.length}}
+async function initCloudResearch(){if(typeof fetch!=='function')return false;try{await cloudRequest('/api/db/health');cloudState={...cloudState,available:true,status:'connected',error:''};const data=await cloudRequest('/api/db/races');for(const item of data.records||[]){if(!item?.raceId||!item.record)continue;if(!cloudPending.has(item.raceId))raceCache[item.raceId]=hydrateCloudRecord(item.record)}if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:record.updatedAt||new Date().toISOString()})));cloudState.source='cloud';researchStorageMode='d1+indexedDB';for(const id of [...cloudPending])if(raceCache[id])await syncRaceToCloud(id,raceCache[id]);renderCloudSyncState();return true}catch(e){cloudState={...cloudState,available:false,source:'local',status:'local',error:e.code||e.message};renderCloudSyncState();return false}}
+function saveRaceRecord(id,data){raceCache[id]=data;if(researchDb){const localWrite=idbPut('races',{id,data,updatedAt:data.updatedAt||new Date().toISOString()});queueStorageWrite(localWrite,()=>localStore.set(KEY,raceCache));localWrite.then(()=>syncRaceToCloud(id,data)).catch(()=>{})}else{localStore.set(KEY,raceCache);syncRaceToCloud(id,data)}}
 function saveOddsHistory(id,history){oddsHistoryCache[id]=history;if(researchDb)queueStorageWrite(idbPut('oddsHistory',{raceId:id,history,updatedAt:new Date().toISOString()}),()=>localStore.set(ODDS_HISTORY,oddsHistoryCache));else localStore.set(ODDS_HISTORY,oddsHistoryCache)}
 function saveCurrentRace(id){currentRaceCache=id;localStore.set(CURRENT,id);if(researchDb)queueStorageWrite(idbPut('settings',{key:'currentRace',value:id}),null)}
 const store={get(k,d){if(k===KEY)return raceCache;if(k===ODDS_HISTORY)return oddsHistoryCache;if(k===CURRENT)return currentRaceCache;return localStore.get(k,d)},set(k,v){if(k===KEY){raceCache=v;if(researchDb)queueStorageWrite(idbPutMany('races',Object.entries(v).map(([id,data])=>({id,data,updatedAt:data.updatedAt||new Date().toISOString()}))),()=>localStore.set(KEY,raceCache));else localStore.set(KEY,v);return}if(k===ODDS_HISTORY){oddsHistoryCache=v;if(researchDb)queueStorageWrite(idbPutMany('oddsHistory',Object.entries(v).map(([raceId,history])=>({raceId,history,updatedAt:new Date().toISOString()}))),()=>localStore.set(ODDS_HISTORY,oddsHistoryCache));else localStore.set(ODDS_HISTORY,v);return}if(k===CURRENT){saveCurrentRace(v);return}localStore.set(k,v)}};
@@ -79,6 +87,7 @@ function setVersion(){
   document.title=`チャス競馬研究所 Ver.${APP_VERSION}`;
   const sp=document.querySelector('.topbar h1 span'); if(sp) sp.textContent=`Ver.${APP_VERSION}`;
 }
+function renderCloudSyncState(){if(typeof document==='undefined')return;const source=$('cloudSource'),status=$('cloudSyncStatus'),button=$('cloudSyncButton');if(source)source.textContent=cloudState.available?'クラウド D1':'ローカル IndexedDB';if(status){status.className='';if(cloudState.status==='syncing')status.textContent='同期中';else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`・待ち ${cloudPending.size}件`:''}`;status.className='is-error'}else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;else if(cloudState.status==='synced')status.textContent='☁ 同期済';else status.textContent='ローカルのみ'}if(button)button.disabled=cloudState.status==='syncing'}
 function raceId(r={}){
  const d=String(r.raceDate||r.date||'').replaceAll('/','-');
  const t=String(r.track||'').trim();
@@ -326,14 +335,14 @@ function render(){
  $('chaosBadge').textContent=`波乱 ${r.chaos??'—'}%`;$('paceBadge').textContent=`展開 ${r.pace||'—'}`;$('biasText').textContent=`馬場 ${r.bias||r.trackCondition||'—'}`;
  const prob=h.filter(x=>x.win!=null&&x.place!=null).length,time=h.filter(x=>x.predictedTime).length,marketState=getMarketDisplayState(r,h);
  const names=new Set(h.map(x=>cleanName(x.horseName))); const bad=h.some(x=>!x.horseName)||names.size!==h.length;
- $('integrityGrid').innerHTML=[['レースID',rid||'—'],['AI確率',`${prob}/${h.length}頭`],['予想TIME',`${time}/${h.length}頭`],['市場',marketState.label],['データ状態',bad?'要確認':'正常'],['保存方式',researchStorageMode==='indexedDB'?'IndexedDB':'互換保存'],['生成方式',r.autoGenerated?'NAR自動':'JSON'],['評価モード',r.dataMode||'—']].map(([a,b])=>`<div><span>${a}</span><strong>${esc(b)}</strong></div>`).join('');
+ $('integrityGrid').innerHTML=[['レースID',rid||'—'],['AI確率',`${prob}/${h.length}頭`],['予想TIME',`${time}/${h.length}頭`],['市場',marketState.label],['データ状態',bad?'要確認':'正常'],['保存方式',cloudState.available?'クラウド D1':researchStorageMode.includes('indexedDB')?'IndexedDB':'互換保存'],['生成方式',r.autoGenerated?'NAR自動':'JSON'],['評価モード',r.dataMode||'—']].map(([a,b])=>`<div><span>${a}</span><strong>${esc(b)}</strong></div>`).join('');
  if($('abilitySummary'))$('abilitySummary').textContent=`能力 ${prob}/${h.length||'—'}`;
  if($('dateSummary'))$('dateSummary').textContent=r.raceDate?String(r.raceDate).slice(5).replace('-','/'):'日付 —';
  if($('distanceSummary'))$('distanceSummary').textContent=r.distance?`${r.surface==='芝'?'芝':'ダ'}${r.distance}m`:'距離 —';
  if($('timeSummary'))$('timeSummary').textContent=`TIME ${time}/${h.length||'—'}`;
  if($('modeSummary'))$('modeSummary').textContent=r.dataMode||'データ待ち';
  if($('integrityStatus')){$('integrityStatus').textContent=bad?'要確認':'正常';$('integrityStatus').classList.toggle('good',!bad);$('integrityStatus').classList.toggle('warn',bad);}
- renderMarketDisplayState();renderResultDisplayState();renderFinal();renderValuePicks();renderQuick();renderHorses();
+ renderMarketDisplayState();renderResultDisplayState();renderCloudSyncState();renderFinal();renderValuePicks();renderQuick();renderHorses();
 }
 function renderFinal(){
  const h=state.horses;if(!h.length){$('finalBody').innerHTML='予想データを読み込むと自動表示します。';return}
@@ -930,6 +939,7 @@ function renderSavedRaces(races){
 function renderIntegrityAudit(races){const counts={verified:0,legacy:0,invalid:0};races.forEach(r=>counts[verifySnapshotIntegrity(r).status]++);const body=`<div class="audit-grid"><div><span>固定確認済</span><strong>${counts.verified}R</strong></div><div><span>旧データ未検証</span><strong>${counts.legacy}R</strong></div><div><span>改変・時系列要確認</span><strong>${counts.invalid}R</strong></div></div><div class="metric-definition">新規予想はprediction・market・FINAL Snapshotの指紋を保存します。結果取得後に内容が変わった場合や、結果取得時刻が予想生成時刻より前の場合は分析品質Cとして除外できます。</div>`;return dashAccordion('integrityAudit','研究データ監査',`${races.length}R`,body,{summaryText:counts.invalid?`要確認 ${counts.invalid}R`:'異常なし'})}
 
 function renderDashboard(){
+ renderCloudSyncState();
  const allRaces=getAllRaces(),tracks=[...new Set(allRaces.map(r=>r.race?.track).filter(Boolean))].sort(),modelVersions=[...new Set(allRaces.map(r=>r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy'))].sort(),now=new Date();
  const daysAgo=date=>{const d=new Date(`${date}T00:00:00`);return Number.isFinite(d.getTime())?Math.floor((now-d)/86400000):Infinity};
  const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
@@ -1007,7 +1017,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getStorageMode(){return researchStorageMode},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
@@ -1034,6 +1044,7 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelect
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
+if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{setButtonBusy('cloudSyncButton',true,'同期中');try{const result=await syncAllResearchToCloud();$('cloudSyncStatus').textContent=`☁ 同期済 ${result.synced}/${result.total}件`;renderDashboard()}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudSyncButton',false)} };
 if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
@@ -1047,6 +1058,7 @@ async function bootApp(){
  ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=true});
  migrateLegacy();
  await initResearchStorage();
+ await initCloudResearch();
  migrateLegacy();
  storageReady=true;setVersion();
  ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});
