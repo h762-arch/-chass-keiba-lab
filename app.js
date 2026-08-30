@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.0';
+const APP_VERSION='9.9.1';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -652,6 +652,13 @@ function wilsonInterval(success,total,z=1.96){
  return {low:Math.max(0,center-margin)*100,high:Math.min(1,center+margin)*100};
 }
 function resultTimes(r){return r?.resultSnapshot?.actualTimes||r?.result?.actualTimes||r?.actualTimes||{}}
+function resultHorseByNo(r,no){return (r?.resultSnapshot?.horses||[]).find(h=>Number(h.horseNo)===Number(no))||null}
+function settledWinOdds(r,no){const odds=num(resultHorseByNo(r,no)?.finalOdds);return odds!=null&&odds>=1?odds:null}
+function modelPerformance(races,pick){
+ const out={target:0,wins:0,top3:0,positions:[],popularity:[],forecastOdds:[],roiN:0,roiReturn:0,roiWins:0};
+ for(const r of races){const h=pick(r);if(!h)continue;out.target++;const pos=horsePosition(r,h);if(pos===1)out.wins++;if(isTop3(r,h.horseNo))out.top3++;if(pos!=null)out.positions.push(pos);if(h.popularity!=null)out.popularity.push(Number(h.popularity));if(h.odds!=null)out.forecastOdds.push(Number(h.odds));const finalOdds=settledWinOdds(r,h.horseNo);if(finalOdds!=null){out.roiN++;if(pos===1){out.roiWins++;out.roiReturn+=finalOdds}}}
+ out.roi=out.roiN?out.roiReturn/out.roiN*100:null;return out;
+}
 function migrateSnapshotRecord(r){
  if(!r||typeof r!=='object')return false;
  let changed=false;const now=r.updatedAt||r.result?.at||new Date().toISOString(),horses=r.horses||[];
@@ -883,7 +890,7 @@ function renderSavedRaces(races){
  rows=rows.map(r=>({r,mae:raceTimeMae(r),captured:raceCaptured(r)}));
  rows.sort((a,b)=>dashboardUi.raceSort==='old'?String(a.r.race?.raceDate||'').localeCompare(String(b.r.race?.raceDate||'')):dashboardUi.raceSort==='mae'?(b.mae??-1)-(a.mae??-1):dashboardUi.raceSort==='capture'?a.captured-b.captured:String(b.r.race?.raceDate||'').localeCompare(String(a.r.race?.raceDate||'')));
  const visible=rows.slice(0,dashboardUi.raceLimit);
- const cards=visible.map(({r,mae,captured})=>{const resultState=getResultDisplayState(r),quality=validationQuality(r),timeN=Object.keys(resultTimes(r)).length,version=r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy';return `<details class="dash-race-card"><summary><div><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span></div><div><b>${resultState.finishOrder.join('-')}</b><span>結果</span></div><div><strong>◎○▲ ${captured}/3</strong><span>捕捉</span></div><div><strong>${mae!=null?mae.toFixed(2)+'秒':'—'}</strong><span>TIME MAE</span></div></summary><div class="saved-race-detail"><span>品質 ${quality.grade}</span><span>モデル ${esc(version)}</span><span>市場 ${quality.marketCount}/${quality.total}</span><span>実TIME ${timeN}頭</span><button type="button" class="open-saved-race" data-race-id="${esc(raceId(r.race))}">この予想を開く</button></div></details>`}).join('')||'<p class="muted">該当する保存レースはありません。</p>';
+ const cards=visible.map(({r,mae,captured})=>{const resultState=getResultDisplayState(r),quality=validationQuality(r),timeN=Object.keys(resultTimes(r)).length,version=r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy',finalNo=r.finalSnapshot?.top3?.[0]?.horseNo,finalOdds=settledWinOdds(r,finalNo);return `<details class="dash-race-card"><summary><div><strong>${esc(r.race?.track)} ${esc(r.race?.raceNo)}R</strong><span>${esc(r.race?.raceDate)}</span></div><div><b>${resultState.finishOrder.join('-')}</b><span>結果</span></div><div><strong>◎○▲ ${captured}/3</strong><span>捕捉</span></div><div><strong>${mae!=null?mae.toFixed(2)+'秒':'—'}</strong><span>TIME MAE</span></div></summary><div class="saved-race-detail"><span>品質 ${quality.grade}</span><span>モデル ${esc(version)}</span><span>市場 ${quality.marketCount}/${quality.total}</span><span>実TIME ${timeN}頭</span><span>FINAL確定単勝 ${finalOdds==null?'—':finalOdds.toFixed(1)+'倍'}</span><button type="button" class="open-saved-race" data-race-id="${esc(raceId(r.race))}">この予想を開く</button></div></details>`}).join('')||'<p class="muted">該当する保存レースはありません。</p>';
  const controls=`<div class="saved-filters"><label>区分<select id="savedRaceType"><option value="all">すべて</option><option value="central">中央</option><option value="local">地方</option></select></label><label>並び順<select id="savedRaceSort"><option value="new">新しい順</option><option value="old">古い順</option><option value="mae">TIME誤差大</option><option value="capture">捕捉低い順</option></select></label></div>`;
  const more=visible.length<rows.length?`<button type="button" id="moreSavedRaces" class="more-races">さらに${Math.min(10,rows.length-visible.length)}件表示</button>`:'';
  return dashAccordion('saved','保存レース',`${rows.length}件`,`${controls}<div class="saved-race-list">${cards}</div>${more}`,{summaryText:'10件ずつ表示'});
@@ -920,8 +927,8 @@ function renderDashboard(){
   ['期待値モデル',r=>[...frozenHorses(r)].filter(h=>h.ev!=null).sort((a,b)=>b.ev-a.ev)[0]],
   ['CHASS FINAL',r=>{const no=r.finalSnapshot?.top3?.[0]?.horseNo;return frozenHorseByNo(r,no)||rankFinalFor(frozenHorses(r))[0]}]
  ];
- const modelRows=modelStats.map(([name,pick])=>{let target=0,w=0,p=0,pos=[],pop=[],odds=[];analysisRaces.forEach(r=>{const h=pick(r);if(!h)return;target++;const hp=horsePosition(r,h);if(hp===1)w++;if(isTop3(r,h.horseNo))p++;if(hp!=null)pos.push(hp);if(h.popularity!=null)pop.push(Number(h.popularity));if(h.odds!=null)odds.push(Number(h.odds))});return `<div class="model-row"><strong>${name}</strong><span>対象 ${target}・${sampleLabel(target)}</span><b>${target?(w/target*100).toFixed(1):'—'}%</b><small>TOP3 ${target?(p/target*100).toFixed(1):'—'}%（${ciLabel(p,target)}）・平均着順 ${pos.length?mean(pos).toFixed(2):'—'}・人気 ${pop.length?mean(pop).toFixed(1):'—'}・オッズ ${odds.length?mean(odds).toFixed(1):'—'}</small></div>`}).join('');
- const modelHtml=dashAccordion('models','モデル別成績','4モデル',modelRows,{open:true,summaryText:'勝率・複勝率'});
+ const modelRows=modelStats.map(([name,pick])=>{const m=modelPerformance(analysisRaces,pick);return `<div class="model-row"><strong>${name}</strong><span>対象 ${m.target}・${sampleLabel(m.target)}</span><b>${m.target?(m.wins/m.target*100).toFixed(1):'—'}%</b><small>TOP3 ${m.target?(m.top3/m.target*100).toFixed(1):'—'}%（${ciLabel(m.top3,m.target)}）・平均着順 ${m.positions.length?mean(m.positions).toFixed(2):'—'}・人気 ${m.popularity.length?mean(m.popularity).toFixed(1):'—'}・予想時オッズ ${m.forecastOdds.length?mean(m.forecastOdds).toFixed(1):'—'}</small><small class="roi-line">仮想単勝ROI ${m.roi==null?'—':m.roi.toFixed(1)+'%'}（的中 ${m.roiWins}/${m.roiN}・${sampleLabel(m.roiN)}）</small></div>`}).join('');
+ const modelHtml=dashAccordion('models','モデル別成績','4モデル',`${modelRows}<div class="metric-definition">仮想単勝ROIは各モデル1位へ毎回100円相当を投じた参考計算です。NAR結果に確定単勝オッズがある対象だけを使用し、欠損レースは除外します。実際の購入成績ではありません。</div>`,{open:true,summaryText:'勝率・TOP3・ROI'});
 
  const calibrationRows=(title,obj)=>`<h4>${title}</h4>`+Object.entries(obj).map(([band,g])=>{const predicted=g.predicted/g.n,actual=g.actual/g.n*100,diff=actual-predicted;return `<div class="calibration-row"><strong>${band}</strong><span>n=${g.n}・${sampleLabel(g.n)}・${ciLabel(g.actual,g.n)}</span><span>平均 ${predicted.toFixed(1)}% / 実績 ${actual.toFixed(1)}% / ${diff>=0?'+':''}${diff.toFixed(1)}pt</span></div>`}).join('');
  const valueRows=Object.entries(adv.valueTypes).map(([type,g])=>`<div class="calibration-row"><strong>${esc(type)}</strong><span>n=${g.n}・${sampleLabel(g.n)}</span><span>勝 ${pct(g.win,g.n)} / TOP3 ${pct(g.top3,g.n)} / 人気 ${g.pop.length?mean(g.pop).toFixed(1):'—'} / オッズ ${g.odds.length?mean(g.odds).toFixed(1):'—'}</span></div>`).join('');
@@ -966,7 +973,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,getStorageMode(){return researchStorageMode},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,getStorageMode(){return researchStorageMode},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
