@@ -1,8 +1,14 @@
-# CHASS KEIBA LAB Ver.9.9.4
+# CHASS KEIBA LAB Ver.9.9.5
+
+## Ver.9.9.5 D1 Binding Fix
+
+- Cloudflareダッシュボードで接続済みの正式Binding `DB` を `env.DB` で参照
+- 旧Binding名 `chass-keiba-lab-db` への依存を削除
+- health確認を `d1_binding_unavailable` / `d1_query_failed` / `d1_schema_error` に分類
 
 ## Ver.9.9.4 Cloud Research Sync
 
-- Cloudflare D1 binding `env["chass-keiba-lab-db"]` をそのまま利用
+- Cloudflare D1 binding `env.DB` を利用
 - D1をクラウド研究データ保存先、IndexedDBをローカルキャッシュ兼オフライン退避先として併用
 - `/api/db/health`、`/api/db/races`、`/api/db/sync` を追加（DELETE APIなし）
 - `predictionSnapshot` はD1でも挿入後に更新せず、結果・検証データだけを追記更新
