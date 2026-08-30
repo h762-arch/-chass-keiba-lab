@@ -1,6 +1,7 @@
 (() => {
 'use strict';
-const APP_VERSION='9.8.9';
+const APP_VERSION='9.9.0';
+const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
 const LEGACY_KEY='chass_v80_races';
@@ -14,7 +15,7 @@ let raceLoadGeneration=0,resultSyncGeneration=0,liveOddsGeneration=0;
 let quickExpanded=false;
 const dashboardUi={
  open:{models:true,calibration:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
- diagnosisFilter:'',raceType:'all',track:'all',period:'all',quality:'all',analysisQuality:'AB',raceSort:'new',raceLimit:10
+ diagnosisFilter:'',raceType:'all',track:'all',period:'all',quality:'all',analysisQuality:'AB',modelVersion:'all',raceSort:'new',raceLimit:10
 };
 const NAR_TRACKS={
   '盛岡':10,'水沢':11,'浦和':18,'船橋':19,'大井':20,'川崎':21,'笠松':22,'金沢':23,
@@ -433,7 +434,7 @@ function persist(validated=false){
  state.race=raceFromForm();const rid=raceId(state.race);if(!rid)return;
  const db=store.get(KEY,{}),old=db[rid];
  if(!state.finalSnapshot&&state.horses.length)makeSnapshot();
- const record={...old,...state,updatedAt:new Date().toISOString(),validated:validated||old?.validated||false};
+ const record={...old,...state,updatedAt:new Date().toISOString(),validated:validated||old?.validated||false,modelVersion:state.predictionSnapshot?.modelVersion||state.modelVersion||APP_VERSION,predictionCreatedAt:state.predictionSnapshot?.createdAt||state.predictionSnapshot?.generatedAt||state.predictionCreatedAt||null,resultAcquiredAt:state.resultSnapshot?.fetchedAt||state.resultFetchedAt||state.resultAcquiredAt||null};
  saveRaceRecord(rid,record);saveCurrentRace(rid);
 }
 function narCode(track){return NAR_TRACKS[track]||null}
@@ -595,6 +596,39 @@ function saveValidation(){
  if(f.length<3){alert('1〜3着を入力してください');return}
  saveFetchedResult(f,{silent:false,source:'手動修正保存'});
 }
+function createResearchBackup(){
+ return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||''};
+}
+function validateResearchBackup(data){
+ if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('バックアップ形式が不正です。');
+ if(data.format!=='CHASS_KEIBA_RESEARCH_BACKUP')throw new Error('CHASS研究バックアップではありません。');
+ const schema=Number(data.schemaVersion);if(!Number.isInteger(schema)||schema<1)throw new Error('schemaVersionが不正です。');
+ if(schema>BACKUP_SCHEMA_VERSION)throw new Error(`このバックアップは新しい形式です（schema ${schema}）。先にアプリを更新してください。`);
+ if(!data.races||typeof data.races!=='object'||Array.isArray(data.races))throw new Error('保存レースが含まれていません。');
+ return {schemaVersion:schema,raceCount:Object.keys(data.races).length,oddsCount:data.oddsHistory&&typeof data.oddsHistory==='object'&&!Array.isArray(data.oddsHistory)?Object.keys(data.oddsHistory).length:0};
+}
+function mergeResearchBackup(data,existing=raceCache){
+ validateResearchBackup(data);const merged={...existing};let imported=0,skipped=0,invalid=0;
+ for(const [sourceId,raw] of Object.entries(data.races)){
+   if(!raw||typeof raw!=='object'){invalid++;continue}
+   const record=cloneData(raw),id=raceId(record.race)||sourceId;if(!id){invalid++;continue}
+   migrateSnapshotRecord(record);const old=merged[id],incomingAt=Date.parse(record.updatedAt||record.resultAcquiredAt||'')||0,oldAt=Date.parse(old?.updatedAt||old?.resultAcquiredAt||'')||0;
+   if(old&&incomingAt<=oldAt){skipped++;continue}
+   merged[id]=record;imported++;
+ }
+ return {merged,imported,skipped,invalid};
+}
+function downloadResearchBackup(){
+ const data=createResearchBackup(),blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a'),stamp=data.exportedAt.slice(0,10).replaceAll('-','');a.href=url;a.download=`CHASS-research-backup-${stamp}-v${APP_VERSION}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);return data.counts;
+}
+async function importResearchBackup(file){
+ if(!file)throw new Error('ファイルを選択してください。');if(file.size>50*1024*1024)throw new Error('バックアップが50MBを超えています。');
+ let data;try{data=JSON.parse((await file.text()).replace(/^\uFEFF/,''))}catch{throw new Error('JSONを解析できません。')}
+ const result=mergeResearchBackup(data);raceCache=result.merged;store.set(KEY,raceCache);
+ const incomingOdds=data.oddsHistory&&typeof data.oddsHistory==='object'&&!Array.isArray(data.oddsHistory)?data.oddsHistory:{};for(const [id,history] of Object.entries(incomingOdds)){if(Array.isArray(history)&&history.length>(oddsHistoryCache[id]?.length||0))oddsHistoryCache[id]=history}store.set(ODDS_HISTORY,oddsHistoryCache);
+ if(!currentRaceCache&&data.currentRace&&raceCache[data.currentRace])store.set(CURRENT,data.currentRace);
+ renderDashboard();return result;
+}
 function getAllRaces(){
  const legacy=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
  const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&resultOrder(x).length>=3);
@@ -626,7 +660,7 @@ function migrateSnapshotRecord(r){
  if(!r.finalSnapshot?.top3?.length){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
  if(r.result?.finishOrder?.length>=3&&!r.resultSnapshot){r.resultSnapshot={schemaVersion:2,source:r.result.source||'legacy',fetchedAt:r.resultFetchedAt||r.result.at||now,finishOrder:r.result.finishOrder.map(Number),actualTimes:{...(r.result.actualTimes||r.actualTimes||{})},legacyDerived:true};changed=true}
  if(r.resultSnapshot&&!Array.isArray(r.resultSnapshot.horses)){const times=r.resultSnapshot.actualTimes||r.result?.actualTimes||r.actualTimes||{};r.resultSnapshot.horses=(r.resultSnapshot.finishOrder||[]).map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo:Number(horseNo),time:times[String(horseNo)]||''}));r.resultSnapshot.legacyDerived=true;changed=true}
- r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.snapshotSchemaVersion=2;
+ r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.predictionCreatedAt=r.predictionCreatedAt||r.predictionSnapshot?.createdAt||r.predictionSnapshot?.generatedAt||null;r.resultAcquiredAt=r.resultAcquiredAt||r.resultSnapshot?.fetchedAt||r.resultFetchedAt||null;r.snapshotSchemaVersion=2;
  return changed;
 }
 function horsePosition(r,h){const no=Number(h?.horseNo),i=resultOrder(r).indexOf(no);return i>=0?i+1:null}
@@ -856,11 +890,11 @@ function renderSavedRaces(races){
 }
 
 function renderDashboard(){
- const allRaces=getAllRaces(),tracks=[...new Set(allRaces.map(r=>r.race?.track).filter(Boolean))].sort(),now=new Date();
+ const allRaces=getAllRaces(),tracks=[...new Set(allRaces.map(r=>r.race?.track).filter(Boolean))].sort(),modelVersions=[...new Set(allRaces.map(r=>r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy'))].sort(),now=new Date();
  const daysAgo=date=>{const d=new Date(`${date}T00:00:00`);return Number.isFinite(d.getTime())?Math.floor((now-d)/86400000):Infinity};
  const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
- const races=allRaces.filter(r=>(dashboardUi.raceType==='all'||(dashboardUi.raceType==='central'?isCentral(r):!isCentral(r)))&&(dashboardUi.track==='all'||r.race?.track===dashboardUi.track)&&(dashboardUi.period==='all'||daysAgo(r.race?.raceDate)<=Number(dashboardUi.period))&&(dashboardUi.quality==='all'||validationQuality(r).grade===dashboardUi.quality));
- const filterBar=`<div class="dashboard-filterbar"><label>区分<select id="dashTypeFilter"><option value="all">全体</option><option value="central">中央</option><option value="local">地方</option></select></label><label>競馬場<select id="dashTrackFilter"><option value="all">全競馬場</option>${tracks.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label><label>期間<select id="dashPeriodFilter"><option value="all">全期間</option><option value="0">今日</option><option value="7">直近7日</option><option value="30">直近30日</option></select></label><label>一覧品質<select id="dashQualityFilter"><option value="all">全品質</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label><label>分析品質<select id="dashAnalysisQuality"><option value="AB">A/B以上</option><option value="A">Aのみ</option><option value="all">全品質</option></select></label></div>`;
+ const races=allRaces.filter(r=>(dashboardUi.raceType==='all'||(dashboardUi.raceType==='central'?isCentral(r):!isCentral(r)))&&(dashboardUi.track==='all'||r.race?.track===dashboardUi.track)&&(dashboardUi.period==='all'||daysAgo(r.race?.raceDate)<=Number(dashboardUi.period))&&(dashboardUi.quality==='all'||validationQuality(r).grade===dashboardUi.quality)&&(dashboardUi.modelVersion==='all'||(r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy')===dashboardUi.modelVersion));
+ const filterBar=`<div class="dashboard-filterbar"><label>区分<select id="dashTypeFilter"><option value="all">全体</option><option value="central">中央</option><option value="local">地方</option></select></label><label>競馬場<select id="dashTrackFilter"><option value="all">全競馬場</option>${tracks.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label><label>期間<select id="dashPeriodFilter"><option value="all">全期間</option><option value="0">今日</option><option value="7">直近7日</option><option value="30">直近30日</option></select></label><label>モデルVer.<select id="dashModelVersion"><option value="all">全Ver.</option>${modelVersions.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label><label>一覧品質<select id="dashQualityFilter"><option value="all">全品質</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label><label>分析品質<select id="dashAnalysisQuality"><option value="AB">A/B以上</option><option value="A">Aのみ</option><option value="all">全品質</option></select></label></div>`;
  document.querySelector('.dashboard-filterbar')?.remove();$('dashKpis').insertAdjacentHTML('beforebegin',filterBar);
  const horses=races.flatMap(frozenHorses),diamonds=horses.filter(x=>x.valueMark||x.mark?.includes?.('💎')),warnings=horses.filter(x=>x.warningMark||x.warning);
  const hit=(race,h)=>isTop3(race,h.horseNo),win=(race,h)=>horsePosition(race,h)===1;
@@ -918,7 +952,7 @@ function bindDashboardUi(){
  if($('savedRaceType')){$('savedRaceType').value=dashboardUi.raceType;$('savedRaceType').onchange=e=>{dashboardUi.raceType=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}}
  if($('savedRaceSort')){$('savedRaceSort').value=dashboardUi.raceSort;$('savedRaceSort').onchange=e=>{dashboardUi.raceSort=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}}
  if($('moreSavedRaces'))$('moreSavedRaces').onclick=()=>{dashboardUi.raceLimit+=10;dashboardUi.open.saved=true;renderDashboard()};
- const filters=[['dashTypeFilter','raceType'],['dashTrackFilter','track'],['dashPeriodFilter','period'],['dashQualityFilter','quality'],['dashAnalysisQuality','analysisQuality']];
+ const filters=[['dashTypeFilter','raceType'],['dashTrackFilter','track'],['dashPeriodFilter','period'],['dashModelVersion','modelVersion'],['dashQualityFilter','quality'],['dashAnalysisQuality','analysisQuality']];
  filters.forEach(([id,key])=>{const el=$(id);if(!el)return;el.value=dashboardUi[key];el.onchange=e=>{dashboardUi[key]=e.target.value;dashboardUi.raceLimit=10;renderDashboard()}});
  document.querySelectorAll('.open-saved-race').forEach(button=>button.onclick=()=>{const saved=store.get(KEY,{})[button.dataset.raceId]||store.get(LEGACY_KEY,{})[button.dataset.raceId];if(!saved)return;state=cloneData(saved);state.actualTimes=state.actualTimes||state.result?.actualTimes||{};fillRace(state.race);document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view==='predictionView'));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='predictionView'));render();requestAnimationFrame(()=>$('finalCard')?.scrollIntoView({behavior:'smooth',block:'start'}))});
 }
@@ -932,7 +966,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,initResearchStorage,getStorageMode(){return researchStorageMode},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,getStorageMode(){return researchStorageMode},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
@@ -957,6 +991,8 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView')renderDashboard()});
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=renderDashboard;
+if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
+if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
 if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
