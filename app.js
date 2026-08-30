@@ -38,7 +38,30 @@ function currentSelectionId(){return raceId({raceDate:$('autoRaceDate')?.value,t
 function setButtonBusy(id,busy,label=''){const b=$(id);if(!b)return;if(busy){b.dataset.idleText=b.textContent;b.disabled=true;b.setAttribute('aria-busy','true');if(label)b.textContent=label}else{b.disabled=false;b.removeAttribute('aria-busy');if(b.dataset.idleText)b.textContent=b.dataset.idleText;delete b.dataset.idleText}}
 const median=a=>{const b=a.filter(x=>x!=null).sort((x,y)=>x-y);if(!b.length)return null;const m=Math.floor(b.length/2);return b.length%2?b[m]:(b[m-1]+b[m])/2};
 const arr=v=>Array.isArray(v)?v.map(num).filter(x=>x!=null):typeof v==='string'?v.split(/[,\s/→>]+/).map(num).filter(x=>x!=null):num(v)==null?[]:[num(v)];
-const store={get(k,d){try{return JSON.parse(localStorage.getItem(k)||'')??d}catch{return d}},set(k,v){localStorage.setItem(k,JSON.stringify(v))}};
+const localStore={get(k,d){try{return JSON.parse(localStorage.getItem(k)||'')??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch{return false}}};
+const RESEARCH_DB='chass-keiba-research',RESEARCH_DB_VERSION=1;
+let researchDb=null,researchStorageMode='localStorage',storageReady=false;
+let raceCache=localStore.get(KEY,{}),oddsHistoryCache=localStore.get(ODDS_HISTORY,{}),currentRaceCache=localStore.get(CURRENT,'');
+function idbRequest(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB request failed'))})}
+function openResearchDb(){return new Promise((resolve,reject)=>{if(!('indexedDB' in window)){reject(new Error('IndexedDB unavailable'));return}const req=indexedDB.open(RESEARCH_DB,RESEARCH_DB_VERSION);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('races'))db.createObjectStore('races',{keyPath:'id'});if(!db.objectStoreNames.contains('oddsHistory'))db.createObjectStore('oddsHistory',{keyPath:'raceId'});if(!db.objectStoreNames.contains('settings'))db.createObjectStore('settings',{keyPath:'key'})};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB open failed'));req.onblocked=()=>reject(new Error('IndexedDB upgrade blocked'))})}
+async function idbGetAll(name){return idbRequest(researchDb.transaction(name,'readonly').objectStore(name).getAll())}
+function idbPut(name,value){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite');tx.objectStore(name).put(value);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
+function idbPutMany(name,values){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite'),objectStore=tx.objectStore(name);values.forEach(value=>objectStore.put(value));tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
+function queueStorageWrite(promise,fallback){promise.catch(()=>{researchStorageMode='localStorage-fallback';fallback?.()})}
+function saveRaceRecord(id,data){raceCache[id]=data;if(researchDb)queueStorageWrite(idbPut('races',{id,data,updatedAt:data.updatedAt||new Date().toISOString()}),()=>localStore.set(KEY,raceCache));else localStore.set(KEY,raceCache)}
+function saveOddsHistory(id,history){oddsHistoryCache[id]=history;if(researchDb)queueStorageWrite(idbPut('oddsHistory',{raceId:id,history,updatedAt:new Date().toISOString()}),()=>localStore.set(ODDS_HISTORY,oddsHistoryCache));else localStore.set(ODDS_HISTORY,oddsHistoryCache)}
+function saveCurrentRace(id){currentRaceCache=id;localStore.set(CURRENT,id);if(researchDb)queueStorageWrite(idbPut('settings',{key:'currentRace',value:id}),null)}
+const store={get(k,d){if(k===KEY)return raceCache;if(k===ODDS_HISTORY)return oddsHistoryCache;if(k===CURRENT)return currentRaceCache;return localStore.get(k,d)},set(k,v){if(k===KEY){raceCache=v;if(researchDb)queueStorageWrite(idbPutMany('races',Object.entries(v).map(([id,data])=>({id,data,updatedAt:data.updatedAt||new Date().toISOString()}))),()=>localStore.set(KEY,raceCache));else localStore.set(KEY,v);return}if(k===ODDS_HISTORY){oddsHistoryCache=v;if(researchDb)queueStorageWrite(idbPutMany('oddsHistory',Object.entries(v).map(([raceId,history])=>({raceId,history,updatedAt:new Date().toISOString()}))),()=>localStore.set(ODDS_HISTORY,oddsHistoryCache));else localStore.set(ODDS_HISTORY,v);return}if(k===CURRENT){saveCurrentRace(v);return}localStore.set(k,v)}};
+async function initResearchStorage(){
+ try{
+   researchDb=await openResearchDb();const [savedRaces,savedOdds,settings]=await Promise.all([idbGetAll('races'),idbGetAll('oddsHistory'),idbGetAll('settings')]);
+   for(const row of savedRaces){const local=raceCache[row.id],localAt=Date.parse(local?.updatedAt||'')||0,dbAt=Date.parse(row.data?.updatedAt||row.updatedAt||'')||0;if(!local||dbAt>localAt)raceCache[row.id]=row.data}
+   for(const row of savedOdds){if(!oddsHistoryCache[row.raceId])oddsHistoryCache[row.raceId]=row.history||[]}
+   const savedCurrent=settings.find(x=>x.key==='currentRace')?.value;if(savedCurrent)currentRaceCache=savedCurrent;
+   await Promise.all([idbPutMany('races',Object.entries(raceCache).map(([id,data])=>({id,data,updatedAt:data.updatedAt||new Date().toISOString()}))),idbPutMany('oddsHistory',Object.entries(oddsHistoryCache).map(([raceId,history])=>({raceId,history,updatedAt:new Date().toISOString()}))),idbPut('settings',{key:'migration',value:{schemaVersion:1,completedAt:new Date().toISOString(),source:'localStorage',legacyPreserved:true}})]);
+   researchStorageMode='indexedDB';localStore.set(CURRENT,currentRaceCache);
+ }catch(e){researchDb=null;researchStorageMode='localStorage-fallback';console.warn('IndexedDB fallback:',e?.message||e)}
+}
 
 let state={race:{},horses:[],result:null,actualTimes:{},finalSnapshot:null,predictionSnapshot:null,marketSnapshot:null};
 let resultFormRaceId='';
@@ -269,7 +292,7 @@ function render(){
  $('chaosBadge').textContent=`波乱 ${r.chaos??'—'}%`;$('paceBadge').textContent=`展開 ${r.pace||'—'}`;$('biasText').textContent=`馬場 ${r.bias||r.trackCondition||'—'}`;
  const prob=h.filter(x=>x.win!=null&&x.place!=null).length,time=h.filter(x=>x.predictedTime).length,marketState=getMarketDisplayState(r,h);
  const names=new Set(h.map(x=>cleanName(x.horseName))); const bad=h.some(x=>!x.horseName)||names.size!==h.length;
- $('integrityGrid').innerHTML=[['レースID',rid||'—'],['AI確率',`${prob}/${h.length}頭`],['予想TIME',`${time}/${h.length}頭`],['市場',marketState.label],['データ状態',bad?'要確認':'正常'],['生成方式',r.autoGenerated?'NAR自動':'JSON'],['評価モード',r.dataMode||'—']].map(([a,b])=>`<div><span>${a}</span><strong>${esc(b)}</strong></div>`).join('');
+ $('integrityGrid').innerHTML=[['レースID',rid||'—'],['AI確率',`${prob}/${h.length}頭`],['予想TIME',`${time}/${h.length}頭`],['市場',marketState.label],['データ状態',bad?'要確認':'正常'],['保存方式',researchStorageMode==='indexedDB'?'IndexedDB':'互換保存'],['生成方式',r.autoGenerated?'NAR自動':'JSON'],['評価モード',r.dataMode||'—']].map(([a,b])=>`<div><span>${a}</span><strong>${esc(b)}</strong></div>`).join('');
  if($('abilitySummary'))$('abilitySummary').textContent=`能力 ${prob}/${h.length||'—'}`;
  if($('dateSummary'))$('dateSummary').textContent=r.raceDate?String(r.raceDate).slice(5).replace('-','/'):'日付 —';
  if($('distanceSummary'))$('distanceSummary').textContent=r.distance?`${r.surface==='芝'?'芝':'ダ'}${r.distance}m`:'距離 —';
@@ -405,8 +428,8 @@ function persist(validated=false){
  state.race=raceFromForm();const rid=raceId(state.race);if(!rid)return;
  const db=store.get(KEY,{}),old=db[rid];
  if(!state.finalSnapshot&&state.horses.length)makeSnapshot();
- db[rid]={...old,...state,updatedAt:new Date().toISOString(),validated:validated||old?.validated||false};
- store.set(KEY,db);store.set(CURRENT,rid);
+ const record={...old,...state,updatedAt:new Date().toISOString(),validated:validated||old?.validated||false};
+ saveRaceRecord(rid,record);saveCurrentRace(rid);
 }
 function narCode(track){return NAR_TRACKS[track]||null}
 function applyMarketOdds(items, acquiredAt){
@@ -418,7 +441,13 @@ function applyMarketOdds(items, acquiredAt){
  abilityMarks(state.horses); applyValueFlags(state.horses); state.race.oddsType='実オッズ'; state.race.oddsUpdatedAt=acquiredAt||new Date().toISOString();
  if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)};
  makeSnapshot();
- const rid=raceId(raceFromForm()); if(rid){const hist=store.get(ODDS_HISTORY,{});(hist[rid]??=[]).push({at:state.race.oddsUpdatedAt,odds:valid});hist[rid]=hist[rid].slice(-120);store.set(ODDS_HISTORY,hist)}
+ const rid=raceId(raceFromForm());
+ if(rid){
+   const history=[...(store.get(ODDS_HISTORY,{})[rid]||[])],previous=history.at(-1);
+   const signature=list=>JSON.stringify((list||[]).map(x=>[Number(x.horseNo),num(x.odds),num(x.popularity)]));
+   if(history.length<24&&(!previous||signature(previous.odds)!==signature(valid)))history.push({at:state.race.oddsUpdatedAt,odds:valid});
+   saveOddsHistory(rid,history);
+ }
  return valid.length;
 }
 async function syncLiveOdds(silent=false){
@@ -874,7 +903,15 @@ if($('quickList')){
  $('quickList').onkeydown=e=>{if(e.key!=='Enter'&&e.key!==' ')return;const row=e.target.closest?.('.quick-row[data-horse-no]');if(row){e.preventDefault();openHorseDetail(row.dataset.horseNo)}};
 }
 
-migrateLegacy();setVersion();
-const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});
-if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.predictionSaved=state.predictionSaved??!!state.predictionSnapshot;state.resultStatus=state.result?.finishOrder?.length>=3?'fetched':state.resultStatus||'pending';state.validationCompleted=state.validationCompleted??!!(state.validated&&state.result?.finishOrder?.length>=3);state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
+async function bootApp(){
+ ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=true});
+ migrateLegacy();
+ await initResearchStorage();
+ migrateLegacy();
+ storageReady=true;setVersion();
+ ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});
+ const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});
+ if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.predictionSaved=state.predictionSaved??!!state.predictionSnapshot;state.resultStatus=state.result?.finishOrder?.length>=3?'fetched':state.resultStatus||'pending';state.validationCompleted=state.validationCompleted??!!(state.validated&&state.result?.finishOrder?.length>=3);state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
+}
+bootApp().catch(error=>{storageReady=true;researchStorageMode='localStorage-fallback';console.error('Storage initialization failed:',error);['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()});
 })();
