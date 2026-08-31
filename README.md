@@ -1,4 +1,8 @@
-# CHASS KEIBA LAB Ver.9.9.22
+# CHASS KEIBA LAB Ver.9.9.25
+
+## Ver.9.9.25 Automatic Post-Race Result Queue
+
+Ver.9.9.22の安定した `/api/nar/race`・`/api/nar/sync`・`/api/nar/odds` を維持したまま、予想保存済みレースを発走時刻+10分から低頻度で自動回収します。ブラウザ起動中は60秒ごとにdueキューだけを確認し、Cloudflare Cronは5分ごと・最大5Rを逐次処理します。
 
 ## Ver.9.9.22 Stable Transport Rebase
 

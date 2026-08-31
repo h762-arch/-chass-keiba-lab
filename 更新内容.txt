@@ -1,4 +1,16 @@
-CHASS KEIBA LAB Ver.9.9.22
+CHASS KEIBA LAB Ver.9.9.25
+Automatic Post-Race Result Queue
+
+- 予想保存時にraceId単位の結果待ちキューへ登録
+- 発走予定+10分から5/5/10/15分間隔で再確認
+- ブラウザ60秒scheduler（due時のみ通信）
+- Cloudflare Cron 5分間隔、最大5Rを完全逐次処理
+- 手動予想・手動結果・現在オッズを自動回収より優先
+- Historical Collectorより自動結果回収を優先
+- D1既存race_json/statusを利用（DROP/DELETE/new tableなし）
+- predictionSnapshot・AI・TIME・穴馬ロジック変更なし
+
+旧版記録: Ver.9.9.22
 Stable Transport Rebase
 
 ・通常結果取得を /api/nar/sync へ統一

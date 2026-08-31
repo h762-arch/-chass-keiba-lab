@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.22</title>
+  <title>チャス競馬研究所 Ver.9.9.25</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.22</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.25</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -60,7 +60,7 @@
     <div class="history-progress"><div><strong id="historyProgressText">待機</strong><span id="historyLast"></span></div><div class="history-progress-rail"><i id="historyProgressBar"></i></div><div id="historyCounts" class="history-counts"></div></div>
     <p class="muted history-note">過去研究は <b>historical_research / backtest_prediction</b> として通常のリアルタイム予想と区別します。結果は別経路で保存し、既取得race_idは上書きしません。iPhoneでは画面を開いたまま少量ずつ収集し、途中停止後は続きから再開できます。</p>
   </div>
-</details><details class="research-backup"><summary>研究データのバックアップ</summary><div><button id="exportResearch" type="button" class="ghost">JSON書き出し</button><label class="ghost backup-import">JSON復元<input id="researchImportFile" type="file" accept=".json,application/json" hidden></label></div><p id="backupStatus" class="muted">既存データを消さず、新しい保存レースだけを安全に統合します。</p></details><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div><p class="dashboard-footnote">※ オンライン時はD1、利用不能時はIndexedDBの保存済みレースから集計します。</p></section></section>
+</details><section class="auto-result-card" aria-labelledby="autoResultTitle"><div class="auto-result-head"><div><span class="eyebrow">AUTO RESULT</span><strong id="autoResultTitle">レース後結果を自動取得</strong></div><label class="switch"><input id="autoResultToggle" type="checkbox" checked><span></span></label></div><div class="auto-result-counts"><span>待機 <b id="autoResultWaiting">0</b>R</span><span>取得済 <b id="autoResultDone">0</b>R</span><span>再試行 <b id="autoResultRetry">0</b>R</span></div><small id="autoResultStatus">発走時刻+10分から低頻度で確認</small></section><details class="research-backup"><summary>研究データのバックアップ</summary><div><button id="exportResearch" type="button" class="ghost">JSON書き出し</button><label class="ghost backup-import">JSON復元<input id="researchImportFile" type="file" accept=".json,application/json" hidden></label></div><p id="backupStatus" class="muted">既存データを消さず、新しい保存レースだけを安全に統合します。</p></details><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div><p class="dashboard-footnote">※ オンライン時はD1、利用不能時はIndexedDBの保存済みレースから集計します。</p></section></section>
 </main>
 <template id="horseTpl"><article class="horse-row"><div class="horse-head"><div class="horse-no"></div><div><strong class="horse-mark-name"></strong><small class="muted horse-sub"></small></div><div class="score-pill overall-pill"></div></div><div class="horse-metrics"><div><span>AI勝率</span><strong class="m-win">—</strong></div><div><span>AI TOP3率</span><strong class="m-place">—</strong></div><div><span>TIME</span><strong class="m-time">—</strong></div><div><span>総合</span><strong class="m-overall">—</strong></div></div><details class="horse-details"><summary>詳細分析を見る</summary><div class="horse-details-body"><div class="facts"></div><div class="logic"></div><p class="reason"></p></div></details></article></template>
 <script src="/app.js"></script>

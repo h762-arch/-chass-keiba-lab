@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.9.22";
+const VERSION="9.9.25";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -64,7 +64,9 @@ function parseRaceMeta(html){
   ].filter(Boolean);
   raceName=candidates.find(x=>!/(地方競馬情報サイト|NAR|Keiba|競馬情報)/i.test(x)&&x.length>=2&&x.length<=100)||"";
   raceName=raceName.replace(/^\d{1,2}R\s*/,"").trim();
-  return {raceName,distance,weather,trackCondition,surface:/芝\s*\d{3,4}\s*m/.test(text)?"芝":"ダート"};
+  const post=text.match(/(?:発走(?:予定)?(?:時刻)?\s*[:：]?\s*)(\d{1,2})[:：](\d{2})/)||text.match(/(\d{1,2})[:：](\d{2})\s*発走/);
+  const postTime=post?`${String(Number(post[1])).padStart(2,"0")}:${post[2]}`:"";
+  return {raceName,distance,weather,trackCondition,postTime,surface:/芝\s*\d{3,4}\s*m/.test(text)?"芝":"ダート"};
 }
 function parseRaceCard(html){
   const out=[];
