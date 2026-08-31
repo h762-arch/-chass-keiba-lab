@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.12';
+const APP_VERSION='9.9.13';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -38,6 +38,26 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
 const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
 function requestError(code,message,status=0){const e=new Error(message);e.code=code;e.status=status;return e}
 async function responseJson(res){try{return await res.json()}catch{throw requestError('parser_error','API応答を解析できませんでした。',res.status)}}
+async function fetchNarSyncApi(url,{signal,attempts=3}={}){
+ let lastError=null;
+ for(let attempt=1;attempt<=attempts;attempt++){
+  if(attempt>1)await new Promise((resolve,reject)=>{const t=setTimeout(resolve,attempt===2?900:1800);if(signal){const abort=()=>{clearTimeout(t);reject(Object.assign(new Error('aborted'),{name:'AbortError'}))};if(signal.aborted)return abort();signal.addEventListener('abort',abort,{once:true})}});
+  try{
+   const res=await fetch(url,{cache:'no-store',signal});
+   let data;try{data=await responseJson(res)}catch(error){if(res.ok)throw error;data={error:error.message,errorCode:'parser_error'}}
+   if(res.ok)return {res,data,clientAttemptCount:attempt};
+   const code=data?.errorCode||'nar_temporary',retryable=['network_error','nar_timeout','nar_temporary'].includes(code)||[429,500,502,503,504].includes(Number(res.status));
+   const error=requestError(code,data?.error||'取得失敗',res.status);error.attemptCount=data?.attemptCount;error.urlType=data?.urlType;error.fallbackTried=data?.fallbackTried;
+   if(!retryable||attempt===attempts)throw error;lastError=error;
+  }catch(error){
+   if(error?.name==='AbortError')throw error;
+   if(error instanceof TypeError&&!error.code)error.code='network_error';
+   const retryable=['network_error','nar_timeout','nar_temporary'].includes(error?.code)||[429,500,502,503,504].includes(Number(error?.status));
+   lastError=error;if(!retryable||attempt===attempts)throw error;
+  }
+ }
+ throw lastError||requestError('network_error','通信に失敗しました。');
+}
 function errorLabel(e){
  if(e?.code==='race_not_found'||e?.status===404)return '指定レースが見つかりません。';
  if(e?.code==='parser_error')return '公式ページの解析に失敗しました。';
@@ -460,8 +480,8 @@ async function loadAutoRace(){
  $('autoRaceStatus').textContent='NAR公式の過去走・同距離時計・距離/コース適性を解析しています…';
  try{
    const u=`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`;
-   const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
-   if(!res.ok){const error=requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);error.attemptCount=d.attemptCount;error.urlType=d.urlType;throw error}
+   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:3}),res=apiFetch.res,d=apiFetch.data;
+   d.clientAttemptCount=apiFetch.clientAttemptCount;
    if(!isCurrent())throw requestError('stale_request','古いレース取得を破棄しました。');
    if(!Array.isArray(d.horses)||d.horses.length<2)throw requestError('parser_error','出走馬データを取得できませんでした');
    const root=buildAbilityRoot(d,date,track,raceNo);
@@ -601,8 +621,8 @@ async function syncNar(options={}){
  try{
    // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
    if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
-   const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
-   if(!res.ok){const error=requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);error.attemptCount=d.attemptCount;error.urlType=d.urlType;throw error}
+   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:3}),res=apiFetch.res,d=apiFetch.data;
+   d.clientAttemptCount=apiFetch.clientAttemptCount;
    if(!isCurrent())throw requestError('stale_request','古い結果取得を破棄しました。');
 
    if(d.actualTimes&&typeof d.actualTimes==='object'){
@@ -624,7 +644,7 @@ async function syncNar(options={}){
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,urlType:d.urlType||'RaceMarkTable',checkedAt:d.checkedAt||state.resultFetchCheckedAt};
+   state.resultFetchAudit={errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,clientAttemptCount:d.clientAttemptCount||1,urlType:d.urlType||'RaceMarkTable',fallbackUsed:!!d.fallbackUsed,fallbackTried:!!d.fallbackTried,checkedAt:d.checkedAt||state.resultFetchCheckedAt};
    state.resultFetchError='';state.resultErrorType='';
    if(complete){
      // 取得時点の結果・最終オッズ・実走TIMEを一体で保存する。
@@ -642,7 +662,7 @@ async function syncNar(options={}){
    const base=`NAR公式反映：着順 ${d.finishOrder?.slice(0,3).join('-')||'未確定'} / 全馬結果 ${d.results?.length||0}頭 / 実走TIME ${Object.keys(d.actualTimes||{}).length}頭`;
    const qualityWarning=complete&&d.quality&&(d.quality.actualTimeRate<70||d.quality.resultParseRate<100)?' / データ要確認':'';
    $('narStatus').textContent=complete
-     ? `${base} / 検証結果まで自動保存済み${qualityWarning}`
+     ? `${base} / 検証結果まで自動保存済み${d.fallbackUsed?' / 予備経路で取得':''}${qualityWarning}`
      : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`結果待ち｜公式結果はまだ公開されていません。予想は保存済みです。`;
    return {complete:complete||alreadyComplete,pending:!complete&&!alreadyComplete,status:complete||alreadyComplete?'fetched':'pending',data:d};
   }catch(e){

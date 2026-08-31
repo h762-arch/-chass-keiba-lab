@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.9.12";
+export const VERSION="9.9.13";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(e?.code==='nar_timeout'||/timeout|タイムアウト/i.test(raw))errorCode='nar_timeout';else if(e?.code==='parser_error'||/parse|解析/i.test(raw))errorCode='parser_error';else if(e?.code==='network_error'||/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode,httpStatus:status||null,attemptCount:Number(e?.attemptCount)||1,urlType:e?.urlType||null,checkedAt:new Date().toISOString()}}
 export function getResearchDb(env){return env?.DB||null}
@@ -55,7 +55,31 @@ function plausibleHorseName(value=""){
 async function fetchText(url){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);try{const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow",signal:controller.signal});if(!r.ok){const e=new Error(`NAR HTTP ${r.status}`);e.status=r.status;throw e}return await r.text()}catch(error){if(error?.name==='AbortError'){const e=new Error('NAR通信がタイムアウトしました');e.code='nar_timeout';throw e}if(error instanceof TypeError&&!error.code)error.code='network_error';throw error}finally{clearTimeout(timer)}}
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function retryableNarError(error){return error?.code==='network_error'||error?.code==='nar_timeout'||[429,500,502,503,504].includes(Number(error?.status))}
-export async function fetchNarResultWithRetry(url,{attempts=3,delays=[0,700,1500],fetcher=fetchText,sleeper=wait}={}){let lastError;for(let attempt=1;attempt<=attempts;attempt++){if(delays[attempt-1])await sleeper(delays[attempt-1]);try{return {html:await fetcher(url),attemptCount:attempt,urlType:'RaceMarkTable'}}catch(error){lastError=error;error.attemptCount=attempt;error.urlType='RaceMarkTable';if(!retryableNarError(error)||attempt===attempts)throw error}}throw lastError}
+export async function fetchNarResultWithRetry(url,{attempts=3,delays=[0,700,1500],fetcher=fetchText,sleeper=wait,urlType='RaceMarkTable'}={}){let lastError;for(let attempt=1;attempt<=attempts;attempt++){if(delays[attempt-1])await sleeper(delays[attempt-1]);try{return {html:await fetcher(url),attemptCount:attempt,urlType}}catch(error){lastError=error;error.attemptCount=attempt;error.urlType=urlType;if(!retryableNarError(error)||attempt===attempts)throw error}}throw lastError}
+export async function fetchNarResultResilient(primaryUrl,fallbackUrl,{fetcher=fetchText,sleeper=wait}={}){
+ const endpoints=[
+  {url:primaryUrl,urlType:'RaceMarkTable',attempts:3,delays:[0,700,1600]},
+  {url:fallbackUrl,urlType:'RaceMarkTable_ipat',attempts:2,delays:[500,1400]}
+ ].filter(x=>x.url);
+ let lastError=null,firstPending=null,totalAttempts=0;
+ for(const ep of endpoints){
+  try{
+   const fetched=await fetchNarResultWithRetry(ep.url,{attempts:ep.attempts,delays:ep.delays,fetcher,sleeper,urlType:ep.urlType});
+   totalAttempts+=fetched.attemptCount;
+   const parsed=parseResult(fetched.html);
+   const payload={...fetched,parsed,totalAttemptCount:totalAttempts,fallbackUsed:ep.urlType!=='RaceMarkTable'};
+   if(parsed.finishOrder.length>=3)return payload;
+   if(!firstPending)firstPending=payload;
+  }catch(error){
+   totalAttempts+=Number(error?.attemptCount)||1;lastError=error;
+   // 404 is endpoint-specific; try the alternate endpoint before giving up.
+   if(!retryableNarError(error)&&Number(error?.status)!==404)break;
+  }
+ }
+ if(firstPending)return {...firstPending,totalAttemptCount:totalAttempts,fallbackTried:endpoints.length>1};
+ if(lastError){lastError.attemptCount=totalAttempts||lastError.attemptCount;lastError.fallbackTried=endpoints.length>1;throw lastError}
+ const error=new Error('NAR結果取得経路を利用できません');error.code='network_error';error.attemptCount=totalAttempts||1;error.fallbackTried=endpoints.length>1;throw error;
+}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
 const stddev=a=>{const values=(a||[]).filter(Number.isFinite);if(values.length<2)return null;const avg=mean(values);return Math.sqrt(mean(values.map(x=>(x-avg)**2)))};
@@ -312,13 +336,13 @@ export default{
   }
   if(u.pathname==="/api/nar/odds"||u.pathname==="/api/nar/sync"){
     const code=u.searchParams.get("code"),date=u.searchParams.get("date"),race=u.searchParams.get("race");if(!code||!date||!race)return json({error:"code,date,race are required"},400);
-    const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;const urls={result:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`};
+    const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;const urls={result:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,resultIpat:`https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/RaceMarkTable_ipat?${q}`,odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`};
     try{
       if(u.pathname==="/api/nar/odds"){const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});}
-      const [resultFetch,oh]=await Promise.all([fetchNarResultWithRetry(urls.result),fetchText(urls.odds).catch(()=>"")]),rh=resultFetch.html,rr=parseResult(rh),oo=parseTanFuku(oh),meta=parseRaceMeta(rh),om=new Map(oo.map(x=>[Number(x.horseNo),x]));
+      const [resultFetch,oh]=await Promise.all([fetchNarResultResilient(urls.result,urls.resultIpat),fetchText(urls.odds).catch(()=>"")]),rh=resultFetch.html,rr=resultFetch.parsed||parseResult(rh),oo=parseTanFuku(oh),meta=parseRaceMeta(rh),om=new Map(oo.map(x=>[Number(x.horseNo),x]));
       rr.results=rr.results.map(x=>({...x,finalOdds:x.finalOdds??om.get(Number(x.horseNo))?.odds??null,popularity:x.popularity??om.get(Number(x.horseNo))?.popularity??null}));
       const total=rr.results.length,timeCount=rr.results.filter(x=>x.time).length,nameCount=rr.results.filter(x=>x.horseName).length,detailCount=rr.results.filter(x=>x.last3f!=null||x.cornerPositions||x.bodyWeight!=null).length;
-      return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,resultMeta:{weather:meta.weather,trackCondition:meta.trackCondition},quality:{resultRows:total,resultParseRate:rr.parserFallback?50:total?100:0,actualTimeRate:total?Math.round(100*timeCount/total):0,resultHorseNameRate:total?Math.round(100*nameCount/total):0,resultDetailRate:total?Math.round(100*detailCount/total):0,parser:rr.parserFallback?'legacy-fallback':'header-mapped-v1'},acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'result_unpublished':'available',attemptCount:resultFetch.attemptCount,urlType:resultFetch.urlType,checkedAt:new Date().toISOString()});
+      return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,resultMeta:{weather:meta.weather,trackCondition:meta.trackCondition},quality:{resultRows:total,resultParseRate:rr.parserFallback?50:total?100:0,actualTimeRate:total?Math.round(100*timeCount/total):0,resultHorseNameRate:total?Math.round(100*nameCount/total):0,resultDetailRate:total?Math.round(100*detailCount/total):0,parser:rr.parserFallback?'legacy-fallback':'header-mapped-v1'},acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'result_unpublished':'available',attemptCount:resultFetch.totalAttemptCount||resultFetch.attemptCount,urlType:resultFetch.urlType,fallbackUsed:!!resultFetch.fallbackUsed,fallbackTried:!!resultFetch.fallbackTried,checkedAt:new Date().toISOString()});
     }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
