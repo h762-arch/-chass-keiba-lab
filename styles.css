@@ -427,3 +427,19 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 .history-actions{display:grid;grid-template-columns:2fr 1fr 1fr;gap:7px;margin-top:12px}.history-actions button{min-height:46px;padding:8px;font-size:12px}
 .history-progress{margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:12px}.history-progress>div:first-child{display:flex;justify-content:space-between;gap:8px;font-size:11px}.history-progress #historyLast{color:var(--muted);text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-progress-rail{height:7px;margin:8px 0;background:rgba(255,255,255,.07);border-radius:999px;overflow:hidden}.history-progress-rail i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}.history-counts{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;font-size:10px;color:var(--muted)}.history-note{font-size:10px;line-height:1.55;margin:10px 0 0}
 @media(max-width:430px){.history-goals{grid-template-columns:1fr 1fr}.history-goals>*:first-child{grid-column:1/-1}.history-controls-row{grid-template-columns:1fr 1fr}.history-controls-row label:first-child{grid-column:1/-1}.history-track-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.history-actions{grid-template-columns:1fr 1fr}.history-actions #historyStart{grid-column:1/-1}.history-progress>div:first-child{display:grid}.history-progress #historyLast{text-align:left}.history-counts{grid-template-columns:1fr 1fr}}
+
+
+/* Ver.9.9.12 D1 summary clarity */
+.cloud-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.cloud-stat{min-width:0;border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:rgba(8,23,42,.44);display:flex;flex-direction:column;gap:2px}
+.cloud-stat span{font-size:11px;color:var(--muted);font-weight:800;letter-spacing:.02em}
+.cloud-stat strong{font-size:22px;line-height:1.05;color:var(--text);font-variant-numeric:tabular-nums}
+.cloud-stat small{font-size:10px;line-height:1.35;color:var(--muted)}
+.cloud-stat-wide{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}
+.cloud-stat-wide strong{font-size:18px}
+@media (max-width:390px){
+  .cloud-summary-grid{gap:6px}
+  .cloud-stat{padding:9px 10px}
+  .cloud-stat strong{font-size:20px}
+  .cloud-stat span{font-size:10px}
+}
