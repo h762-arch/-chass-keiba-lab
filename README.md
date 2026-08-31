@@ -1,12 +1,13 @@
-# CHASS KEIBA LAB Ver.9.9.26
+# CHASS KEIBA LAB Ver.9.9.27
 
-## Ver.9.9.26 Race Volatility Intelligence
+## Ver.9.9.27 Prediction Axis Reinforcement
 
-- 予想時点のAI分布・能力差・TIME差・市場乖離・危険人気馬・穴馬密度と、過去の検証済み類似レースを組み合わせて0〜100の波乱指数を算出します。
-- Upset ScoreとStability Scoreを分離し、類似レースは類似度による加重平均、少標本時は50%へ保守的に縮小します。
-- 波乱指数・信頼度・類似件数・類似波乱率・順当度・理由を固定predictionSnapshotへ保存します。
-- 検証ダッシュボードへ波乱指数較正（高波乱群の実波乱率、低波乱群の順当率、MAE、Brier相当、7/10人気以下TOP3）を追加します。
-- NAR通信、自動結果取得、Historical Collector、D1 schema、AI・TIME・穴馬ロジックは変更していません。
+- `speed_ceiling`、`place_stability`、`pace_fit`、`distance_change_fit`、`transfer_level`、`condition_progress`、`prediction_consensus`、`race_confidence` を独立した補助軸として算出します。
+- JRA等の転入元、距離短縮、叩き2戦目を固定ボーナスにせず、確認できる走破・条件・傾向データがある場合だけ評価します。
+- 勝ち候補と相手安定候補を分け、人気薄で複勝安定性の高い馬を `place_longshot_score` で候補化します。
+- 新軸は `shadow` 候補モデルです。予想時点Snapshotへ固定保存し、現行モデルとの読み取り専用walk-forward比較をダッシュボードに表示します。
+- 実データでTOP3捕捉・相手穴捕捉・確率較正の改善を確認するまで、現行AI勝率・AI3着内率・FINAL・穴馬印を自動置換しません。
+- Ver.9.9.26の波乱指数式、NAR通信、自動結果取得、Historical Collector、D1 schemaは変更していません。
 
 ## Ver.9.9.25 Automatic Post-Race Result Queue
 

@@ -1,13 +1,21 @@
-CHASS KEIBA LAB Ver.9.9.26
+CHASS KEIBA LAB Ver.9.9.27
+Prediction Axis Reinforcement
+
+- 勝ち切り能力と複勝安定性を分離した8補助軸を追加
+- 距離変更・転入・叩きを、確認可能な根拠がある場合だけ評価
+- 相手穴専用 place_longshot_score と候補印 ◎○▲△☆ をshadow計算
+- Race Confidenceを波乱指数とは別指標として追加
+- 予想Snapshotへ補助軸・候補確率・候補印を固定保存
+- ダッシュボードへ現行/候補モデル比較、各軸80以上の実TOP3率を追加
+- walk-forward改善確認前は現行AI確率・FINAL・穴馬印を置換しない
+- NAR通信、自動結果取得、D1 schema、波乱指数式は変更なし
+
+旧版記録: Ver.9.9.26
 Race Volatility Intelligence
 
 - 過去の検証済み類似レースを類似度加重して波乱率・順当率を算出
-- AI上位団子度、市場乖離、危険人気馬、穴馬密度、TIME接近度、展開不確実性をUpset Scoreへ反映
-- AI突出、能力差、TIME差、人気整合、類似順当率をStability Scoreへ反映
-- データ不足時は50%方向へ縮小し、指数とは別に信頼度を保存
+- Upset ScoreとStability Scoreを分離し、少標本時は50%方向へ縮小
 - predictionSnapshotへ波乱指数と説明情報を固定保存
-- レース上部と検証ダッシュボードへ波乱指数・較正指標を追加
-- NAR通信、自動結果取得、D1 schema、AI・TIME・穴馬ロジックは変更なし
 
 旧版記録: Ver.9.9.25
 Automatic Post-Race Result Queue
