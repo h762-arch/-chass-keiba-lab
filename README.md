@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.6
+# CHASS KEIBA LAB Ver.9.9.7
+
+## Ver.9.9.7 D1 Validation Source Reconciliation
+
+- D1の`races`・`predictions`・`results`を読み取り結合し、結果テーブルだけに残る公式結果を安全に復元
+- オンライン時の検証母集団をCloudflare D1、IndexedDBをキャッシュ・オフライン退避として明確化
+- 「クラウドへ同期」と「クラウドから復元」を分離
+- D1予想保存・結果取得済・検証可能・結果未取得・検証除外を表示
+- race_idごとの除外理由を表示し、予想Snapshotは上書き・再計算しない
 
 ## Ver.9.9.6 D1 Differential Sync Optimization
 

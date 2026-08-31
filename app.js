@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.6';
+const APP_VERSION='9.9.7';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -53,6 +53,7 @@ let researchDb=null,researchStorageMode='localStorage',storageReady=false;
 let raceCache=localStore.get(KEY,{}),oddsHistoryCache=localStore.get(ODDS_HISTORY,{}),currentRaceCache=localStore.get(CURRENT,'');
 const CLOUD_PENDING_KEY='chass_cloud_pending_v1';
 let cloudPending=new Set(localStore.get(CLOUD_PENDING_KEY,[])),cloudState={available:false,source:'local',status:'local',error:'',lastSyncedAt:null};
+let cloudResearchAudit={counts:null,exclusions:[],warnings:[],loadedAt:null};
 function stableRecordUpdatedAt(record){return record?.updatedAt||record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt||record?.predictionCreatedAt||record?.resultSnapshot?.fetchedAt||record?.resultAcquiredAt||'1970-01-01T00:00:00.000Z'}
 function cloudFingerprint(value){return value==null?null:snapshotFingerprint(value)}
 function cloudDescriptor(raceId,record){return {raceId,modelVersion:String(record?.predictionSnapshot?.modelVersion||record?.modelVersion||'Legacy'),updatedAt:stableRecordUpdatedAt(record),status:record?.validationCompleted?'validated':record?.resultSnapshot?'result_fetched':'prediction_saved',predictionFingerprint:cloudFingerprint(record?.predictionSnapshot),marketFingerprint:cloudFingerprint(record?.marketSnapshot),finalFingerprint:cloudFingerprint(record?.finalSnapshot),resultFingerprint:cloudFingerprint(record?.resultSnapshot),validationFingerprint:cloudFingerprint(record?.validationSnapshot)}}
@@ -67,6 +68,8 @@ function idbPutMany(name,values){if(!researchDb)return Promise.reject(new Error(
 function queueStorageWrite(promise,fallback){promise.catch(()=>{researchStorageMode='localStorage-fallback';fallback?.()})}
 function setCloudPending(id,pending=true){if(pending)cloudPending.add(id);else cloudPending.delete(id);localStore.set(CLOUD_PENDING_KEY,[...cloudPending]);renderCloudSyncState()}
 function hydrateCloudRecord(record){if(!record)return record;const p=record.predictionSnapshot?.horses||[],m=new Map((record.marketSnapshot?.horses||[]).map(h=>[Number(h.horseNo),h])),f=new Map((record.finalSnapshot?.ranking||record.finalSnapshot?.top3||[]).map(h=>[Number(h.horseNo),h]));record.horses=p.map(h=>({...h,...m.get(Number(h.horseNo)),...f.get(Number(h.horseNo))}));record.actualTimes=record.resultSnapshot?.actualTimes||{};record.result=record.resultSnapshot?{finishOrder:record.resultSnapshot.finishOrder||[],actualTimes:record.actualTimes}:null;return record}
+function mergeCloudResearchRecord(local,cloud,meta={}){const incoming=cloneData(cloud);if(!local)return hydrateCloudRecord({...incoming,cloudEligible:meta.eligible!==false,cloudExclusionReason:meta.exclusionReason||null});const merged={...local};for(const key of ['race','predictionSnapshot','marketSnapshot','finalSnapshot','resultSnapshot','validationSnapshot'])if(!merged[key]&&incoming[key])merged[key]=incoming[key];for(const key of ['predictionCreatedAt','resultAcquiredAt','modelVersion'])if(!merged[key]&&incoming[key])merged[key]=incoming[key];if(merged.resultSnapshot?.finishOrder?.length>=3){merged.validationCompleted=true;merged.validated=true}merged.cloudEligible=meta.eligible!==false;merged.cloudExclusionReason=meta.exclusionReason||null;merged.updatedAt=merged.updatedAt||incoming.updatedAt;return hydrateCloudRecord(merged)}
+async function restoreResearchFromCloud(){const data=await cloudRequest('/api/db/research'),before=Object.keys(raceCache).length;cloudResearchAudit={counts:data.counts||null,exclusions:data.exclusions||[],warnings:data.warnings||[],loadedAt:new Date().toISOString()};let added=0,enriched=0;for(const item of data.records||[]){if(!item?.raceId||!item.record)continue;const old=raceCache[item.raceId],oldFingerprint=old?researchContentFingerprint(old):null,merged=mergeCloudResearchRecord(old,item.record,item);raceCache[item.raceId]=merged;if(!old)added++;else if(researchContentFingerprint(merged)!==oldFingerprint)enriched++}if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));else localStore.set(KEY,raceCache);renderCloudDatasetSummary();return {added,enriched,total:Object.keys(raceCache).length,before,counts:data.counts||{}}}
 async function cloudRequest(path,options={}){const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}}),data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{status:response.status,code:data.error});return data}
 async function syncRaceToCloud(id,data){if(typeof fetch!=='function'||!id||!data?.predictionSnapshot)return false;setCloudPending(id,true);try{const response=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({raceId:id,record:data})});cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:'',lastSyncedAt:new Date().toISOString()};setCloudPending(id,false);return response.records?.[0]||{status:'unchanged',written:false}}catch(e){cloudState={...cloudState,status:cloudState.available?'error':'local',error:e.code||e.message};renderCloudSyncState();return false}}
 async function syncAllResearchToCloud(){const entries=Object.entries(raceCache).filter(([,record])=>record?.predictionSnapshot);if(!entries.length)return {created:0,updated:0,unchanged:0,failed:0,total:0,target:0};cloudState.status='syncing';renderCloudSyncState();const manifest=await cloudRequest('/api/db/manifest'),remote=new Map((manifest.records||[]).map(item=>[manifestKey(item),item])),targets=entries.filter(([raceId,record])=>cloudPending.has(raceId)||!manifestMatches(cloudDescriptor(raceId,record),remote.get(manifestKey(cloudDescriptor(raceId,record)))));let created=0,updated=0,failed=0;for(let i=0;i<targets.length;i+=25){const batch=targets.slice(i,i+25).map(([raceId,record])=>({raceId,record}));batch.forEach(x=>setCloudPending(x.raceId,true));try{const result=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})});created+=result.created||0;updated+=result.updated||0;const successful=new Set((result.records||[]).map(x=>x.raceId));batch.forEach(x=>{if(successful.has(x.raceId))setCloudPending(x.raceId,false)})}catch(e){failed+=batch.length;cloudState={...cloudState,status:'error',error:e.code||e.message};break}}const unchanged=entries.length-targets.length;cloudState={...cloudState,available:true,source:'cloud',status:failed?'error':'synced',error:failed?cloudState.error:'',lastSyncedAt:new Date().toISOString(),summary:{created,updated,unchanged,failed}};renderCloudSyncState();return {created,updated,unchanged,failed,total:entries.length,target:targets.length,synced:created+updated}}
@@ -74,14 +77,13 @@ async function initCloudResearch(){
  if(typeof fetch!=='function')return false;
  try{
   await cloudRequest('/api/db/health');cloudState={...cloudState,available:true,status:'connected',error:''};
-  const manifest=await cloudRequest('/api/db/manifest'),remoteManifest=new Map((manifest.records||[]).map(item=>[manifestKey(item),item]));
+  const manifest=await cloudRequest('/api/db/manifest'),remoteManifest=new Map((manifest.records||[]).map(item=>[manifestKey(item),item])),data=await cloudRequest('/api/db/research');cloudResearchAudit={counts:data.counts||null,exclusions:data.exclusions||[],warnings:data.warnings||[],loadedAt:new Date().toISOString()};
+  for(const item of data.records||[]){if(!item?.raceId||!item.record)continue;raceCache[item.raceId]=mergeCloudResearchRecord(raceCache[item.raceId],item.record,item)}
   const localDiff=new Set(Object.entries(raceCache).filter(([id,record])=>{if(!record?.predictionSnapshot)return false;const local=cloudDescriptor(id,record),remote=remoteManifest.get(manifestKey(local));return cloudPending.has(id)||!manifestMatches(local,remote)}).map(([id])=>id));
-  const data=await cloudRequest('/api/db/races');
-  for(const item of data.records||[]){if(!item?.raceId||!item.record)continue;if(!localDiff.has(item.raceId)&&!cloudPending.has(item.raceId))raceCache[item.raceId]=hydrateCloudRecord(item.record)}
   if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));
   cloudState.source='cloud';researchStorageMode='d1+indexedDB';
   for(const id of new Set([...cloudPending,...localDiff]))if(raceCache[id])await syncRaceToCloud(id,raceCache[id]);
-  renderCloudSyncState();return true;
+  renderCloudSyncState();renderCloudDatasetSummary();return true;
  }catch(e){cloudState={...cloudState,available:false,source:'local',status:'local',error:e.code||e.message};renderCloudSyncState();return false}
 }
 function saveRaceRecord(id,data){raceCache[id]=data;if(researchDb){const localWrite=idbPut('races',{id,data,updatedAt:stableRecordUpdatedAt(data)});queueStorageWrite(localWrite,()=>localStore.set(KEY,raceCache));localWrite.then(()=>syncRaceToCloud(id,data)).catch(()=>{})}else{localStore.set(KEY,raceCache);syncRaceToCloud(id,data)}}
@@ -107,6 +109,7 @@ function setVersion(){
   const sp=document.querySelector('.topbar h1 span'); if(sp) sp.textContent=`Ver.${APP_VERSION}`;
 }
 function renderCloudSyncState(){if(typeof document==='undefined')return;const source=$('cloudSource'),status=$('cloudSyncStatus'),button=$('cloudSyncButton');if(source)source.textContent=cloudState.available?'クラウド D1':'ローカル IndexedDB';if(status){status.className='';if(cloudState.status==='syncing')status.textContent='差分確認中';else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error'}else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;else if(cloudState.status==='synced'){const s=cloudState.summary;status.textContent=s?(s.created+s.updated?`☁ 同期完了｜新規 ${s.created}件・更新 ${s.updated}件・変更なし ${s.unchanged}件`:'☁ 最新です｜同期対象 0件'):'☁ 同期済'}else status.textContent='ローカルのみ'}if(button)button.disabled=cloudState.status==='syncing'}
+function renderCloudDatasetSummary(){if(typeof document==='undefined')return;const target=$('cloudDatasetSummary'),list=$('cloudExclusionList'),details=$('cloudExclusions'),c=cloudResearchAudit.counts;if(!target)return;if(!c){target.innerHTML='<span>クラウド母集団：未取得</span>';if(details)details.hidden=true;return}target.innerHTML=[['D1予想保存',c.d1PredictionSaved],['D1結果取得済',c.d1ResultFetched],['検証可能',c.validationEligible],['結果未取得',c.resultMissing],['検証除外',c.excluded]].map(([label,value])=>`<div><span>${label}</span><strong>${Number(value)||0}R</strong></div>`).join('');const reasonLabel={RESULT_MISSING:'結果未取得',PREDICTION_MISSING:'予想Snapshotなし',SNAPSHOT_INCOMPLETE:'Snapshot不完全',LEGACY_UNVERIFIED:'旧データ未検証',DATA_QUALITY:'結果詳細不足',DUPLICATE_OR_CONFLICT:'重複・競合'};if(list)list.innerHTML=(cloudResearchAudit.exclusions||[]).map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.raceId)}</strong><span>${reasonLabel[x.reason]||esc(x.reason)}</span><small>予想 ${x.predictionCount||0}頭・結果 ${x.resultCount||0}頭</small></div>`).join('')||'<p class="muted">検証除外はありません。</p>';if(details)details.hidden=false}
 function raceId(r={}){
  const d=String(r.raceDate||r.date||'').replaceAll('/','-');
  const t=String(r.track||'').trim();
@@ -689,7 +692,7 @@ async function importResearchBackup(file){
 }
 function getAllRaces(){
  const legacy=store.get(LEGACY_KEY,{}),now=store.get(KEY,{});
- const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&resultOrder(x).length>=3);
+ const merged={...legacy,...now}; return Object.values(merged).filter(x=>x?.validated&&x.cloudEligible!==false&&resultOrder(x).length>=3);
 }
 function frozenHorses(r){
  const prediction=Array.isArray(r?.predictionSnapshot?.horses)?r.predictionSnapshot.horses:[];
@@ -959,6 +962,7 @@ function renderIntegrityAudit(races){const counts={verified:0,legacy:0,invalid:0
 
 function renderDashboard(){
  renderCloudSyncState();
+ renderCloudDatasetSummary();
  const allRaces=getAllRaces(),tracks=[...new Set(allRaces.map(r=>r.race?.track).filter(Boolean))].sort(),modelVersions=[...new Set(allRaces.map(r=>r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy'))].sort(),now=new Date();
  const daysAgo=date=>{const d=new Date(`${date}T00:00:00`);return Number.isFinite(d.getTime())?Math.floor((now-d)/86400000):Infinity};
  const isCentral=r=>/中央|JRA/i.test(String(r.race?.category||''));
@@ -1036,7 +1040,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
@@ -1064,6 +1068,7 @@ $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
 if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.status==='syncing')return;setButtonBusy('cloudSyncButton',true,'差分確認中');try{await syncAllResearchToCloud();renderCloudSyncState();renderDashboard()}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudSyncButton',false)} };
+if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=async()=>{setButtonBusy('cloudRestoreButton',true,'復元中');try{const result=await restoreResearchFromCloud();cloudState={...cloudState,available:true,source:'cloud',status:'synced'};renderDashboard();$('cloudSyncStatus').textContent=`☁ 復元完了｜追加 ${result.added}件・補完 ${result.enriched}件`}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudRestoreButton',false)} };
 if($('quickPredict'))$('quickPredict').onclick=()=>$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
