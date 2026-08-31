@@ -1,6 +1,6 @@
 {
   "name": "chass-keiba-lab",
-  "version": "9.9.10",
+  "version": "9.9.11",
   "private": true,
   "type": "module",
   "scripts": {

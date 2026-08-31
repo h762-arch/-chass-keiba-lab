@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.10';
+const APP_VERSION='9.9.11';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -21,6 +21,9 @@ const NAR_TRACKS={
   '盛岡':10,'水沢':11,'浦和':18,'船橋':19,'大井':20,'川崎':21,'笠松':22,'金沢':23,
   '名古屋':24,'園田':27,'姫路':28,'高知':31,'佐賀':32,'門別':36
 };
+const HISTORY_COLLECTION_KEY='chass_history_collection_v1';
+let historyCollection=null;
+let historyCollectorRunning=false,historyCollectorAbort=false;
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const cloneData=v=>v==null?v:JSON.parse(JSON.stringify(v));
@@ -112,7 +115,7 @@ function setVersion(){
   const sp=document.querySelector('.topbar h1 span'); if(sp) sp.textContent=`Ver.${APP_VERSION}`;
 }
 function renderCloudSyncState(){if(typeof document==='undefined')return;const source=$('cloudSource'),status=$('cloudSyncStatus'),button=$('cloudSyncButton');if(source)source.textContent=cloudState.available?'クラウド D1':'ローカル IndexedDB';if(status){status.className='';if(cloudState.status==='syncing')status.textContent='差分確認中';else if(cloudState.status==='refreshing')status.textContent='D1再集計中';else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error'}else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;else if(cloudState.status==='synced'){const s=cloudState.summary;status.textContent=s?(s.created+s.updated?`☁ 同期完了｜新規 ${s.created}件・更新 ${s.updated}件・変更なし ${s.unchanged}件`:'☁ 最新です｜同期対象 0件'):'☁ 同期済'}else status.textContent='ローカルのみ'}if(button)button.disabled=cloudState.status==='syncing'}
-function renderCloudDatasetSummary(){if(typeof document==='undefined')return;const target=$('cloudDatasetSummary'),list=$('cloudExclusionList'),details=$('cloudExclusions'),c=cloudResearchAudit.counts;if(!target)return;if(!c){target.innerHTML='<span>Source: Local Cache｜クラウド未接続・ローカル集計</span>';if(details)details.hidden=true;return}const consistent=(c.consistency?.predictionBalance??(c.d1PredictionSaved===c.d1ResultFetched+c.resultMissing))&&(c.consistency?.resultBalance??(c.d1ResultFetched===c.validationEligible+c.excluded));target.innerHTML=`<div class="cloud-source-label">Source: Cloudflare D1</div><div class="cloud-total"><span>予想保存</span><strong>${Number(c.d1PredictionSaved)||0}R</strong></div><div class="cloud-branch"><div><span>結果取得済</span><strong>${Number(c.d1ResultFetched)||0}R</strong><small>検証可能 ${Number(c.validationEligible)||0}R＋除外 ${Number(c.excluded)||0}R</small></div><div><span>結果未取得</span><strong>${Number(c.resultMissing)||0}R</strong><small>予想保存済・結果待ち</small></div></div>${consistent?'':'<p class="cloud-consistency-warning">⚠ 集計整合性に差異あり</p>'}<div class="cloud-sync-help"><span>クラウドへ同期：端末の新規データをD1へ送信</span><span>クラウドから復元：D1のみのデータを端末キャッシュへ追加</span></div>`;const reasonLabel={PREDICTION_MISSING:'予想Snapshotなし',SNAPSHOT_INCOMPLETE:'Snapshot不完全',RESULT_INCOMPLETE:'結果不完全',LEGACY_UNVERIFIED:'旧データ未検証',DATA_QUALITY:'データ品質',DUPLICATE_OR_CONFLICT:'重複・競合',SCHEMA_MISMATCH:'スキーマ不一致'};const exclusions=[...(cloudResearchAudit.exclusions||[]),...(cloudResearchAudit.conflicts||[])];if(list)list.innerHTML=exclusions.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.raceId)}</strong><span>${reasonLabel[x.reason]||esc(x.reason)}</span><small>${esc(x.date||'')} ${esc(x.track||'')} ${esc(x.raceNo||'')}R｜${esc(x.modelVersion||'Legacy')}</small></div>`).join('')||'<p class="muted">検証除外はありません。</p>';if(details)details.hidden=false;let missing=$('cloudMissingResults');if(!missing){target.insertAdjacentHTML('afterend','<details id="cloudMissingResults" class="cloud-exclusions"><summary>結果未取得の一覧</summary><div id="cloudMissingList"></div></details>');missing=$('cloudMissingResults')}const missingList=$('cloudMissingList'),items=cloudResearchAudit.missingResults||[];missing.querySelector('summary').textContent=`結果未取得の一覧 ${items.length}R`;missingList.innerHTML=items.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.date)}｜${esc(x.track)} ${esc(x.raceNo)}R</strong><span>${esc(x.modelVersion||'Legacy')}</span><button type="button" class="cloud-open-missing" data-race-id="${esc(x.raceId)}">結果を取得</button></div>`).join('')||'<p class="muted">結果未取得はありません。</p>';missing.querySelectorAll('.cloud-open-missing').forEach(b=>b.onclick=()=>openMissingResultRace(b.dataset.raceId))}
+function renderCloudDatasetSummary(){if(typeof document==='undefined')return;const target=$('cloudDatasetSummary'),list=$('cloudExclusionList'),details=$('cloudExclusions'),c=cloudResearchAudit.counts;if(!target)return;if(!c){target.innerHTML='<span>Source: Local Cache｜クラウド未接続・ローカル集計</span>';if(details)details.hidden=true;return}const consistent=(c.consistency?.predictionBalance??(c.d1PredictionSaved===c.d1ResultFetched+c.resultMissing))&&(c.consistency?.resultBalance??(c.d1ResultFetched===c.validationEligible+c.excluded));target.innerHTML=`<div class="cloud-source-label">Source: Cloudflare D1</div><div class="cloud-total"><span>予想保存</span><strong>${Number(c.d1PredictionSaved)||0}R</strong></div><div class="cloud-branch"><div><span>結果取得済</span><strong>${Number(c.d1ResultFetched)||0}R</strong><small>検証可能 ${Number(c.validationEligible)||0}R</small><small>データ不備除外 ${Number(c.excluded)||0}R</small></div><div><span>結果未取得</span><strong>${Number(c.resultMissing)||0}R</strong><small>予想保存済・結果待ち</small></div></div>${consistent?'':'<p class="cloud-consistency-warning">⚠ 集計整合性に差異あり</p>'}<div class="cloud-sync-help"><span>クラウドへ同期：端末の新規データをD1へ送信</span><span>クラウドから復元：D1のみのデータを端末キャッシュへ追加</span></div>`;const reasonLabel={PREDICTION_MISSING:'予想Snapshotなし',SNAPSHOT_INCOMPLETE:'Snapshot不完全',RESULT_INCOMPLETE:'結果不完全',LEGACY_UNVERIFIED:'旧データ未検証',DATA_QUALITY:'データ品質',DUPLICATE_OR_CONFLICT:'重複・競合',SCHEMA_MISMATCH:'スキーマ不一致'};const exclusions=[...(cloudResearchAudit.exclusions||[]),...(cloudResearchAudit.conflicts||[])];if(list)list.innerHTML=exclusions.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.raceId)}</strong><span>${reasonLabel[x.reason]||esc(x.reason)}</span><small>${esc(x.date||'')} ${esc(x.track||'')} ${esc(x.raceNo||'')}R｜${esc(x.modelVersion||'Legacy')}</small></div>`).join('')||'<p class="muted">検証除外はありません。</p>';if(details)details.hidden=false;let missing=$('cloudMissingResults');if(!missing){target.insertAdjacentHTML('afterend','<details id="cloudMissingResults" class="cloud-exclusions"><summary>結果未取得の一覧</summary><div id="cloudMissingList"></div></details>');missing=$('cloudMissingResults')}const missingList=$('cloudMissingList'),items=cloudResearchAudit.missingResults||[];missing.querySelector('summary').textContent=`結果未取得の一覧 ${items.length}R`;missingList.innerHTML=items.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.date)}｜${esc(x.track)} ${esc(x.raceNo)}R</strong><span>${esc(x.modelVersion||'Legacy')}</span><button type="button" class="cloud-open-missing" data-race-id="${esc(x.raceId)}">結果を取得</button></div>`).join('')||'<p class="muted">結果未取得はありません。</p>';missing.querySelectorAll('.cloud-open-missing').forEach(b=>b.onclick=()=>openMissingResultRace(b.dataset.raceId))}
 function openMissingResultRace(id){const saved=raceCache[id];if(!saved)return;state=cloneData(saved);fillRace();render();setView('prediction');requestAnimationFrame(()=>{$('resultCard')?.scrollIntoView({behavior:'smooth',block:'start'});syncNar({auto:false})})}
 function raceId(r={}){
  const d=String(r.raceDate||r.date||'').replaceAll('/','-');
@@ -665,6 +668,83 @@ function saveValidation(){
  if(f.length<3){alert('1〜3着を入力してください');return}
  saveFetchedResult(f,{silent:false,source:'手動修正保存'});
 }
+
+function historyDefaultState(){
+ const today=new Date(),end=new Date(today);end.setDate(end.getDate()-1);const start=new Date(end);start.setDate(start.getDate()-29);const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+ return {schemaVersion:1,status:'idle',preset:'30',startDate:iso(start),endDate:iso(end),tracks:['浦和','船橋','大井','川崎'],cursor:0,total:0,done:0,saved:0,skipped:0,failed:0,pending:0,lastItem:'',startedAt:null,updatedAt:null,errors:[]};
+}
+function getHistoryState(){if(!historyCollection)historyCollection=localStore.get(HISTORY_COLLECTION_KEY,null)||historyDefaultState();return historyCollection}
+function saveHistoryState(){const st=getHistoryState();st.updatedAt=new Date().toISOString();localStore.set(HISTORY_COLLECTION_KEY,st);renderHistoryCollector()}
+function historyDateRange(start,end){const out=[],a=new Date(`${start}T00:00:00`),b=new Date(`${end}T00:00:00`);if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime())||a>b)return out;for(let d=new Date(a);d<=b;d.setDate(d.getDate()+1))out.push(new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10));return out}
+function historyPlan(st=getHistoryState()){const dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);const plan=[];for(const date of dates)for(const track of tracks)for(let raceNo=1;raceNo<=12;raceNo++)plan.push({date,track,raceNo,id:raceId({raceDate:date,track,raceNo})});return plan}
+function historyPresetDays(days){const st=getHistoryState(),end=new Date();end.setDate(end.getDate()-1);const start=new Date(end);start.setDate(start.getDate()-Math.max(0,Number(days||1)-1));const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);st.startDate=iso(start);st.endDate=iso(end);st.preset=String(days);st.cursor=0;saveHistoryState()}
+function historySampleLabel(n){return n<30?'低信頼':n<100?'参考':n<300?'中':'高'}
+function historicalRecord(root,resultData){
+ const previous=state,now=new Date().toISOString();
+ try{
+  state=transform(root);state.race={...state.race,historicalResearch:true,researchMode:'historical_research',predictionKind:'backtest_prediction',dataMode:`${state.race.dataMode||'NAR自動'}・過去研究`};
+  makeSnapshot();
+  if(state.predictionSnapshot){state.predictionSnapshot.historicalResearch=true;state.predictionSnapshot.predictionKind='backtest_prediction';state.predictionSnapshot.generatedAt=now;state.predictionSnapshot.createdAt=now;state.predictionSnapshot.race={...state.predictionSnapshot.race,historicalResearch:true,researchMode:'historical_research'}}
+  if(state.marketSnapshot){state.marketSnapshot.historicalResearch=true;state.marketSnapshot.oddsSnapshotType='historical_official';state.marketSnapshot.createdAt=now;state.marketSnapshot.acquiredAt=now}
+  const record=cloneData(state);record.modelVersion=APP_VERSION;record.predictionCreatedAt=now;record.historicalResearch={schemaVersion:1,mode:'historical_research',predictionKind:'backtest_prediction',collectedAt:now,resultLeakageGuard:true,notes:'過去レース研究用。現在モデルによるバックテスト予測であり、当時のリアルタイム予想とは区別する。'};
+  if(resultData?.finishOrder?.length>=3){
+   record.actualTimes={...(resultData.actualTimes||{})};record.result={finishOrder:resultData.finishOrder.map(Number),actualTimes:{...record.actualTimes},source:'NAR公式 過去研究取得',at:now,autoSaved:true};
+   record.resultSnapshot={schemaVersion:3,source:'NAR公式 過去研究取得',fetchedAt:resultData.acquiredAt||now,finishOrder:resultData.finishOrder.map(Number),actualTimes:{...record.actualTimes},horses:Array.isArray(resultData.results)?resultData.results.map(x=>({...x,horseNo:Number(x.horseNo),position:x.position==null?null:Number(x.position)})):[],weather:resultData?.resultMeta?.weather||'',trackCondition:resultData?.resultMeta?.trackCondition||'',quality:resultData?.quality||null,market:null};
+   record.resultAcquiredAt=resultData.acquiredAt||now;record.validationCompleted=true;record.validated=true;const diag=diagnosticsForRace(record);record.validationSnapshot={schemaVersion:3,modelVersion:APP_VERSION,generatedAt:now,finishOrder:[...record.resultSnapshot.finishOrder],failures:diag.failures,checks:diag.checks,dataQuality:diag.quality,historicalResearch:true};
+  }
+  sealSnapshotIntegrity(record,true);record.updatedAt=now;return record;
+ }finally{state=previous}
+}
+async function persistHistoricalRecord(id,record){raceCache[id]=record;if(researchDb)await idbPut('races',{id,data:record,updatedAt:record.updatedAt});else localStore.set(KEY,raceCache)}
+async function syncHistoricalBatch(batch){if(!batch.length)return {created:0,updated:0,unchanged:0};try{return await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})})}catch(e){batch.forEach(x=>setCloudPending(x.raceId,true));throw e}}
+function renderHistoryCollector(){
+ const box=$('historyCollector');if(!box)return;const st=getHistoryState(),plan=historyPlan(st),existing=cloudResearchAudit.counts?.d1PredictionSaved??Object.keys(raceCache).length,remaining1=Math.max(0,1000-existing),remaining3=Math.max(0,3000-existing);st.total=plan.length;
+ const progress=st.total?Math.min(100,100*(st.cursor||0)/st.total):0;
+ if($('historyStartDate'))$('historyStartDate').value=st.startDate||'';if($('historyEndDate'))$('historyEndDate').value=st.endDate||'';if($('historyPreset'))$('historyPreset').value=st.preset||'30';
+ const trackBox=$('historyTrackGrid');if(trackBox&&!trackBox.dataset.ready){trackBox.innerHTML=Object.keys(NAR_TRACKS).map(t=>`<label><input type="checkbox" value="${esc(t)}">${esc(t)}</label>`).join('');trackBox.dataset.ready='1'}
+ trackBox?.querySelectorAll('input').forEach(i=>i.checked=(st.tracks||[]).includes(i.value));
+ if($('historyProgressText'))$('historyProgressText').textContent=`${st.status==='running'?'収集中':st.status==='paused'?'一時停止':st.status==='done'?'完了':'待機'}｜${st.cursor||0}/${st.total||0} (${progress.toFixed(1)}%)`;
+ if($('historyProgressBar'))$('historyProgressBar').style.width=`${progress}%`;
+ if($('historyCounts'))$('historyCounts').innerHTML=`<span>保存 ${st.saved||0}</span><span>スキップ ${st.skipped||0}</span><span>結果待ち ${st.pending||0}</span><span>失敗 ${st.failed||0}</span>`;
+ if($('historyGoals'))$('historyGoals').innerHTML=`<strong>研究母数 ${existing}R</strong><span>第一目標1,000Rまで あと${remaining1}R</span><span>推奨3,000Rまで あと${remaining3}R</span>`;
+ if($('historyLast'))$('historyLast').textContent=st.lastItem?`最後: ${st.lastItem}`:'既取得race_idは安全にスキップします。';
+ if($('historyStart'))$('historyStart').disabled=historyCollectorRunning;if($('historyPause'))$('historyPause').disabled=!historyCollectorRunning;
+}
+function updateHistoryOptionsFromUi(){const st=getHistoryState();st.startDate=$('historyStartDate')?.value||st.startDate;st.endDate=$('historyEndDate')?.value||st.endDate;st.preset=$('historyPreset')?.value||'custom';st.tracks=[...($('historyTrackGrid')?.querySelectorAll('input:checked')||[])].map(x=>x.value);st.cursor=0;st.status='idle';saveHistoryState()}
+async function runHistoricalCollector(){
+ if(historyCollectorRunning)return;const st=getHistoryState();const plan=historyPlan(st);if(!plan.length){if($('historyLast'))$('historyLast').textContent='期間と競馬場を選択してください。';return}
+ historyCollectorRunning=true;historyCollectorAbort=false;st.status='running';st.startedAt=st.startedAt||new Date().toISOString();st.total=plan.length;saveHistoryState();let batch=[];
+ try{
+  for(let i=st.cursor||0;i<plan.length;i++){
+   if(historyCollectorAbort){st.status='paused';break}
+   const item=plan[i];st.cursor=i;st.lastItem=`${item.date} ${item.track}${item.raceNo}R`;saveHistoryState();
+   if(raceCache[item.id]||cloudResearchAudit.datasetRaceIds?.includes(item.id)){st.skipped++;st.cursor=i+1;continue}
+   const code=narCode(item.track);
+   try{
+    const raceRes=await fetch(`/api/nar/race?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),raceData=await responseJson(raceRes);
+    if(!raceRes.ok||!Array.isArray(raceData.horses)||raceData.horses.length<2){if(raceRes.status===404||raceData.errorCode==='race_not_found'){st.skipped++;st.cursor=i+1;continue}throw requestError(raceData.errorCode||'parser_error',raceData.error||'出走馬取得失敗',raceRes.status)}
+    const root=buildAbilityRoot(raceData,item.date,item.track,item.raceNo);root.race.historicalResearch=true;root.race.researchMode='historical_research';root.race.predictionKind='backtest_prediction';
+    let resultData=null;try{const resultRes=await fetch(`/api/nar/sync?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),rd=await responseJson(resultRes);if(resultRes.ok&&rd.finishOrder?.length>=3)resultData=rd;else st.pending++}catch{st.pending++}
+    const record=historicalRecord(root,resultData);await persistHistoricalRecord(item.id,record);batch.push({raceId:item.id,record});st.saved++;st.cursor=i+1;
+    if(batch.length>=10){try{await syncHistoricalBatch(batch);batch=[]}catch(e){st.failed+=batch.length;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message});batch=[]}}
+   }catch(e){st.failed++;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message})}
+   saveHistoryState();await new Promise(r=>setTimeout(r,700+Math.floor(Math.random()*700)));
+  }
+  if(batch.length){try{await syncHistoricalBatch(batch)}catch(e){st.failed+=batch.length}}
+  if(!historyCollectorAbort&&st.cursor>=plan.length){st.status='done'}
+ }finally{
+  historyCollectorRunning=false;historyCollectorAbort=false;saveHistoryState();try{await refreshCloudResearchDataset({persist:true,render:false});renderCloudDatasetSummary();renderDashboard()}catch{}renderHistoryCollector();
+ }
+}
+function pauseHistoricalCollector(){historyCollectorAbort=true;const st=getHistoryState();st.status='paused';saveHistoryState()}
+function resetHistoricalCollector(){if(historyCollectorRunning)return;historyCollection=historyDefaultState();saveHistoryState()}
+function bindHistoricalCollector(){
+ const box=$('historyCollector');if(!box)return;historyCollection=localStore.get(HISTORY_COLLECTION_KEY,null)||historyDefaultState();
+ $('historyPreset')?.addEventListener('change',e=>{const v=e.target.value;if(v==='custom')return;historyPresetDays(Number(v))});
+ for(const id of ['historyStartDate','historyEndDate'])$(id)?.addEventListener('change',()=>{const st=getHistoryState();st.preset='custom';updateHistoryOptionsFromUi()});
+ $('historyTrackGrid')?.addEventListener('change',updateHistoryOptionsFromUi);$('historyStart')?.addEventListener('click',runHistoricalCollector);$('historyPause')?.addEventListener('click',pauseHistoricalCollector);$('historyReset')?.addEventListener('click',resetHistoricalCollector);renderHistoryCollector();
+}
+
 function createResearchBackup(){
  return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||''};
 }
@@ -1024,7 +1104,7 @@ function renderDashboard(){
  const versions={};analysisRaces.forEach(r=>{const version=r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy',g=(versions[version]??={n:0,win:0,top3:0,time:[]}),pick=r.finalSnapshot?.top3?.[0];g.n++;if(pick&&horsePosition(r,pick)===1)g.win++;if(pick&&isTop3(r,pick.horseNo))g.top3++;g.time.push(...aggregateAdvanced([r]).timeAbs)});
  const versionHtml=dashAccordion('modelVersions','モデルバージョン別',`${Object.keys(versions).length}件`,Object.entries(versions).map(([version,g])=>{const vr=analysisRaces.filter(r=>(r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy')===version),ls=compareLongshotModels(vr).next;return `<div class="condition-row"><strong>${esc(version)}</strong><span>${g.n}R・${sampleLabel(g.n)}</span><span>FINAL勝 ${pct(g.win,g.n)} / TOP3 ${pct(g.top3,g.n)}</span><span>TIME ${g.time.length?mean(g.time).toFixed(2)+'秒':'—'} / 穴TOP3 ${pct(ls.top3,ls.candidates)}</span><span>7人気以下捕捉 ${ls.target7?pct(ls.capture7,ls.target7):'—'} / 10人気以下 ${ls.target10?pct(ls.capture10,ls.target10):'—'}</span></div>`}).join('')||'<p class="muted">データなし</p>',{summaryText:Object.entries(versions).sort((a,b)=>b[1].n-a[1].n)[0]?.[0]||''});
  const longshotComparison=compareLongshotModels(analysisRaces),comparisonRows=Object.values(longshotComparison).map(g=>`<div class="calibration-row"><strong>${g.label}</strong><span>候補 ${g.candidates}頭 / TOP3 ${g.top3} / 勝 ${g.win}</span><span>7人気以下捕捉 ${g.target7?pct(g.capture7,g.target7):'—'}（${g.capture7}/${g.target7}）・10人気以下 ${g.target10?pct(g.capture10,g.target10):'—'}（${g.capture10}/${g.target10}）・単勝ROI ${g.roiN?(g.roiReturn/g.roiN*100).toFixed(1)+'%':'—'}</span></div>`).join(''),comparisonHtml=dashAccordion('longshotCompare','穴馬ロジック比較','シミュレーション',`${comparisonRows}<div class="metric-definition">保存済みの予想Snapshotを読み取り専用で比較します。過去データは書き換えず、結果から穴馬判定を作り直すこともありません。</div>`,{summaryText:`新 TOP3 ${longshotComparison.next.top3}頭`});
- const excluded=races.length-analysisRaces.length,analysisNote=`<div class="analysis-scope">分析対象 ${analysisRaces.length}R / 一覧 ${races.length}R${excluded?`（低品質 ${excluded}R除外）`:''}</div>`;
+ const excluded=races.length-analysisRaces.length,analysisNote=`<div class="analysis-scope">検証母集団 ${races.length}R｜分析対象 ${analysisRaces.length}R｜品質フィルター除外 ${excluded}R</div>`;
  $('dashModels').innerHTML=`${analysisNote}<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${renderIntegrityAudit(races)}${modelHtml}${versionHtml}${calHtml}${timeHtml}${comparisonHtml}${renderFailureAnalysis(analysisRaces)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
  $('dashRaces').innerHTML=renderSavedRaces(races);
  bindDashboardUi();
@@ -1076,6 +1156,7 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 ['category','raceDate','track','raceNo','distance','trackCondition','chaos','pace'].forEach(id=>$(id).addEventListener('input',()=>{state.race=raceFromForm();render()}));
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=async()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView'){renderDashboard();if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:true})}});
+bindHistoricalCollector();
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};

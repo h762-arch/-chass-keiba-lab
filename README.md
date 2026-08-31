@@ -1,3 +1,12 @@
+# CHASS KEIBA LAB Ver.9.9.11
+
+## 今回の追加
+- D1検証用語を「データ不備除外」と「品質フィルター除外」に分離。
+- 過去NARレースの研究データ収集UIを追加。
+- 収集データは `historical_research / backtest_prediction` として通常予想と区別。
+- 既存race_idを上書きせず、途中停止・再開、D1バッチ同期、進捗保存に対応。
+- 予想ロジック・AI勝率・TOP3率・TIME・期待値・穴馬判定は変更なし。
+
 # CHASS KEIBA LAB Ver.9.9.10
 
 ## Ver.9.9.10 NAR Result Fetch Resilience
