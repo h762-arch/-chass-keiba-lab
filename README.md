@@ -1,4 +1,11 @@
-# CHASS KEIBA LAB Ver.9.9.15
+# CHASS KEIBA LAB Ver.9.9.16
+## Ver.9.9.16 Parse-Complete Success Lock
+
+- RaceMarkTable が HTTP 200 かつ着順解析成功した時点で「結果取得成功」を確定します。
+- 最終オッズ・メタ情報・結果補完の失敗は optionalErrors として分離し、結果取得全体を 5xx に戻しません。
+- 診断表示は `parse_complete` を示し、付随データだけ失敗した場合は partial success として表示します。
+- 保存/D1/再集計/描画は従来どおり後段処理として分離します。
+
 
 ## Result Fetch Diagnostic / 原因可視化
 

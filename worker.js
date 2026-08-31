@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.9.15";
+export const VERSION="9.9.16";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(e?.code==='nar_timeout'||/timeout|タイムアウト/i.test(raw))errorCode='nar_timeout';else if(e?.code==='parser_error'||/parse|解析/i.test(raw))errorCode='parser_error';else if(e?.code==='network_error'||/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode,httpStatus:status||null,attemptCount:Number(e?.attemptCount)||1,urlType:e?.urlType||null,fallbackTried:!!e?.fallbackTried,diagnostics:Array.isArray(e?.diagnostics)?e.diagnostics:[],checkedAt:new Date().toISOString()}}
 export function getResearchDb(env){return env?.DB||null}
@@ -340,10 +340,22 @@ export default{
     try{
       if(u.pathname==="/api/nar/odds"){const oh=await fetchText(urls.odds),oo=parseTanFuku(oh);return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,odds:oo,acquiredAt:new Date().toISOString()});}
       if(u.pathname==="/api/nar/result-diagnostic"){try{const rf=await fetchNarResultResilient(urls.result,urls.resultIpat);return json({ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,resultStatus:rf.parsed?.finishOrder?.length>=3?'available':'result_unpublished',finishOrder:rf.parsed?.finishOrder?.slice(0,3)||[],urlType:rf.urlType,fallbackUsed:!!rf.fallbackUsed,attemptCount:rf.totalAttemptCount||rf.attemptCount,diagnostics:rf.diagnostics||[],checkedAt:new Date().toISOString()})}catch(e){return json({ok:false,version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...errorPayload(e)},200)}}
-      const [resultFetch,oh]=await Promise.all([fetchNarResultResilient(urls.result,urls.resultIpat),fetchText(urls.odds).catch(()=>"")]),rh=resultFetch.html,rr=resultFetch.parsed||parseResult(rh),oo=parseTanFuku(oh),meta=parseRaceMeta(rh),om=new Map(oo.map(x=>[Number(x.horseNo),x]));
-      rr.results=rr.results.map(x=>({...x,finalOdds:x.finalOdds??om.get(Number(x.horseNo))?.odds??null,popularity:x.popularity??om.get(Number(x.horseNo))?.popularity??null}));
+      // Ver.9.9.16: once RaceMarkTable fetch+parse succeeds, preserve that success.
+      // Optional odds/meta/enrichment must never turn a valid result into HTTP 5xx.
+      const resultFetch=await fetchNarResultResilient(urls.result,urls.resultIpat),rh=resultFetch.html;
+      const rr=resultFetch.parsed||parseResult(rh);
+      const finishOrder=Array.isArray(rr.finishOrder)?rr.finishOrder.slice(0,3):[];
+      const optionalErrors=[];
+      let oo=[];
+      try{const oh=await fetchText(urls.odds);oo=parseTanFuku(oh)}catch(e){optionalErrors.push({stage:'odds',errorCode:e?.code||'odds_optional_failed',message:String(e?.message||e).slice(0,160)})}
+      let meta={weather:'',trackCondition:''};
+      try{meta=parseRaceMeta(rh)||meta}catch(e){optionalErrors.push({stage:'meta',errorCode:'result_meta_failed',message:String(e?.message||e).slice(0,160)})}
+      try{
+        const om=new Map(oo.map(x=>[Number(x.horseNo),x]));
+        rr.results=(Array.isArray(rr.results)?rr.results:[]).map(x=>({...x,finalOdds:x.finalOdds??om.get(Number(x.horseNo))?.odds??null,popularity:x.popularity??om.get(Number(x.horseNo))?.popularity??null}));
+      }catch(e){optionalErrors.push({stage:'enrich',errorCode:'result_enrich_failed',message:String(e?.message||e).slice(0,160)});if(!Array.isArray(rr.results))rr.results=[]}
       const total=rr.results.length,timeCount=rr.results.filter(x=>x.time).length,nameCount=rr.results.filter(x=>x.horseName).length,detailCount=rr.results.filter(x=>x.last3f!=null||x.cornerPositions||x.bodyWeight!=null).length;
-      return json({source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,odds:oo,resultMeta:{weather:meta.weather,trackCondition:meta.trackCondition},quality:{resultRows:total,resultParseRate:rr.parserFallback?50:total?100:0,actualTimeRate:total?Math.round(100*timeCount/total):0,resultHorseNameRate:total?Math.round(100*nameCount/total):0,resultDetailRate:total?Math.round(100*detailCount/total):0,parser:rr.parserFallback?'legacy-fallback':'header-mapped-v1'},acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3,resultStatus:rr.finishOrder.length<3?'result_unpublished':'available',attemptCount:resultFetch.totalAttemptCount||resultFetch.attemptCount,urlType:resultFetch.urlType,fallbackUsed:!!resultFetch.fallbackUsed,fallbackTried:!!resultFetch.fallbackTried,diagnostics:resultFetch.diagnostics||[],checkedAt:new Date().toISOString()});
+      return json({ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[Number(code)]||"",code,date,race,...rr,finishOrder,odds:oo,resultMeta:{weather:meta.weather||'',trackCondition:meta.trackCondition||''},quality:{resultRows:total,resultParseRate:rr.parserFallback?50:total?100:0,actualTimeRate:total?Math.round(100*timeCount/total):0,resultHorseNameRate:total?Math.round(100*nameCount/total):0,resultDetailRate:total?Math.round(100*detailCount/total):0,parser:rr.parserFallback?'legacy-fallback':'header-mapped-v1'},partialSuccess:optionalErrors.length>0,optionalErrors,acquiredAt:new Date().toISOString(),pending:finishOrder.length<3,resultStatus:finishOrder.length<3?'result_unpublished':'available',attemptCount:resultFetch.totalAttemptCount||resultFetch.attemptCount,urlType:resultFetch.urlType,fallbackUsed:!!resultFetch.fallbackUsed,fallbackTried:!!resultFetch.fallbackTried,diagnostics:resultFetch.diagnostics||[],checkedAt:new Date().toISOString()});
     }catch(e){return json(errorPayload(e),e?.status===404?404:502)}
   }
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
