@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.9.27";
+const VERSION="9.9.29";
+function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -85,7 +86,7 @@ function parseRaceCard(html){
     const texts=c.slice(start).filter(x=>x&&!/^\d+(?:\.\d+)?$/.test(String(x)));
     if(texts.length)jockey=String(texts[0]||"").trim();
     if(texts.length>1)trainer=String(texts[texts.length-1]||"").trim();
-    out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer});
+    const horseStatus=horseStatusFromText(row.text);out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer,horseStatus,statusText:horseStatus==='active'?'':row.text,eligible:horseStatus==='active'});
   }
   const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
   return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));

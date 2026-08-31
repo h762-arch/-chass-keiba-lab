@@ -1,4 +1,11 @@
-# CHASS KEIBA LAB Ver.9.9.27
+# CHASS KEIBA LAB Ver.9.9.29
+
+## Ver.9.9.29 Scratch Horse Snapshot Preservation & Live Adjustment
+
+- 通常取得失敗後に診断復旧で着順3頭以上を取得できた場合、最終状態を成功へ正規化します。
+- 結果未公開と一時通信失敗を分離し、5・5・10・15・30分の低頻度再確認を最大6回行います。
+- TIME・市場の一部欠損を通信失敗にせず、取得件数と欠損理由を個別表示します。
+- `/api/nar/race`、`/api/nar/sync`、`/api/nar/odds` の通常通信構造、予想Snapshot、AI・穴馬・波乱指数ロジックは変更していません。
 
 ## Ver.9.9.27 Prediction Axis Reinforcement
 

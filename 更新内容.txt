@@ -1,4 +1,19 @@
-CHASS KEIBA LAB Ver.9.9.27
+CHASS KEIBA LAB Ver.9.9.29
+
+Scratch Horse Snapshot Preservation & Live Adjustment
+- Original Snapshotを固定したまま取消・除外を別レイヤーで反映
+- Live側で確率、展開、波乱指数、Race Confidence、印、期待値、穴馬を再評価
+- Original / Live切替と取消馬の評価対象外表示
+- D1既存race_jsonへ非破壊保存
+Result Recovery Normalization & Auto Retry
+
+- 通常経路失敗後に復旧経路で着順3頭以上を取得できた場合は最終成功
+- 結果未公開は結果待ち、一時通信失敗は再取得待ちとして低頻度で自動再試行
+- TIMEと市場の部分欠損は通信成功を維持し、欠損件数と理由を個別表示
+- 最大6回後は自動通信を止め、次回起動時または手動操作で再開
+- 既存結果、予想Snapshot、AI・穴馬・波乱指数、D1 schemaを維持
+
+旧版記録: Ver.9.9.27
 Prediction Axis Reinforcement
 
 - 勝ち切り能力と複勝安定性を分離した8補助軸を追加

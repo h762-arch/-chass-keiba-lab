@@ -151,6 +151,7 @@ body{background:radial-gradient(circle at 12% 0,rgba(27,73,105,.22),transparent 
 .quick-stat span{display:none}
 .flags{gap:8px;margin-top:9px}.flag-box{padding:9px 10px;line-height:1.35}
 .race-summary>.muted[hidden]{display:none}.race-summary>.muted{margin-bottom:8px}
+.scratch-status-bar{margin-top:10px;padding:10px 12px;border:1px solid rgba(72,222,177,.45);border-radius:14px;background:rgba(18,50,62,.72);display:flex;align-items:center;justify-content:space-between;gap:10px}.scratch-status-bar[hidden]{display:none}.scratch-status-bar strong,.scratch-status-bar small{display:block}.scratch-status-bar small{margin-top:3px;color:var(--muted);font-size:11px}.prediction-layer-toggle{display:flex;gap:5px}.prediction-layer-toggle button{min-height:36px;padding:7px 10px;border-radius:10px}.prediction-layer-toggle button.active{background:var(--accent);color:#06201a}.quick-row.is-scratched,.horse-row.is-scratched{opacity:.58;filter:saturate(.3)}.quick-row.is-scratched .quick-name small{display:block;color:#ffbf69;font-size:10px}.horse-row.is-scratched{border-style:dashed}
 .utility-row>summary,.switch-row{min-height:52px;padding:8px 14px}
 .utility-icon{width:32px;height:32px}.utility-body{padding:0 14px 14px}
 .result-body{display:grid;gap:10px}.result-body .finish-grid{gap:8px}
