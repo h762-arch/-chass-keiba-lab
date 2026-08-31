@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.19
+# CHASS KEIBA LAB Ver.9.9.20
+
+## Ver.9.9.20 NAR Result Minimal Fetch / Safari Transport Isolation
+
+- iPhoneの結果取得を軽量な`/api/nar/sync-minimal`へ切り替えました。
+- 通常レスポンスからオッズ・retry全文・重複診断を除外しました。
+- Safari側でRequest・Headers・Body・JSON・Payloadを個別監査します。
+- HTTP 200後の本文失敗やJSON破損をnetwork_errorへ丸めません。
+- Worker処理時間・NAR取得時間・解析時間・payloadBytesを返します。
 
 ## Ver.9.9.19 NAR Race Fetch Resilience
 
