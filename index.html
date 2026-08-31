@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.25</title>
+  <title>チャス競馬研究所 Ver.9.9.26</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.25</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.26</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -27,6 +27,7 @@
         <div class="summary-chips summary-secondary" aria-label="データ取得状況"><span id="abilitySummary" class="badge">能力 —</span><span id="timeSummary" class="badge">TIME —</span><span id="marketSummary" class="badge">市場 —</span></div>
         <div class="summary-mode"><span id="modeSummary" class="badge wide-chip">データ待ち</span></div>
       </div>
+      <details id="volatilitySummary" class="volatility-summary" hidden><summary><strong id="volatilityHeadline">波乱指数 —</strong><span id="volatilityConfidence">信頼度 —</span></summary><div class="volatility-body"><div id="volatilityStats" class="volatility-stats"></div><div id="volatilityReasons" class="volatility-reasons"></div><small>レース全体の不確実性です。個別馬の穴馬推奨とは分離しています。</small></div></details>
       <div class="quick-actions" aria-label="レース操作"><button id="quickPredict" type="button">予想更新</button><button id="quickOdds" type="button">現在オッズ</button><button id="quickResult" type="button">結果検証</button></div>
       <section class="primary-controls" aria-labelledby="primaryControlsTitle">
         <div class="primary-controls-head"><strong id="primaryControlsTitle">⚙️ 公式データ取得・予想設定</strong><span>常時操作</span></div>

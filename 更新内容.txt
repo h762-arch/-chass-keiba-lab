@@ -1,4 +1,15 @@
-CHASS KEIBA LAB Ver.9.9.25
+CHASS KEIBA LAB Ver.9.9.26
+Race Volatility Intelligence
+
+- 過去の検証済み類似レースを類似度加重して波乱率・順当率を算出
+- AI上位団子度、市場乖離、危険人気馬、穴馬密度、TIME接近度、展開不確実性をUpset Scoreへ反映
+- AI突出、能力差、TIME差、人気整合、類似順当率をStability Scoreへ反映
+- データ不足時は50%方向へ縮小し、指数とは別に信頼度を保存
+- predictionSnapshotへ波乱指数と説明情報を固定保存
+- レース上部と検証ダッシュボードへ波乱指数・較正指標を追加
+- NAR通信、自動結果取得、D1 schema、AI・TIME・穴馬ロジックは変更なし
+
+旧版記録: Ver.9.9.25
 Automatic Post-Race Result Queue
 
 - 予想保存時にraceId単位の結果待ちキューへ登録

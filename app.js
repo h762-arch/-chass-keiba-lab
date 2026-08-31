@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.25';
+const APP_VERSION='9.9.26';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -16,7 +16,7 @@ let resultFetchInProgress=null;
 let lastRaceFetchAudit=null;
 let quickExpanded=false;
 const dashboardUi={
- open:{models:true,calibration:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
+ open:{models:true,calibration:false,volatility:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
  diagnosisFilter:'',raceType:'all',track:'all',period:'all',quality:'all',analysisQuality:'AB',modelVersion:'all',format:'all',raceSort:'new',raceLimit:10
 };
 const NAR_TRACKS={
@@ -374,10 +374,70 @@ function openResultValidation(){
  const card=$('resultCard');if(!card)return;
  requestAnimationFrame(()=>card.scrollIntoView({behavior:'smooth',block:'start'}));
 }
-function snapshotRace(r=state.race){return {category:r.category||'',raceDate:r.raceDate||'',track:r.track||'',raceNo:r.raceNo||'',postTime:r.postTime||'',distance:r.distance||'',surface:r.surface||'',trackCondition:r.trackCondition||'',bias:r.bias||'',pace:r.pace||'',chaos:r.chaos??null}}
+function snapshotRace(r=state.race){return {category:r.category||'',raceDate:r.raceDate||'',track:r.track||'',raceNo:r.raceNo||'',postTime:r.postTime||'',distance:r.distance||'',surface:r.surface||'',trackCondition:r.trackCondition||'',bias:r.bias||'',pace:r.pace||'',chaos:r.chaos??null,volatilityIndex:r.volatilityIndex??null}}
 function longshotHorse(h){return {valueType:h.valueType||'',valueMark:h.valueMark||'',winValueFlag:h.winValueMark||'',placeValueFlag:h.placeValueMark||'',longshotScore:h.longshotScore??null,marketGapScore:h.marketGapScore??null,timeValueScore:h.timeValueScore??null,courseValueScore:h.courseValueScore??null,paceFitScore:h.paceFitScore??null,reboundScore:h.reboundScore??null,popularityPercentile:h.popularityPercentile??null,abilityRank:h.abilityRank??null,winRank:h.winRank??null,placeRank:h.placeRank??null,overallRank:h.overallRank??null,timeRank:h.timeRank??null,timeValueFlag:h.timeValueFlag||'',longshotReasons:Array.isArray(h.longshotReasons)?cloneData(h.longshotReasons):[]}}
 function predictionHorse(h){return {horseNo:Number(h.horseNo),horseName:h.horseName,win:h.win,place:h.place,overall:h.overall,abilityScore:h.abilityScore??h.scores?.timeIndex??null,features:h.features?cloneData(h.features):null,predictedTime:h.predictedTime,predictedTimeType:h.predictedTimeType||'',predictedTimeConfidence:h.predictedTimeConfidence??null,predictedTimeScenarios:h.predictedTimeScenarios?cloneData(h.predictedTimeScenarios):null,abilityMark:h.abilityMark,sourceMark:h.sourceMark||'',dataConfidence:h.dataConfidence,runningStyle:h.runningStyle||'',weight:h.weight??null,...longshotHorse(h)}}
 function marketHorse(h){return {horseNo:Number(h.horseNo),odds:h.odds??null,popularity:h.popularity??null,ev:h.ev??null,warningMark:h.warningMark||'',...longshotHorse(h)}}
+const VOLATILITY_WEIGHTS=Object.freeze({similar:30,winBunching:20,marketGap:15,dangerousFavorites:15,longshotDensity:10,timeCloseness:5,paceUncertainty:5});
+function volatilityLabel(value){const v=Number(value);return v<30?'順当':v<50?'やや順当':v<70?'波乱注意':v<85?'波乱':'大波乱'}
+function volatilityConfidenceLabel(value){const v=Number(value);return v<40?'低':v<70?'中':'高'}
+function numericList(values){return values.map(Number).filter(Number.isFinite)}
+function spread(values,count=5){const a=numericList(values).sort((x,y)=>y-x).slice(0,count);return a.length>1?a[0]-a[a.length-1]:null}
+function normalizedSimilarity(a,b,scale){if(a==null||b==null)return .5;return clamp(1-Math.abs(Number(a)-Number(b))/scale,0,1)}
+function volatilityRaceProfile(record){
+ const race=record?.predictionSnapshot?.race||record?.race||{},horses=frozenHorses(record),fieldSize=horses.length;
+ const wins=numericList(horses.map(h=>h.win)).sort((a,b)=>b-a),places=numericList(horses.map(h=>h.place)).sort((a,b)=>b-a),abilities=numericList(horses.map(h=>h.abilityScore??h.overall)).sort((a,b)=>b-a),overall=numericList(horses.map(h=>h.overall)).sort((a,b)=>b-a),times=numericList(horses.map(h=>timeToSec(h.predictedTime))).sort((a,b)=>a-b);
+ const rankedByWin=[...horses].filter(h=>Number.isFinite(Number(h.win))).sort((a,b)=>Number(b.win)-Number(a.win)),rankedByPopularity=[...horses].filter(h=>Number.isFinite(Number(h.popularity))).sort((a,b)=>Number(a.popularity)-Number(b.popularity));
+ const popRank=new Map(rankedByPopularity.map((h,i)=>[Number(h.horseNo),i+1]));
+ const rankGap=rankedByWin.map((h,i)=>Math.abs((i+1)-(popRank.get(Number(h.horseNo))??i+1))),marketGap=rankGap.length?clamp(mean(rankGap)/(Math.max(3,fieldSize)*.45)*100,0,100):50;
+ const warnings=horses.filter(h=>h.warningMark||h.warning).length,longshots=horses.filter(h=>h.valueMark||h.longshotScore>=60).length;
+ const topFavorites=rankedByPopularity.slice(0,3),dangerousFavorites=topFavorites.filter(h=>h.warningMark||h.warning).length;
+ const bestTime=times[0],timeFourth=times[Math.min(3,times.length-1)],timeGap=bestTime!=null&&timeFourth!=null?timeFourth-bestTime:null;
+ const winGap=wins.length>1?wins[0]-wins[1]:null,winTop5Gap=wins.length>1?wins[0]-wins[Math.min(4,wins.length-1)]:null,abilityGap=abilities.length>1?abilities[0]-abilities[Math.min(4,abilities.length-1)]:null;
+ const styles=horses.map(h=>String(h.runningStyle||'')).filter(Boolean),styleCounts=styles.reduce((m,x)=>(m[x]=(m[x]||0)+1,m),{}),styleMax=Math.max(0,...Object.values(styleCounts)),paceUncertainty=styles.length?clamp((1-styleMax/styles.length)*135,0,100):50;
+ const completeness=[wins.length/Math.max(1,fieldSize),places.length/Math.max(1,fieldSize),times.length/Math.max(1,fieldSize),rankedByPopularity.length/Math.max(1,fieldSize)].reduce((s,x)=>s+clamp(x,0,1),0)/4;
+ const supportedDeep=horses.filter(h=>Number(h.popularity)>=10&&((Number(h.place)>=20)||(Number(h.marketGapScore)>=60)||(Number(h.timeRank)<=4))).length;
+ return {track:String(race.track||''),distance:num(race.distance),surface:String(race.surface||''),raceClass:String(race.raceClass||race.class||race.category||''),trackCondition:String(race.trackCondition||''),fieldSize,wins:wins.slice(0,5),places:places.slice(0,5),winGap,winTop5Gap,placeSpread:spread(places,5),abilityGap,overallSpread:spread(overall,5),timeGap,marketGap,warnings,longshots,dangerousFavorites,supportedDeep,paceUncertainty,completeness};
+}
+function actualUpsetScore(record){
+ const top3=new Set(resultTop3(record)),horses=frozenHorses(record),byPop=[...horses].filter(h=>Number.isFinite(Number(h.popularity))).sort((a,b)=>Number(a.popularity)-Number(b.popularity)),popByNo=new Map(horses.map(h=>[Number(h.horseNo),Number(h.popularity)])),topPops=resultTop3(record).map(no=>popByNo.get(Number(no))).filter(Number.isFinite);
+ let score=0;const reasons=[];
+ if(byPop[0]&&!top3.has(Number(byPop[0].horseNo))){score+=20;reasons.push('1番人気が馬券外')}
+ if(byPop.length>=2&&byPop.slice(0,2).every(h=>!top3.has(Number(h.horseNo)))){score+=20;reasons.push('2番人気以内が両方馬券外')}
+ if(topPops.some(p=>p>=7)){score+=20;reasons.push('7人気以下がTOP3')}
+ if(topPops.some(p=>p>=10)){score+=25;reasons.push('10人気以下がTOP3')}
+ if(topPops.filter(p=>p>=7).length>=2){score+=15;reasons.push('人気薄2頭がTOP3')}
+ const highValue=horses.some(h=>top3.has(Number(h.horseNo))&&Number(h.popularity)>=7&&Number(h.ev)>=130);if(highValue){score+=10;reasons.push('高期待値穴馬がTOP3')}
+ return {score:clamp(score,0,100),upset:score>=50,orderly:score<50,reasons};
+}
+function distributionSimilarity(a,b){const n=Math.min(a.length,b.length,5);if(!n)return .5;let diff=0;for(let i=0;i<n;i++)diff+=Math.abs(Number(a[i]||0)-Number(b[i]||0));return clamp(1-diff/(n*25),0,1)}
+function volatilitySimilarity(a,b){
+ const exact=(x,y,unknown=.5)=>!x||!y?unknown:String(x)===String(y)?1:0;
+ const parts=[
+  [.12,exact(a.track,b.track,.35)],[.12,normalizedSimilarity(a.distance,b.distance,600)],[.06,exact(a.surface,b.surface,.6)],[.05,exact(a.raceClass,b.raceClass,.6)],[.08,normalizedSimilarity(a.fieldSize,b.fieldSize,8)],
+  [.13,distributionSimilarity(a.wins,b.wins)],[.12,distributionSimilarity(a.places,b.places)],[.10,normalizedSimilarity(a.abilityGap,b.abilityGap,35)],[.08,normalizedSimilarity(a.timeGap,b.timeGap,3)],[.06,normalizedSimilarity(a.marketGap,b.marketGap,60)],[.05,(normalizedSimilarity(a.longshots,b.longshots,4)+normalizedSimilarity(a.warnings,b.warnings,3))/2],[.03,exact(a.trackCondition,b.trackCondition,.65)]
+ ];return clamp(parts.reduce((s,[w,v])=>s+w*v,0),0,1);
+}
+function volatilityHistoryBefore(current,history){
+ const currentId=raceId(current?.race||current?.predictionSnapshot?.race||{}),stamp=Date.parse(current?.predictionSnapshot?.createdAt||current?.predictionSnapshot?.generatedAt||`${current?.race?.raceDate||current?.predictionSnapshot?.race?.raceDate||'9999-12-31'}T23:59:59Z`);
+ return (history||[]).filter(r=>raceId(r?.race||r?.predictionSnapshot?.race||{})!==currentId&&resultOrder(r).length>=3&&(!Number.isFinite(stamp)||Date.parse(r?.predictionSnapshot?.createdAt||r?.predictionSnapshot?.generatedAt||`${r?.race?.raceDate||'1970-01-01'}T00:00:00Z`)<stamp));
+}
+function calculateVolatilityIndex(current,history=[]){
+ const profile=volatilityRaceProfile(current),eligible=volatilityHistoryBefore(current,history).map(record=>({record,profile:volatilityRaceProfile(record)})).map(x=>({...x,similarity:volatilitySimilarity(profile,x.profile),actual:actualUpsetScore(x.record)})).sort((a,b)=>b.similarity-a.similarity);
+ let similar=eligible.filter(x=>x.similarity>=.35).slice(0,50);if(similar.length<20)similar=eligible.filter(x=>x.similarity>=.20).slice(0,50);
+ const weightSum=similar.reduce((s,x)=>s+x.similarity,0),similarUpsetRate=weightSum?similar.reduce((s,x)=>s+x.similarity*x.actual.score,0)/weightSum:50,similarStabilityRate=100-similarUpsetRate;
+ const winBunching=clamp(100-((profile.winTop5Gap??20)/28*100),0,100),timeCloseness=clamp(100-((profile.timeGap??1.5)/3*100),0,100),marketGap=profile.marketGap,dangerousFavorites=clamp(profile.dangerousFavorites/3*100,0,100),longshotDensity=clamp((profile.longshots*20)+(profile.supportedDeep*20),0,100);
+ const components={similar:similarUpsetRate,winBunching,marketGap,dangerousFavorites,longshotDensity,timeCloseness,paceUncertainty:profile.paceUncertainty};
+ const rawUpsetScore=Object.entries(VOLATILITY_WEIGHTS).reduce((s,[key,w])=>s+components[key]*w/100,0);
+ const dominantWin=clamp(((profile.winGap??0)-8)/22*100,0,100),placeConcentration=clamp(((profile.placeSpread??0)-18)/40*100,0,100),abilitySeparation=clamp((profile.abilityGap??0)/35*100,0,100),timeSeparation=clamp((profile.timeGap??0)/3*100,0,100),marketAlignment=100-profile.marketGap,noRisk=clamp(100-profile.dangerousFavorites*34-profile.longshots*16,0,100);
+ const stabilityScore=clamp(similarStabilityRate*.3+dominantWin*.2+placeConcentration*.15+abilitySeparation*.12+timeSeparation*.08+marketAlignment*.1+noRisk*.05,0,100),stabilityAdjustment=stabilityScore*.35,unshrunk=clamp(rawUpsetScore-stabilityAdjustment,0,100);
+ const sampleConfidence=similar.length<10?20+similar.length*2:similar.length<20?40+(similar.length-10)*1.5:similar.length<50?55+(similar.length-20):85,confidence=clamp(Math.round(sampleConfidence*(.55+.45*profile.completeness)),0,100),reliability=.25+.65*(confidence/100),volatilityIndex=Math.round(clamp(50+(unshrunk-50)*reliability,0,100));
+ const factorLabels=[['winBunching','AI上位が接近'],['marketGap','人気とAI評価の乖離が大きい'],['dangerousFavorites','上位人気に危険評価'],['longshotDensity',profile.supportedDeep?'10人気以下に有力候補':'穴馬候補が複数'],['timeCloseness','予想TIME上位が接近'],['paceUncertainty','脚質構成の不確実性']].sort((a,b)=>components[b[0]]-components[a[0]]);
+ const reasons=[];if(similar.length)reasons.push(`類似${similar.length}Rの加重波乱度 ${similarUpsetRate.toFixed(1)}%`);for(const [key,label] of factorLabels)if(components[key]>=60&&reasons.length<3)reasons.push(label);if(!reasons.length)reasons.push('波乱要因は限定的');
+ const stabilityReasons=[];if(dominantWin>=60)stabilityReasons.push('AI1位が明確に突出');if(marketAlignment>=70)stabilityReasons.push('人気とAI順位が一致');if(similar.length&&similarStabilityRate>=60)stabilityReasons.push(`類似レースの${similarStabilityRate.toFixed(1)}%が順当寄り`);if(!stabilityReasons.length&&stabilityScore>=55)stabilityReasons.push('能力・TIME差が順当方向');
+ return {schemaVersion:1,algorithmVersion:'RVI-1.0',volatilityIndex,label:volatilityLabel(volatilityIndex),confidence,confidenceLabel:volatilityConfidenceLabel(confidence),similarRaceCount:similar.length,similarUpsetRate:Number(similarUpsetRate.toFixed(1)),similarStabilityRate:Number(similarStabilityRate.toFixed(1)),upsetScore:Number(rawUpsetScore.toFixed(1)),stabilityScore:Number(stabilityScore.toFixed(1)),stabilityAdjustment:Number(stabilityAdjustment.toFixed(1)),unshrunkScore:Number(unshrunk.toFixed(1)),dataQuality:Number((profile.completeness*100).toFixed(1)),weights:{...VOLATILITY_WEIGHTS},weightPolicy:{current:'RVI-1.0',candidate:null,autoPromotion:false},walkForward:true,reasons:reasons.slice(0,3),stabilityReasons:stabilityReasons.slice(0,3)};
+}
+function currentVolatility(){return state.predictionSnapshot?.volatility||state.volatilitySnapshot||null}
 function makeSnapshot(){
  const now=new Date().toISOString(),ranked=rankFinal();
  const top3=ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),score:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,odds:h.odds,popularity:h.popularity,predictedTime:h.predictedTime}));
@@ -385,7 +445,9 @@ function makeSnapshot(){
  const marks=['◎','○','▲']; state.horses.forEach(h=>h.finalMark='');
  top3.forEach((x,i)=>{const h=state.horses.find(z=>Number(z.horseNo)===Number(x.horseNo));if(h)h.finalMark=marks[i]});
  if(!state.predictionSnapshot){
-   state.predictionSnapshot={schemaVersion:3,featureSchemaVersion:1,modelVersion:APP_VERSION,generatedAt:now,createdAt:now,race:snapshotRace(),horses:state.horses.map(predictionHorse),locked:true};
+   const draft={race:snapshotRace(),predictionSnapshot:{createdAt:now,generatedAt:now,race:snapshotRace(),horses:state.horses.map(predictionHorse)},marketSnapshot:{horses:state.horses.map(marketHorse)}};
+   const volatility=calculateVolatilityIndex(draft,getAllRaces());state.race.volatilityIndex=volatility.volatilityIndex;
+   state.predictionSnapshot={schemaVersion:3,featureSchemaVersion:1,modelVersion:APP_VERSION,generatedAt:now,createdAt:now,race:snapshotRace(),horses:state.horses.map(predictionHorse),volatility,locked:true};
  }
  state.snapshotSchemaVersion=state.predictionSnapshot?.schemaVersion||2;
  if(!state.marketSnapshot||!state.validationCompleted){state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt||now,createdAt:state.race.oddsUpdatedAt||now,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)}}
@@ -409,7 +471,9 @@ function render(){
  const usefulRaceName=r.raceName&&!/^(地方競馬\s*)?データ情報$/u.test(r.raceName)?r.raceName:'';
  $('raceMeta').textContent=usefulRaceName||(!h.length?'予想データファイルを読み込むと自動表示します。':'');
  $('raceMeta').hidden=!$('raceMeta').textContent;
- $('chaosBadge').textContent=`波乱 ${r.chaos??'—'}%`;$('paceBadge').textContent=`展開 ${r.pace||'—'}`;$('biasText').textContent=`馬場 ${r.bias||r.trackCondition||'—'}`;
+ const volatility=currentVolatility(),volatilityValue=volatility?.volatilityIndex??r.volatilityIndex;
+ $('chaosBadge').textContent=volatilityValue==null?'波乱指数 —':`波乱 ${volatilityValue}%｜${volatilityLabel(volatilityValue)}`;$('paceBadge').textContent=`展開 ${r.pace||'—'}`;$('biasText').textContent=`馬場 ${r.bias||r.trackCondition||'—'}`;
+ if($('volatilitySummary')){$('volatilitySummary').hidden=!volatility;$('volatilityHeadline').textContent=volatility?`波乱指数 ${volatility.volatilityIndex}%｜${volatility.label}`:'波乱指数 —';$('volatilityConfidence').textContent=volatility?`信頼度 ${volatility.confidenceLabel} ${volatility.confidence}%`:'信頼度 —';$('volatilityStats').innerHTML=volatility?`<span>類似 ${volatility.similarRaceCount}R</span><span>類似波乱率 ${volatility.similarUpsetRate.toFixed(1)}%</span><span>順当度 ${volatility.similarStabilityRate.toFixed(1)}%</span>`:'';$('volatilityReasons').innerHTML=volatility?`<strong>${volatility.volatilityIndex<50?'順当要因':'主な波乱要因'}</strong><ul>${(volatility.volatilityIndex<50&&volatility.stabilityReasons?.length?volatility.stabilityReasons:volatility.reasons||[]).slice(0,3).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
  const prob=h.filter(x=>x.win!=null&&x.place!=null).length,time=h.filter(x=>x.predictedTime).length,marketState=getMarketDisplayState(r,h);
  const names=new Set(h.map(x=>cleanName(x.horseName))); const bad=h.some(x=>!x.horseName)||names.size!==h.length;
  $('integrityGrid').innerHTML=[['レースID',rid||'—'],['AI確率',`${prob}/${h.length}頭`],['予想TIME',`${time}/${h.length}頭`],['市場',marketState.label],['データ状態',bad?'要確認':'正常'],['保存方式',cloudState.available?'クラウド D1':researchStorageMode.includes('indexedDB')?'IndexedDB':'互換保存'],['生成方式',r.autoGenerated?'NAR自動':'JSON'],['評価モード',r.dataMode||'—']].map(([a,b])=>`<div><span>${a}</span><strong>${esc(b)}</strong></div>`).join('');
@@ -1055,6 +1119,26 @@ function aggregateAdvanced(races){
  adv.confidence=confidence;
  return adv;
 }
+function volatilityCalibration(races){
+ const samples=[];
+ for(const r of races){const prediction=r?.predictionSnapshot?.volatility;if(prediction?.volatilityIndex==null||resultOrder(r).length<3)continue;const actual=actualUpsetScore(r),p=clamp(Number(prediction.volatilityIndex),0,100),topPops=resultTop3(r).map(no=>Number(frozenHorseByNo(r,no)?.popularity)).filter(Number.isFinite);samples.push({race:r,p,actual:actual.score,event:actual.upset,has7:topPops.some(x=>x>=7),has10:topPops.some(x=>x>=10)})}
+ const group=items=>({n:items.length,upset:items.filter(x=>x.event).length,orderly:items.filter(x=>!x.event).length,has7:items.filter(x=>x.has7).length,has10:items.filter(x=>x.has10).length});
+ const high=group(samples.filter(x=>x.p>=70)),low=group(samples.filter(x=>x.p<=30)),mae=samples.length?mean(samples.map(x=>Math.abs(x.p-x.actual))):null,brier=samples.length?mean(samples.map(x=>(x.p/100-(x.event?1:0))**2)):null;
+ const bands=[['0–29',0,29],['30–49',30,49],['50–69',50,69],['70–84',70,84],['85–100',85,100]].map(([label,min,max])=>({label,...group(samples.filter(x=>x.p>=min&&x.p<=max))}));
+ const distanceBand=r=>{const d=Number(r?.race?.distance||r?.predictionSnapshot?.race?.distance);return d<=1000?'800–1000':d<=1400?'1200–1400':d<=1700?'1500–1700':d<=2000?'1800–2000':'2100以上'},fieldBand=r=>{const n=frozenHorses(r).length;return n<=8?'少頭数':n<=12?'中頭数':'多頭数'};
+ const summarizeBy=keyFn=>{const out={};for(const x of samples){const key=keyFn(x.r),g=(out[key]??=[]);g.push(x)}return Object.fromEntries(Object.entries(out).map(([k,v])=>[k,group(v)]))};
+ return {samples,high,low,mae,brier,bands,byTrack:summarizeBy(r=>r?.race?.track||r?.predictionSnapshot?.race?.track||'その他'),byDistance:summarizeBy(distanceBand),byField:summarizeBy(fieldBand)};
+}
+function renderVolatilityCalibration(races){
+ const c=volatilityCalibration(races),rate=(n,d)=>d?`${(n/d*100).toFixed(1)}%`:'—';
+ const headline=c.samples.length?`n=${c.samples.length}`:'蓄積待ち';
+ const summary=`<div class="audit-grid"><div><span>波乱70%以上・実波乱率</span><strong>${rate(c.high.upset,c.high.n)}</strong><small>${c.high.upset}/${c.high.n}R</small></div><div><span>波乱30%以下・順当率</span><strong>${rate(c.low.orderly,c.low.n)}</strong><small>${c.low.orderly}/${c.low.n}R</small></div><div><span>指数 MAE</span><strong>${c.mae==null?'—':c.mae.toFixed(1)}</strong></div><div><span>Brier相当</span><strong>${c.brier==null?'—':c.brier.toFixed(3)}</strong></div><div><span>高波乱群 7人気以下TOP3</span><strong>${rate(c.high.has7,c.high.n)}</strong></div><div><span>高波乱群 10人気以下TOP3</span><strong>${rate(c.high.has10,c.high.n)}</strong></div></div>`;
+ const rows=c.bands.map(g=>`<div class="calibration-row"><strong>${g.label}%</strong><span>対象 ${g.n}R・${sampleLabel(g.n)}</span><span>実波乱 ${rate(g.upset,g.n)} / 順当 ${rate(g.orderly,g.n)}</span><span>7人気以下 ${rate(g.has7,g.n)} / 10人気以下 ${rate(g.has10,g.n)}</span></div>`).join('');
+ const groupRows=(title,obj)=>`<div class="volatility-group"><strong>${title}</strong>${Object.entries(obj).sort((a,b)=>b[1].n-a[1].n).slice(0,7).map(([key,g])=>`<span>${esc(key)} ${g.n}R｜実波乱 ${rate(g.upset,g.n)}</span>`).join('')||'<span>データなし</span>'}</div>`;
+ const breakdown=`<div class="condition-grid volatility-breakdown">${groupRows('競馬場別',c.byTrack)}${groupRows('距離帯別',c.byDistance)}${groupRows('頭数別',c.byField)}</div>`;
+ const note=c.samples.length?'<div class="metric-definition">予想時点に固定保存した波乱指数だけを、結果取得後の実波乱ラベルと比較します。候補重みは現行重みと分離し、自動で本番へ昇格しません。</div>':'<div class="metric-definition">Ver.9.9.26以降に予想時点の波乱指数Snapshotが蓄積されると較正結果を表示します。旧レースを結果から逆算して本番Snapshotへ書き戻すことはありません。</div>';
+ return dashAccordion('volatility','波乱指数較正',headline,summary+rows+breakdown+note,{summaryText:c.samples.length?`高波乱 実波乱${rate(c.high.upset,c.high.n)}`:'データ不足'});
+}
 function dashAccordion(key,title,count,body,{open=false,summaryText=''}={}){
  const isOpen=dashboardUi.open[key]??open;
  return `<details class="dash-section stat-section dash-accordion" data-dash-key="${key}" ${isOpen?'open':''}><summary><strong>${title}</strong>${summaryText?`<span class="accordion-summary">${esc(summaryText)}</span>`:''}${count?`<b>${esc(count)}</b>`:''}<i></i></summary><div class="accordion-body">${body}</div></details>`;
@@ -1240,7 +1324,7 @@ function renderDashboard(){
  const versionHtml=dashAccordion('modelVersions','モデルバージョン別',`${Object.keys(versions).length}件`,Object.entries(versions).map(([version,g])=>{const vr=analysisRaces.filter(r=>(r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy')===version),ls=compareLongshotModels(vr).next;return `<div class="condition-row"><strong>${esc(version)}</strong><span>${g.n}R・${sampleLabel(g.n)}</span><span>FINAL勝 ${pct(g.win,g.n)} / TOP3 ${pct(g.top3,g.n)}</span><span>TIME ${g.time.length?mean(g.time).toFixed(2)+'秒':'—'} / 穴TOP3 ${pct(ls.top3,ls.candidates)}</span><span>7人気以下捕捉 ${ls.target7?pct(ls.capture7,ls.target7):'—'} / 10人気以下 ${ls.target10?pct(ls.capture10,ls.target10):'—'}</span></div>`}).join('')||'<p class="muted">データなし</p>',{summaryText:Object.entries(versions).sort((a,b)=>b[1].n-a[1].n)[0]?.[0]||''});
  const longshotComparison=compareLongshotModels(analysisRaces),comparisonRows=Object.values(longshotComparison).map(g=>`<div class="calibration-row"><strong>${g.label}</strong><span>候補 ${g.candidates}頭 / TOP3 ${g.top3} / 勝 ${g.win}</span><span>7人気以下捕捉 ${g.target7?pct(g.capture7,g.target7):'—'}（${g.capture7}/${g.target7}）・10人気以下 ${g.target10?pct(g.capture10,g.target10):'—'}（${g.capture10}/${g.target10}）・単勝ROI ${g.roiN?(g.roiReturn/g.roiN*100).toFixed(1)+'%':'—'}</span></div>`).join(''),comparisonHtml=dashAccordion('longshotCompare','穴馬ロジック比較','シミュレーション',`${comparisonRows}<div class="metric-definition">保存済みの予想Snapshotを読み取り専用で比較します。過去データは書き換えず、結果から穴馬判定を作り直すこともありません。</div>`,{summaryText:`新 TOP3 ${longshotComparison.next.top3}頭`});
  const excluded=races.length-analysisRaces.length,analysisNote=`<div class="analysis-scope">検証母集団 ${races.length}R｜分析対象 ${analysisRaces.length}R｜品質フィルター除外 ${excluded}R</div>`;
- $('dashModels').innerHTML=`${analysisNote}<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${renderIntegrityAudit(races)}${modelHtml}${versionHtml}${calHtml}${timeHtml}${comparisonHtml}${renderFailureAnalysis(analysisRaces)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
+ $('dashModels').innerHTML=`${analysisNote}<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${renderIntegrityAudit(races)}${renderVolatilityCalibration(analysisRaces)}${modelHtml}${versionHtml}${calHtml}${timeHtml}${comparisonHtml}${renderFailureAnalysis(analysisRaces)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
  $('dashRaces').innerHTML=renderSavedRaces(races);
  bindDashboardUi();
 }
@@ -1267,7 +1351,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getResultDisplayState,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getResultDisplayState,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
