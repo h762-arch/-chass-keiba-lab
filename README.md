@@ -1,4 +1,4 @@
-# CHASS KEIBA LAB Ver.9.9.14
+# CHASS KEIBA LAB Ver.9.9.15
 
 ## Result Fetch Diagnostic / 原因可視化
 

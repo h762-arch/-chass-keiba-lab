@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.14';
+const APP_VERSION='9.9.15';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -58,7 +58,7 @@ async function fetchNarSyncApi(url,{signal,attempts=3}={}){
  }
  throw lastError||requestError('network_error','通信に失敗しました。');
 }
-function diagnosticRows(audit={}){const rows=[];if(audit.httpStatus!=null)rows.push(['HTTP',String(audit.httpStatus)]);if(audit.errorCode)rows.push(['エラー',audit.errorCode]);if(audit.urlType)rows.push(['経路',audit.urlType]);if(audit.attemptCount!=null)rows.push(['Worker試行',String(audit.attemptCount)]);if(audit.clientAttemptCount!=null)rows.push(['端末試行',String(audit.clientAttemptCount)]);if(audit.fallbackTried!=null)rows.push(['予備経路',audit.fallbackUsed?'成功':audit.fallbackTried?'試行済':'未試行']);for(const d of audit.diagnostics||[]){if(d.stage==='parse'){rows.push([`${d.urlType}解析`,`${d.ok?'成功':'未確定'} / 着順${d.finishCount??0} / 行${d.resultRows??0}`])}else rows.push([`${d.urlType} #${d.attempt||'-'}`,d.ok?`HTTP ${d.httpStatus||200} / ${d.durationMs??'-'}ms`:`${d.errorCode||'error'}${d.httpStatus?' / HTTP '+d.httpStatus:''} / ${d.durationMs??'-'}ms`])}return rows}
+function diagnosticRows(audit={}){const rows=[];if(audit.apiOk!=null)rows.push(['API取得',audit.apiOk?'成功':'失敗']);if(audit.stage)rows.push(['取得段階',String(audit.stage)]);if(audit.postFetchStage)rows.push(['後段処理',`${audit.postFetchStage}${audit.postFetchError?' / '+audit.postFetchError:''}`]);if(audit.httpStatus!=null)rows.push(['HTTP',String(audit.httpStatus)]);if(audit.errorCode)rows.push(['エラー',audit.errorCode]);if(audit.urlType)rows.push(['経路',audit.urlType]);if(audit.attemptCount!=null)rows.push(['Worker試行',String(audit.attemptCount)]);if(audit.clientAttemptCount!=null)rows.push(['端末試行',String(audit.clientAttemptCount)]);if(audit.fallbackTried!=null)rows.push(['予備経路',audit.fallbackUsed?'成功':audit.fallbackTried?'試行済':'未試行']);for(const d of audit.diagnostics||[]){if(d.stage==='parse'){rows.push([`${d.urlType}解析`,`${d.ok?'成功':'未確定'} / 着順${d.finishCount??0} / 行${d.resultRows??0}`])}else rows.push([`${d.urlType} #${d.attempt||'-'}`,d.ok?`HTTP ${d.httpStatus||200} / ${d.durationMs??'-'}ms`:`${d.errorCode||'error'}${d.httpStatus?' / HTTP '+d.httpStatus:''} / ${d.durationMs??'-'}ms`])}return rows}
 function renderResultDiagnostics(audit=state.resultFetchAudit){const box=$('resultDiagnostics'),body=$('resultDiagnosticsBody');if(!box||!body)return;const rows=diagnosticRows(audit||{});box.hidden=!rows.length;body.innerHTML=rows.map(([k,v])=>`<div class="diag-row"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}
 async function fetchResultDiagnostic(r){const code=narCode(r.track);if(!code||!r.raceDate||!r.raceNo)return null;try{const res=await fetch(`/api/nar/result-diagnostic?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`,{cache:'no-store'}),d=await responseJson(res);return d}catch(e){return {ok:false,errorCode:e?.code||'diagnostic_unavailable',httpStatus:e?.status||null,error:String(e?.message||e),diagnostics:[]}}}
 function errorLabel(e){
@@ -565,11 +565,15 @@ async function syncLiveOdds(silent=false){
 }
 function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}if($('autoOddsState')){$('autoOddsState').textContent=on?'ON':'OFF';$('autoOddsState').classList.toggle('is-on',on)}}
 
-function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存',resultData=null}={}){
+function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存',resultData=null,onStage=null}={}){
+ const stage=name=>{if(typeof onStage==='function')onStage(name)};
+ stage('validate_result');
  const f=(finishOrder||[]).map(num).filter(x=>x!=null).slice(0,3);
  if(f.length<3)return false;
  $('finish1').value=f[0];$('finish2').value=f[1];$('finish3').value=f[2];
+ stage('freeze_snapshot');
  if(!state.finalSnapshot)makeSnapshot();
+ stage('build_result');
  const tmp={...state,result:{finishOrder:f,actualTimes:{...state.actualTimes}}};
  const autoReasons=failureReasonsForRace(tmp).map(x=>x.label).join(' / ');
  state.result={
@@ -600,11 +604,16 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  state.resultFetchedAt=new Date().toISOString();
  state.validationCompleted=true;
  state.validated=true;
+ stage('build_validation');
  const diagnostics=diagnosticsForRace(state);
  state.validationSnapshot={schemaVersion:3,modelVersion:state.predictionSnapshot?.modelVersion||APP_VERSION,generatedAt:new Date().toISOString(),finishOrder:[...state.resultSnapshot.finishOrder],failures:diagnostics.failures,checks:diagnostics.checks,dataQuality:diagnostics.quality};
+ stage('persist');
  persist(true);
+ stage('render_result');
  renderResultDisplayState();
+ stage('render_dashboard');
  renderDashboard();
+ stage('complete');
  if(!silent)alert('検証結果を保存しました。');
  return true;
 }
@@ -647,12 +656,32 @@ async function syncNar(options={}){
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,clientAttemptCount:d.clientAttemptCount||1,urlType:d.urlType||'RaceMarkTable',fallbackUsed:!!d.fallbackUsed,fallbackTried:!!d.fallbackTried,diagnostics:d.diagnostics||[],checkedAt:d.checkedAt||state.resultFetchCheckedAt};
+   state.resultFetchAudit={apiOk:true,stage:'api_received',errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,clientAttemptCount:d.clientAttemptCount||1,urlType:d.urlType||'RaceMarkTable',fallbackUsed:!!d.fallbackUsed,fallbackTried:!!d.fallbackTried,diagnostics:d.diagnostics||[],checkedAt:d.checkedAt||state.resultFetchCheckedAt};
    state.resultFetchError='';state.resultErrorType='';
    if(complete){
-     // 取得時点の結果・最終オッズ・実走TIMEを一体で保存する。
-     // 後から手動修正した場合は既存の保存ボタンで上書きできる。
-     saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存',resultData:d});
+     // API取得成功と保存・再描画を分離する。後段で例外が起きても取得成功を失敗扱いへ戻さない。
+     let postFetchStage='save_start';
+     try{
+       saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存',resultData:d,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,stage:'post_fetch',postFetchStage:stage}}});
+       state.resultFetchAudit={...state.resultFetchAudit,stage:'complete',postFetchStage:'complete',postFetchError:''};
+     }catch(saveError){
+       const message=String(saveError?.message||saveError).slice(0,180);
+       state.resultStatus='fetched';
+       state.resultErrorType=null;
+       state.resultFetchError='';
+       state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'post_fetch_error',errorCode:`post_fetch_${postFetchStage}`,postFetchStage,postFetchError:message};
+       // 少なくとも取得済み着順は保持する。saveFetchedResultが途中まで進んでいればその内容を尊重する。
+       if(!(state.resultSnapshot?.finishOrder||[]).length){
+         state.result={finishOrder:d.finishOrder.slice(0,3).map(Number),memo:$('memo')?.value||'',autoDiagnosis:'',at:new Date().toISOString(),actualTimes:{...state.actualTimes},source:'NAR公式取得（後段エラー）',autoSaved:true};
+         state.resultSnapshot={schemaVersion:3,source:'NAR公式取得（後段エラー）',fetchedAt:d.acquiredAt||new Date().toISOString(),finishOrder:d.finishOrder.slice(0,3).map(Number),actualTimes:{...state.actualTimes},horses:Array.isArray(d.results)?d.results:[],weather:d.resultMeta?.weather||'',trackCondition:d.resultMeta?.trackCondition||'',quality:d.quality||null,market:state.resultMarketSnapshot||null};
+       }
+       state.predictionSaved=true;state.resultFetchedAt=d.acquiredAt||new Date().toISOString();
+       try{persist(existingValidated(raceId(r)))}catch{}
+       try{renderResultDisplayState()}catch{}
+       try{renderResultDiagnostics()}catch{}
+       $('narStatus').textContent=`結果取得成功：${d.finishOrder.slice(0,3).join('-')}｜保存・再集計の後段処理でエラー（${postFetchStage}）｜取得結果は保持しています。`;
+       return {complete:true,pending:false,status:'fetched',data:d,postFetchError:saveError,postFetchStage};
+     }
    }else{
      state.predictionSaved=true;
      state.resultStatus=alreadyComplete?'fetched':'pending';
@@ -677,7 +706,7 @@ async function syncNar(options={}){
    state.resultErrorType=e?.code||'unknown_error';
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={errorCode:state.resultErrorType,httpStatus:e?.status||null,attemptCount:e?.attemptCount||null,clientAttemptCount:3,urlType:e?.urlType||'RaceMarkTable',fallbackTried:!!e?.fallbackTried,diagnostics:e?.diagnostics||[],checkedAt:state.resultFetchCheckedAt};
+   state.resultFetchAudit={apiOk:false,stage:'api_fetch',errorCode:state.resultErrorType,httpStatus:e?.status||null,attemptCount:e?.attemptCount||null,clientAttemptCount:3,urlType:e?.urlType||'RaceMarkTable',fallbackTried:!!e?.fallbackTried,diagnostics:e?.diagnostics||[],checkedAt:state.resultFetchCheckedAt};
    const diag=await fetchResultDiagnostic(r);if(diag){state.resultFetchAudit={...state.resultFetchAudit,errorCode:diag.errorCode||state.resultFetchAudit.errorCode,httpStatus:diag.httpStatus??state.resultFetchAudit.httpStatus,attemptCount:diag.attemptCount??state.resultFetchAudit.attemptCount,urlType:diag.urlType||state.resultFetchAudit.urlType,fallbackUsed:!!diag.fallbackUsed,fallbackTried:diag.fallbackTried??state.resultFetchAudit.fallbackTried,diagnostics:diag.diagnostics?.length?diag.diagnostics:state.resultFetchAudit.diagnostics,diagnosticOk:!!diag.ok,diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()}}
    persist(existingValidated(raceId(r)));
    renderResultDisplayState();renderResultDiagnostics();

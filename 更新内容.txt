@@ -1,20 +1,20 @@
-CHASS KEIBA LAB Ver.9.9.14
-Result Fetch Diagnostic / 原因可視化
+CHASS KEIBA LAB Ver.9.9.15
+Result Fetch / Post-Fetch Separation
 
-今回の主修正
-- NAR結果の再取得失敗時に「取得診断」を表示します。
-- HTTPステータス、エラーコード、通常/IPAT経路、Worker試行回数、端末試行回数を確認できます。
-- 各取得経路ごとの成功/失敗と解析結果を表示します。
-- /api/nar/result-diagnostic を追加し、通常取得が失敗した際に独立診断します。
-- 保存済み結果がある場合は、結果自体は維持し「再取得のみ失敗」と明確に表示します。
-- 予想ロジック、AI勝率、TOP3率、TIME、期待値、穴馬判定、D1研究データ構造は変更していません。
+今回の修正目的
+- Ver.9.9.14 の診断で RaceMarkTable が HTTP 200、解析成功、着順取得成功なのに画面が unknown_error になるケースを修正。
+- NAR公式からの「取得」と、その後の「保存・検証生成・再描画」を別段階として扱う。
 
-確認方法
-1. 更新後、結果取得済みレースで「結果を再取得・再検証」を押します。
-2. 失敗した場合は「取得診断」が表示されるので開きます。
-3. その画面のスクリーンショットを送ってください。
+主な変更
+1. /api/nar/sync が正常レスポンスを返した時点で API取得成功を確定。
+2. saveFetchedResult() の内部処理を段階化。
+   validate_result / freeze_snapshot / build_result / build_validation / persist / render_result / render_dashboard / complete
+3. 後段処理で例外が発生しても、NAR取得成功を「再取得失敗」へ戻さない。
+4. 後段エラー時も取得済み着順・結果Snapshotを可能な限り保持。
+5. 取得診断に「API取得」「取得段階」「後段処理」を追加。
+6. unknown_error だけではなく post_fetch_<stage> で発生箇所を表示。
+7. 予想ロジック、AI勝率、TOP3率、TIME、期待値、穴馬判定、NARパーサー、D1スキーマは変更なし。
 
-テスト
-- npm test: 85/85 pass
-- npm run check: pass
-- JavaScript構文チェック: pass
+確認
+- npm run check: 85/85 PASS
+- node --check app.js / worker.js / chass-latest.js: PASS
