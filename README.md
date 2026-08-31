@@ -1,4 +1,10 @@
-# CHASS KEIBA LAB Ver.9.9.8
+# CHASS KEIBA LAB Ver.9.9.9
+
+## Ver.9.9.9 NAR Result Fetch Resilience
+
+- NAR公式結果ページは15秒タイムアウト、最大3回の条件付きリトライで取得します。
+- 結果未公開は通信障害と分離し、結果待ちとして扱います。
+- 再取得失敗時も保存済み結果・予想Snapshot・D1結果を消去しません。
 
 ## Ver.9.9.8 D1 Validation Audit Completion
 

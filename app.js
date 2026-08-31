@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.8';
+const APP_VERSION='9.9.9';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -297,7 +297,7 @@ function getResultDisplayState(raceState=state){
  const finishOrder=(raceState?.resultSnapshot?.finishOrder||raceState?.result?.finishOrder||[]).map(Number).filter(Number.isFinite).slice(0,3);
  const done=finishOrder.length>=3,manual=done&&raceState?.result?.source==='手動修正保存';
  const status=done?'fetched':raceState?.resultStatus||(!raceId(raceState?.race)?'unavailable':'pending');
- const label=manual?'手動修正あり':done?'検証済':status==='fetching'?'結果取得中':status==='error'?'取得エラー':status==='pending'?'結果待ち':'未取得';
+ const label=manual?'手動修正あり':done&&raceState?.resultFetchError?'取得済｜再取得失敗':done?'検証済':status==='fetching'?'結果取得中':status==='error'?'通信失敗・再試行可能':status==='pending'?'結果待ち':'未取得';
  return {done,manual,finishOrder,status,label};
 }
 function restoreSavedResultFields(resultState=getResultDisplayState()){
@@ -455,7 +455,7 @@ async function loadAutoRace(){
  try{
    const u=`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`;
    const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
-   if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);
+   if(!res.ok){const error=requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);error.attemptCount=d.attemptCount;error.urlType=d.urlType;throw error}
    if(!isCurrent())throw requestError('stale_request','古いレース取得を破棄しました。');
    if(!Array.isArray(d.horses)||d.horses.length<2)throw requestError('parser_error','出走馬データを取得できませんでした');
    const root=buildAbilityRoot(d,date,track,raceNo);
@@ -596,7 +596,7 @@ async function syncNar(options={}){
    // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
    if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
    const res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
-   if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);
+   if(!res.ok){const error=requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);error.attemptCount=d.attemptCount;error.urlType=d.urlType;throw error}
    if(!isCurrent())throw requestError('stale_request','古い結果取得を破棄しました。');
 
    if(d.actualTimes&&typeof d.actualTimes==='object'){
@@ -616,8 +616,10 @@ async function syncNar(options={}){
    }
 
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
-   const alreadyComplete=state.result?.finishOrder?.length>=3;
+   const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultFetchCheckedAt=new Date().toISOString();
+   state.resultFetchAudit={errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,urlType:d.urlType||'RaceMarkTable',checkedAt:d.checkedAt||state.resultFetchCheckedAt};
+   state.resultFetchError='';state.resultErrorType='';
    if(complete){
      // 取得時点の結果・最終オッズ・実走TIMEを一体で保存する。
      // 後から手動修正した場合は既存の保存ボタンで上書きできる。
@@ -641,14 +643,15 @@ async function syncNar(options={}){
    if(e?.name==='AbortError'||e?.code==='stale_request')return {complete:false,pending:false,status:'cancelled'};
    if(!isCurrent())return {complete:false,pending:false,status:'cancelled'};
    state.predictionSaved=!!(state.predictionSaved||state.predictionSnapshot);
-   const alreadyComplete=state.result?.finishOrder?.length>=3;
+   const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultStatus=alreadyComplete?'fetched':'error';
    state.resultErrorType=e?.code||'unknown_error';
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
+   state.resultFetchAudit={errorCode:state.resultErrorType,httpStatus:e?.status||null,attemptCount:e?.attemptCount||null,urlType:e?.urlType||'RaceMarkTable',checkedAt:state.resultFetchCheckedAt};
    persist(existingValidated(raceId(r)));
    renderResultDisplayState();
-   $('narStatus').textContent=`取得エラー｜${errorLabel(e)} 予想データは保存されています。再取得できます。`;
+   $('narStatus').textContent=alreadyComplete?`取得済｜再取得のみ失敗。保存済み結果は維持しています。${errorLabel(e)}`:`取得エラー｜${errorLabel(e)} 予想データは保存されています。再取得できます。`;
    return {complete:alreadyComplete,pending:false,status:alreadyComplete?'fetched':'error',error:e};
  }finally{
    if(generation===resultSyncGeneration){resultSyncController=null;setButtonBusy('narSync',false);renderResultDisplayState()}
@@ -1045,7 +1048,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getResultDisplayState,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
