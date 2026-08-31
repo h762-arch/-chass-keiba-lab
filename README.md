@@ -1,6 +1,6 @@
-# CHASS KEIBA LAB Ver.9.9.9
+# CHASS KEIBA LAB Ver.9.9.10
 
-## Ver.9.9.9 NAR Result Fetch Resilience
+## Ver.9.9.10 NAR Result Fetch Resilience
 
 - NAR公式結果ページは15秒タイムアウト、最大3回の条件付きリトライで取得します。
 - 結果未公開は通信障害と分離し、結果待ちとして扱います。
@@ -109,3 +109,13 @@ npm run check
 ## Compatibility
 
 `chass-latest.js`は旧配置との互換性を維持するためのlegacy compatibility placeholderです。現在の本体処理は`app.js`に統合されています。
+
+## Ver.9.9.10 D1 Dashboard Consistency
+
+- 過去レースや結果を端末側へ追加した直後でも、オンライン時の検証ダッシュボードは Cloudflare D1 の最新研究データを正式母集団として再取得します。
+- D1 書き込み成功後に研究データ集計をデバウンス再取得し、上部 D1 件数と下部「検証済み」が別タイミングのキャッシュを表示し続ける問題を修正しました。
+- 一括クラウド同期の完了後は `/api/db/research` を再取得してからダッシュボードを更新します。
+- オンライン時の `getAllRaces()` は D1 が返した `eligible` race_id のみを正式な検証母集団として使用します。端末にだけ存在する未同期レースは、D1 反映前に正式な検証件数へ混在しません。
+- D1 再取得中は `D1再集計中` と表示します。
+- 「再集計」および検証ダッシュボードを開いた際にも D1 の最新状態を再確認します。
+- 予想ロジック、AI勝率・複勝率、TIME、期待値、穴馬判定、NAR取得ロジックは変更していません。

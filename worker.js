@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.9.9";
+export const VERSION="9.9.10";
 function json(data,status=200){return new Response(JSON.stringify(data,null,2),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store"}})}
 function errorPayload(e){const status=Number(e?.status)||0,raw=String(e?.message||e);let errorCode='nar_temporary';if(status===404)errorCode='race_not_found';else if(e?.code==='nar_timeout'||/timeout|タイムアウト/i.test(raw))errorCode='nar_timeout';else if(e?.code==='parser_error'||/parse|解析/i.test(raw))errorCode='parser_error';else if(e?.code==='network_error'||/network|fetch|通信/i.test(raw))errorCode='network_error';return {error:raw,errorCode,httpStatus:status||null,attemptCount:Number(e?.attemptCount)||1,urlType:e?.urlType||null,checkedAt:new Date().toISOString()}}
 export function getResearchDb(env){return env?.DB||null}
