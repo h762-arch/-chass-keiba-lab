@@ -1,4 +1,13 @@
-# CHASS KEIBA LAB Ver.9.9.29
+# CHASS KEIBA LAB Ver.9.9.30
+
+## Ver.9.9.30 CHASS AI Data Bridge
+
+- Bearer認証付きのRead-Only API（`/api/chass/v1/*`）から、保存済みD1研究データだけを返します。
+- `latest`、`race`、`recent`、`pending`、`research`を用途別に取得でき、既定・最大件数を制限します。
+- Original SnapshotとLive Adjusted Predictionを分離し、TIME欠損は`null`と欠損理由で表現します。
+- SQLは固定SELECTだけを許可し、GETからD1書込み・NAR再取得・任意SQLを実行できません。
+- CORSは許可Origin一致時のみ、最新系レスポンスは`Cache-Control: no-store`です。
+- OpenAPIは`/api/chass/v1/openapi.json`で公開し、書込み操作や実トークンを含めません。
 
 ## Ver.9.9.29 Scratch Horse Snapshot Preservation & Live Adjustment
 

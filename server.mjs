@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.9.29";
+const VERSION="9.9.30";
+const CHASS_BRIDGE_SCHEMA_VERSION="1.0";
 function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
@@ -28,6 +29,10 @@ function sendJson(res,status,data){
   res.writeHead(status,{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...cors});
   res.end(JSON.stringify(data,null,2));
 }
+function bridgeHeaders(req){const origin=String(req.headers.origin||''),allowed=String(process.env.CHASS_BRIDGE_ALLOWED_ORIGIN||'');return {"content-type":"application/json; charset=utf-8","cache-control":"no-store",...(origin&&allowed&&origin===allowed?{"access-control-allow-origin":origin,"access-control-allow-methods":"GET,OPTIONS","access-control-allow-headers":"Authorization,Content-Type","vary":"Origin"}:{})}}
+function sendBridgeJson(req,res,status,data){const body=JSON.stringify(data),responseBytes=Buffer.byteLength(body);res.writeHead(status,bridgeHeaders(req));res.end(JSON.stringify({...data,responseBytes}))}
+function bridgeAuthorized(req){const expected=String(process.env.CHASS_BRIDGE_TOKEN||'');if(!expected)return {ok:false,status:503,error:'bridge_token_not_configured'};const header=String(req.headers.authorization||''),actual=header.startsWith('Bearer ')?header.slice(7):'';return actual===expected?{ok:true}:{ok:false,status:401,error:'unauthorized'}}
+async function localChassBridge(req,res,u){if(req.method==='OPTIONS'){res.writeHead(204,bridgeHeaders(req));return res.end()}if(req.method!=='GET')return sendBridgeJson(req,res,405,{ok:false,error:'method_not_allowed'});if(u.pathname.endsWith('/openapi.json'))return staticFile(new URL('/openapi.json',u),res);const allowed=new Set(['/api/chass/context','/api/chass/v1/health','/api/chass/v1/context','/api/chass/v1/race','/api/chass/v1/research','/api/chass/v1/pending']);if(!allowed.has(u.pathname))return sendBridgeJson(req,res,404,{ok:false,error:'not_found'});const auth=bridgeAuthorized(req);if(!auth.ok)return sendBridgeJson(req,res,auth.status,{ok:false,error:auth.error});if(u.pathname.endsWith('/health'))return sendBridgeJson(req,res,503,{ok:false,bridgeVersion:CHASS_BRIDGE_SCHEMA_VERSION,database:false,modelVersion:VERSION,error:'d1_binding_unavailable_local'});return sendBridgeJson(req,res,503,{ok:false,error:'d1_binding_unavailable_local',message:'AI Bridge data endpoints require the Cloudflare D1 binding.'})}
 function sendMinimal(res,status,payload,extraHeaders={}){try{const initial=JSON.stringify(payload),payloadBytes=Buffer.byteLength(initial),body=JSON.stringify({...payload,payloadBytes});res.writeHead(status,{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...cors,...extraHeaders});res.end(body)}catch(error){sendJson(res,500,{ok:false,status:'failed',stage:'serialize',errorCode:'serialize_failed',error:String(error?.message||error)})}}
 function cleanText(html=""){
   return String(html).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ")
@@ -212,8 +217,9 @@ async function staticFile(u,res){
 }
 
 http.createServer(async(req,res)=>{
-  if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
+  if(u.pathname==="/api/chass/context"||u.pathname.startsWith('/api/chass/v1/'))return localChassBridge(req,res,u);
+  if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
   if(u.pathname==="/api/nar/race"||u.pathname==="/api/nar/race-diagnostic")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
