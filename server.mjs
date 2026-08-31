@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.9.18";
+const VERSION="9.9.19";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -38,14 +38,16 @@ function tableRows(html=""){
     return {cells,text:cells.join(" ")};
   });
 }
-async function fetchText(url){
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);try{const r=await fetch(url,{headers:{
+async function fetchText(url,{timeoutMs=15000}={}){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{headers:{
     "user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,
     "accept":"text/html,application/xhtml+xml","accept-language":"ja,en;q=0.8"
   },redirect:"follow",signal:controller.signal});
   if(!r.ok){const error=new Error(`NAR HTTP ${r.status}`);error.status=r.status;throw error}
-  return await r.text()}finally{clearTimeout(timer)}
+  const text=await r.text();if(!text)throw Object.assign(new Error('NAR empty response'),{code:'empty_response'});return text}catch(error){if(error?.name==='AbortError')throw Object.assign(new Error('NAR timeout'),{code:'timeout'});if(error instanceof TypeError&&!error.code)error.code='network_error';throw error}finally{clearTimeout(timer)}
 }
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function fetchRetry(url,{attempts=2,timeoutMs=8000}={}){let last;for(let i=1;i<=attempts;i++){try{return {html:await fetchText(url,{timeoutMs}),attemptCount:i}}catch(e){last=e;e.attemptCount=i;if(!(['network_error','timeout'].includes(e.code)||[429,500,502,503,504].includes(Number(e.status)))||i===attempts)throw e;await sleep(800)}}throw last}
 
 function parseRaceMeta(html){
   const text=cleanText(html);
@@ -141,6 +143,8 @@ function narUrls(code,date,race){
   const q=new URLSearchParams({k_babaCode:code,k_raceDate:String(date).replaceAll("-","/"),k_raceNo:race}).toString();
   return {
     result:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`,
+    resultIpat:`https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/RaceMarkTable_ipat?${q}`,
+    detail:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTableSmall?${q}`,
     odds:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?${q}`
   };
 }
@@ -150,8 +154,8 @@ async function apiRace(u,res){
   if(!code||!date||!race)return sendJson(res,400,{ok:false,error:"code,date,race are required"});
   const urls=narUrls(code,date,race);
   try{
-    const [ch,oh]=await Promise.all([fetchText(urls.result),fetchText(urls.odds).catch(()=>"")]);
-    const meta=parseRaceMeta(ch),cardHorses=parseRaceCard(ch),odds=parseTanFuku(oh);
+    const audit={detail:{success:false,route:'DebaTableSmall'},card:{success:false,route:'RaceMarkTable',fallbackRoute:'RaceMarkTable_ipat'},odds:{success:false,route:'OddsTanFuku',optional:true}};let dh='',ch='',oh='';try{const r=await fetchRetry(urls.detail);dh=r.html;audit.detail={...audit.detail,success:true,httpStatus:200,attemptCount:r.attemptCount}}catch(e){audit.detail.errorCode=e.code||'http_error'}try{const r=await fetchRetry(urls.result);ch=r.html;audit.card={...audit.card,success:true,httpStatus:200,attemptCount:r.attemptCount,activeRoute:'RaceMarkTable'}}catch(e){audit.card.errorCode=e.code||'http_error';try{const r=await fetchRetry(urls.resultIpat,{attempts:1});ch=r.html;audit.card={...audit.card,success:true,httpStatus:200,fallbackUsed:true,activeRoute:'RaceMarkTable_ipat'}}catch(f){audit.card.fallbackErrorCode=f.code||'http_error'}}try{oh=await fetchText(urls.odds,{timeoutMs:3000});audit.odds={...audit.odds,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.odds.errorCode=e.code||'http_error'}
+    const detailHorses=parseRaceCard(dh),fallbackHorses=parseRaceCard(ch),cardHorses=detailHorses.length>=2?detailHorses:fallbackHorses;if(cardHorses.length<2)throw Object.assign(new Error('出走馬データを取得できませんでした'),{code:!dh&&!ch?'network_error':'parser_error',raceFetchAudit:audit});const meta=parseRaceMeta(dh||ch),odds=parseTanFuku(oh);
     const cm=new Map(cardHorses.map(x=>[String(x.horseNo),x]));
     const om=new Map(odds.map(x=>[String(x.horseNo),x]));
     const numbers=[...new Set([...cardHorses.map(x=>String(x.horseNo)),...odds.map(x=>String(x.horseNo))])].sort((a,b)=>Number(a)-Number(b));
@@ -161,8 +165,8 @@ async function apiRace(u,res){
       const cardBad=!cardName||/^\d{1,2}$/.test(cardName)||/^馬番\d+$/.test(cardName);
       return {...c,horseNo:no,horseName:(!cardBad?cardName:oddsName)||cardName||`馬番${no}`,odds:o.odds??null,popularity:o.popularity??null,nameSource:(!cardBad?"出馬表":oddsName?"オッズ表":"fallback")};
     });
-    return sendJson(res,200,{ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...meta,horses:merged,odds,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length},acquiredAt:new Date().toISOString()});
-  }catch(e){return sendJson(res,502,{ok:false,error:String(e?.message||e),source:"NAR公式",urls});}
+    audit.parse={success:true,horseCount:merged.length,abilityCount:0,predictedTimeCount:0};return sendJson(res,200,{ok:true,status:'success',stage:'race_parse_complete',raceSuccess:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...meta,horses:merged,odds,marketStatus:odds.length?'available':'unavailable',raceFetchAudit:audit,quality:{horseNames:merged.filter(x=>x.horseName&&!/^馬番/.test(x.horseName)).length,total:merged.length},acquiredAt:new Date().toISOString()});
+  }catch(e){return sendJson(res,e?.status===404?404:502,{ok:false,status:'failed',raceSuccess:false,errorCode:e?.code||'http_error',error:String(e?.message||e),raceFetchAudit:e?.raceFetchAudit||null,source:"NAR公式"});}
 }
 
 async function apiOdds(u,res){
@@ -206,7 +210,7 @@ http.createServer(async(req,res)=>{
   if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
-  if(u.pathname==="/api/nar/race")return apiRace(u,res);
+  if(u.pathname==="/api/nar/race"||u.pathname==="/api/nar/race-diagnostic")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
   if(u.pathname==="/api/nar/sync"||u.pathname==="/api/nar/result-diagnostic")return apiSync(u,res);
   return staticFile(u,res);

@@ -1,18 +1,18 @@
-CHASS KEIBA LAB Ver.9.9.18
+CHASS KEIBA LAB Ver.9.9.19
 
-Result Fetch Responsibility Separation / Root Cause Fix
+NAR Race Fetch Resilience / 予想取得経路の根本修正
 
 主な変更
-1. RaceMarkTableで上位3頭を解析した直後に結果取得成功を固定。
-2. 通常経路・診断復旧経路・後処理の監査を個別保存。
-3. 最終オッズ・メタ情報はOptional化し、失敗しても結果本体を成功扱い。
-4. D1保存・再集計・描画の失敗でNAR取得成功を取り消さない。
-5. 結果取得経路の汎用エラーを廃止し、明示的なエラーコードへ分類。
-6. 通常2回＋公式予備経路1回にリトライを整理。
-7. worker.jsとserver.mjsの成功判定・レスポンス形式を統一。
-8. 予想ロジック、穴馬判定、D1スキーマ、既存研究データは変更なし。
+1. DebaTableSmall・RaceMarkTable・OddsTanFukuを独立取得。
+2. DebaTableSmallは最大2回、RaceMarkTableはIPAT公式経路へ復旧。
+3. オッズ取得をOptional化し、市場未取得でも予想生成を継続。
+4. 馬一覧2頭以上を予想取得成功条件として固定。
+5. /api/nar/race-diagnosticと予想取得診断UIを追加。
+6. 意図的なAbortをnetwork_errorから分離。
+7. 予想保存後の結果確認を非同期化し、成功表示を保護。
+8. Ver.9.9.18の結果取得復旧機構とD1構造は変更なし。
 
 確認
 - node --check app.js / worker.js / chass-latest.js / server.mjs: PASS
-- npm test: 88/88 PASS
-- npm run check: 88/88 PASS
+- npm test: 96/96 PASS
+- npm run check: 96/96 PASS

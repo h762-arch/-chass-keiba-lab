@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.18
+# CHASS KEIBA LAB Ver.9.9.19
+
+## Ver.9.9.19 NAR Race Fetch Resilience
+
+- DebaTableSmall・RaceMarkTable・OddsTanFukuを独立取得します。
+- DebaTableSmallは2回まで再試行し、RaceMarkTableはIPAT公式経路へ復旧します。
+- オッズはOptionalで、失敗しても馬一覧が2頭以上なら予想を生成します。
+- `/api/nar/race-diagnostic`と予想取得診断を追加しました。
+- 予想保存後の結果確認は非同期化し、結果確認失敗で予想成功表示を消しません。
 
 ## Ver.9.9.18 Result Fetch Responsibility Separation
 
