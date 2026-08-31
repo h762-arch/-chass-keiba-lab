@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.4";
+const VERSION="9.9.18";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -39,12 +39,12 @@ function tableRows(html=""){
   });
 }
 async function fetchText(url){
-  const r=await fetch(url,{headers:{
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);try{const r=await fetch(url,{headers:{
     "user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,
     "accept":"text/html,application/xhtml+xml","accept-language":"ja,en;q=0.8"
-  },redirect:"follow"});
-  if(!r.ok)throw new Error(`NAR HTTP ${r.status}`);
-  return r.text();
+  },redirect:"follow",signal:controller.signal});
+  if(!r.ok){const error=new Error(`NAR HTTP ${r.status}`);error.status=r.status;throw error}
+  return await r.text()}finally{clearTimeout(timer)}
 }
 
 function parseRaceMeta(html){
@@ -182,15 +182,9 @@ async function apiSync(u,res){
   if(!code||!date||!race)return sendJson(res,400,{ok:false,error:"code,date,race are required"});
   const urls=narUrls(code,date,race);
   try{
-    const [rh,oh]=await Promise.all([fetchText(urls.result).catch(()=>""),fetchText(urls.odds).catch(()=>"")]);
-    const rr=parseResult(rh),odds=parseTanFuku(oh);
-    return sendJson(res,200,{
-      ok:true,source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,
-      ...rr,odds,acquiredAt:new Date().toISOString(),pending:rr.finishOrder.length<3
-    });
-  }catch(e){
-    return sendJson(res,502,{ok:false,error:String(e?.message||e),source:"NAR公式",urls});
-  }
+    const rh=await fetchText(urls.result);if(!rh)throw Object.assign(new Error('empty response'),{code:'empty_response'});const rr=parseResult(rh),finishOrder=(rr.finishOrder||[]).slice(0,3),resultSuccess=finishOrder.length>=3,optionalErrors=[];let odds=[];try{odds=parseTanFuku(await fetchText(urls.odds))}catch{optionalErrors.push('odds_fetch_failed')}
+    return sendJson(res,200,{ok:true,status:resultSuccess?'success':'pending',stage:resultSuccess?'parse_complete':'result_rows_insufficient',resultSuccess,oddsSuccess:!optionalErrors.length,optionalErrors,primarySyncAudit:{success:resultSuccess,stage:resultSuccess?'parse_complete':'result_rows_insufficient',httpStatus:200,route:'RaceMarkTable',parsedRows:rr.results?.length||0,finishOrder},source:"NAR公式",version:VERSION,track:TRACK_NAMES[code]||"",code,date,race,...rr,finishOrder,odds,acquiredAt:new Date().toISOString(),pending:!resultSuccess,resultStatus:resultSuccess?'available':'result_unpublished'});
+  }catch(e){const errorCode=e?.code||(e?.name==='AbortError'?'timeout':e?.status?'http_error':e instanceof TypeError?'network_error':'parse_error');return sendJson(res,e?.status===404?404:502,{ok:false,status:'failed',resultSuccess:false,stage:'result_fetch',errorCode,error:String(e?.message||e),source:"NAR公式"})}
 }
 async function staticFile(u,res){
   let pathname=decodeURIComponent(u.pathname);
@@ -214,6 +208,6 @@ http.createServer(async(req,res)=>{
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
   if(u.pathname==="/api/nar/race")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
-  if(u.pathname==="/api/nar/sync")return apiSync(u,res);
+  if(u.pathname==="/api/nar/sync"||u.pathname==="/api/nar/result-diagnostic")return apiSync(u,res);
   return staticFile(u,res);
 }).listen(PORT,"0.0.0.0",()=>console.log(`CHASS KEIBA LAB Ver.${VERSION} :${PORT} / public=${PUBLIC}`));

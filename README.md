@@ -1,4 +1,11 @@
-# CHASS KEIBA LAB Ver.9.9.17
+# CHASS KEIBA LAB Ver.9.9.18
+
+## Ver.9.9.18 Result Fetch Responsibility Separation
+
+- RaceMarkTable解析成功を結果取得成功として即時固定します。
+- 通常経路・診断復旧経路・保存/検証/描画の監査を分離しました。
+- 最終オッズはOptionalとし、失敗しても結果本体を成功扱いにします。
+- 端末側の重複リトライを廃止し、Worker通常2回＋公式予備経路1回へ整理しました。
 ## Ver.9.9.17 Parse-Complete Success Lock
 
 - RaceMarkTable が HTTP 200 かつ着順解析成功した時点で「結果取得成功」を確定します。
@@ -18,7 +25,7 @@
 
 - NAR公式結果取得は通常の RaceMarkTable を優先します。
 - 通常経路が通信失敗、タイムアウト、HTTP 5xx/429、または結果HTMLを正常解析できない場合は RaceMarkTable_ipat を予備経路として試します。
-- Worker内リトライに加え、iPhone Safari→Worker間の一時的な通信失敗もクライアント側で最大3回まで段階的に再試行します。
+- 多重リトライを避け、Worker通常経路2回＋公式予備経路1回に集約しています。
 - オッズ取得失敗は結果取得全体を失敗扱いにしません。
 - 保存済み結果がある場合、再取得だけ失敗しても既存結果・検証データを保持します。
 - 予想ロジック、AI勝率/TOP3率、TIME、期待値、穴馬判定、D1研究データ構造は変更していません。

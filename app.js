@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.17';
+const APP_VERSION='9.9.18';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -38,7 +38,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
 const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
 function requestError(code,message,status=0){const e=new Error(message);e.code=code;e.status=status;return e}
 async function responseJson(res){try{return await res.json()}catch{throw requestError('parser_error','API応答を解析できませんでした。',res.status)}}
-async function fetchNarSyncApi(url,{signal,attempts=3}={}){
+async function fetchNarSyncApi(url,{signal,attempts=1}={}){
  let lastError=null;
  for(let attempt=1;attempt<=attempts;attempt++){
   if(attempt>1)await new Promise((resolve,reject)=>{const t=setTimeout(resolve,attempt===2?900:1800);if(signal){const abort=()=>{clearTimeout(t);reject(Object.assign(new Error('aborted'),{name:'AbortError'}))};if(signal.aborted)return abort();signal.addEventListener('abort',abort,{once:true})}});
@@ -58,10 +58,12 @@ async function fetchNarSyncApi(url,{signal,attempts=3}={}){
  }
  throw lastError||requestError('network_error','通信に失敗しました。');
 }
-function diagnosticRows(audit={}){const rows=[];if(audit.apiOk!=null)rows.push(['API取得',audit.apiOk?'成功':'失敗']);if(audit.stage)rows.push(['取得段階',String(audit.stage)]);if(audit.postFetchStage)rows.push(['後段処理',`${audit.postFetchStage}${audit.postFetchError?' / '+audit.postFetchError:''}`]);if(audit.partialSuccess)rows.push(['取得補足','結果本体は成功 / 付随データ一部失敗']);for(const w of audit.optionalErrors||[])rows.push([`付随:${w.stage||'unknown'}`,w.errorCode||w.message||'optional_failed']);if(audit.httpStatus!=null)rows.push(['HTTP',String(audit.httpStatus)]);if(audit.errorCode)rows.push(['エラー',audit.errorCode]);if(audit.urlType)rows.push(['経路',audit.urlType]);if(audit.attemptCount!=null)rows.push(['Worker試行',String(audit.attemptCount)]);if(audit.clientAttemptCount!=null)rows.push(['端末試行',String(audit.clientAttemptCount)]);if(audit.fallbackTried!=null)rows.push(['予備経路',audit.fallbackUsed?'成功':audit.fallbackTried?'試行済':'未試行']);for(const d of audit.diagnostics||[]){if(d.stage==='parse'){rows.push([`${d.urlType}解析`,`${d.ok?'成功':'未確定'} / 着順${d.finishCount??0} / 行${d.resultRows??0}`])}else rows.push([`${d.urlType} #${d.attempt||'-'}`,d.ok?`HTTP ${d.httpStatus||200} / ${d.durationMs??'-'}ms`:`${d.errorCode||'error'}${d.httpStatus?' / HTTP '+d.httpStatus:''} / ${d.durationMs??'-'}ms`])}return rows}
+function diagnosticRows(audit={}){const rows=[],section=(title,x)=>{if(!x)return;rows.push([title,x.success===true?'成功':x.success===false?'失敗':'未使用']);if(x.stage)rows.push([`${title}・段階`,x.stage]);if(x.httpStatus!=null)rows.push([`${title}・HTTP`,String(x.httpStatus)]);if(x.errorCode)rows.push([`${title}・エラー`,x.errorCode]);if(x.route)rows.push([`${title}・経路`,x.route]);if(x.parsedRows!=null)rows.push([`${title}・解析`,`${x.parsedRows}頭${x.finishOrder?.length?' / '+x.finishOrder.join('-'):''}`]);for(const key of ['persist','cloud','validation','render'])if(x[key])rows.push([`${title}・${key}`,x[key]])};section('通常経路',audit.primarySyncAudit);section('復旧経路',audit.recoveryAudit);section('後処理',audit.postFetchAudit);if(audit.primarySyncAudit||audit.recoveryAudit||audit.postFetchAudit)return rows;if(audit.apiOk!=null)rows.push(['API取得',audit.apiOk?'成功':'失敗']);if(audit.stage)rows.push(['取得段階',String(audit.stage)]);if(audit.errorCode)rows.push(['エラー',audit.errorCode]);return rows}
 function renderResultDiagnostics(audit=state.resultFetchAudit){const box=$('resultDiagnostics'),body=$('resultDiagnosticsBody');if(!box||!body)return;const rows=diagnosticRows(audit||{});box.hidden=!rows.length;body.innerHTML=rows.map(([k,v])=>`<div class="diag-row"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}
 async function fetchResultDiagnostic(r){const code=narCode(r.track);if(!code||!r.raceDate||!r.raceNo)return null;try{const res=await fetch(`/api/nar/result-diagnostic?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`,{cache:'no-store'}),d=await responseJson(res);return d}catch(e){return {ok:false,errorCode:e?.code||'diagnostic_unavailable',httpStatus:e?.status||null,error:String(e?.message||e),diagnostics:[]}}}
 function errorLabel(e){
+ const labels={parse_error:'公式ページの解析に失敗しました。',timeout:'NAR公式への接続がタイムアウトしました。',http_error:'NAR公式のHTTP応答で失敗しました。',empty_response:'NAR公式から空の応答が返りました。',result_rows_insufficient:'結果待ち｜公式結果はまだ公開されていません。',odds_fetch_failed:'最終オッズのみ取得できませんでした。',metadata_fetch_failed:'付随情報のみ取得できませんでした。',persist_failed:'端末保存に失敗しました。',d1_save_failed:'クラウド保存のみ失敗しました。端末結果は保持しています。',validation_failed:'結果は保存済みですが再集計に失敗しました。',render_failed:'結果は保存済みですが画面反映に失敗しました。',response_build_failed:'結果処理の応答生成に失敗しました。'};
+ if(labels[e?.code])return labels[e.code];
  if(e?.code==='race_not_found'||e?.status===404)return '指定レースが見つかりません。';
  if(e?.code==='parser_error')return '公式ページの解析に失敗しました。';
  if(e?.code==='nar_timeout')return 'NAR公式への接続がタイムアウトしました。再取得できます。';
@@ -483,7 +485,7 @@ async function loadAutoRace(){
  $('autoRaceStatus').textContent='NAR公式の過去走・同距離時計・距離/コース適性を解析しています…';
  try{
    const u=`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`;
-   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:3}),res=apiFetch.res,d=apiFetch.data;
+   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:1}),res=apiFetch.res,d=apiFetch.data;
    d.clientAttemptCount=apiFetch.clientAttemptCount;
    if(!isCurrent())throw requestError('stale_request','古いレース取得を破棄しました。');
    if(!Array.isArray(d.horses)||d.horses.length<2)throw requestError('parser_error','出走馬データを取得できませんでした');
@@ -633,7 +635,7 @@ async function syncNar(options={}){
  try{
    // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
    if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
-   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:3}),res=apiFetch.res,d=apiFetch.data;
+   const apiFetch=await fetchNarSyncApi(u,{signal:controller.signal,attempts:1}),res=apiFetch.res,d=apiFetch.data;
    d.clientAttemptCount=apiFetch.clientAttemptCount;
    if(!isCurrent())throw requestError('stale_request','古い結果取得を破棄しました。');
 
@@ -656,20 +658,20 @@ async function syncNar(options={}){
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={apiOk:true,stage:(Array.isArray(d.finishOrder)&&d.finishOrder.length>=3)?'parse_complete':'api_received',errorCode:null,httpStatus:res.status,attemptCount:d.attemptCount||1,clientAttemptCount:d.clientAttemptCount||1,urlType:d.urlType||'RaceMarkTable',fallbackUsed:!!d.fallbackUsed,fallbackTried:!!d.fallbackTried,diagnostics:d.diagnostics||[],partialSuccess:!!d.partialSuccess,optionalErrors:Array.isArray(d.optionalErrors)?d.optionalErrors:[],checkedAt:d.checkedAt||state.resultFetchCheckedAt};
+   state.resultFetchAudit={resultFetchSuccess:complete,primarySyncAudit:{success:complete,stage:complete?'parse_complete':'result_rows_insufficient',httpStatus:res.status,route:d.urlType||'RaceMarkTable',parsedRows:d.results?.length||0,finishOrder:d.finishOrder?.slice(0,3)||[],attemptCount:d.attemptCount||1,errorCode:null},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},partialSuccess:!!d.partialSuccess,optionalErrors:Array.isArray(d.optionalErrors)?d.optionalErrors:[],checkedAt:d.checkedAt||state.resultFetchCheckedAt};
    state.resultFetchError='';state.resultErrorType='';
    if(complete){
      // API取得成功と保存・再描画を分離する。後段で例外が起きても取得成功を失敗扱いへ戻さない。
      let postFetchStage='save_start';
      try{
-       saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存',resultData:d,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,stage:'post_fetch',postFetchStage:stage}}});
-       state.resultFetchAudit={...state.resultFetchAudit,stage:'complete',postFetchStage:'complete',postFetchError:''};
+       saveFetchedResult(d.finishOrder,{silent:true,source:'NAR公式取得時に自動保存',resultData:d,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,postFetchAudit:{success:null,stage}}}});
+       state.resultFetchAudit={...state.resultFetchAudit,resultFetchSuccess:true,postFetchAudit:{success:true,stage:'complete',persist:'success',cloud:'pending',validation:'success',render:'success'}};
      }catch(saveError){
        const message=String(saveError?.message||saveError).slice(0,180);
        state.resultStatus='fetched';
        state.resultErrorType=null;
        state.resultFetchError='';
-       state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'post_fetch_error',errorCode:`post_fetch_${postFetchStage}`,postFetchStage,postFetchError:message};
+       const postCode=postFetchStage==='persist'?'persist_failed':postFetchStage==='build_validation'?'validation_failed':postFetchStage.startsWith('render')?'render_failed':'response_build_failed';state.resultFetchAudit={...state.resultFetchAudit,resultFetchSuccess:true,postFetchAudit:{success:false,stage:postFetchStage,errorCode:postCode,message}};
        // 少なくとも取得済み着順は保持する。saveFetchedResultが途中まで進んでいればその内容を尊重する。
        if(!(state.resultSnapshot?.finishOrder||[]).length){
          state.result={finishOrder:d.finishOrder.slice(0,3).map(Number),memo:$('memo')?.value||'',autoDiagnosis:'',at:new Date().toISOString(),actualTimes:{...state.actualTimes},source:'NAR公式取得（後段エラー）',autoSaved:true};
@@ -703,16 +705,16 @@ async function syncNar(options={}){
    state.predictionSaved=!!(state.predictionSaved||state.predictionSnapshot);
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultStatus=alreadyComplete?'fetched':'error';
-   state.resultErrorType=e?.code||'unknown_error';
+   state.resultErrorType=e?.code||(e instanceof TypeError?'network_error':'response_build_failed');
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={apiOk:false,stage:'api_fetch',errorCode:state.resultErrorType,httpStatus:e?.status||null,attemptCount:e?.attemptCount||null,clientAttemptCount:3,urlType:e?.urlType||'RaceMarkTable',fallbackTried:!!e?.fallbackTried,diagnostics:e?.diagnostics||[],checkedAt:state.resultFetchCheckedAt};
+   state.resultFetchAudit={resultFetchSuccess:false,primarySyncAudit:{success:false,stage:e?.stage||'api_fetch',errorCode:state.resultErrorType,httpStatus:e?.status||null,route:e?.urlType||'RaceMarkTable',attemptCount:e?.attemptCount||null},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},checkedAt:state.resultFetchCheckedAt};
    const diag=await fetchResultDiagnostic(r);
    if(diag){
-     state.resultFetchAudit={...state.resultFetchAudit,errorCode:diag.errorCode||state.resultFetchAudit.errorCode,httpStatus:diag.httpStatus??state.resultFetchAudit.httpStatus,attemptCount:diag.attemptCount??state.resultFetchAudit.attemptCount,urlType:diag.urlType||state.resultFetchAudit.urlType,fallbackUsed:!!diag.fallbackUsed,fallbackTried:diag.fallbackTried??state.resultFetchAudit.fallbackTried,diagnostics:diag.diagnostics?.length?diag.diagnostics:state.resultFetchAudit.diagnostics,diagnosticOk:!!diag.ok,diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()};
+     state.resultFetchAudit={...state.resultFetchAudit,recoveryAudit:{success:!!(diag.ok&&diag.resultSuccess),stage:diag.stage||(diag.ok?'diagnostic_received':'diagnostic_failed'),errorCode:diag.errorCode||null,httpStatus:diag.httpStatus??null,route:diag.urlType||'RaceMarkTable',parsedRows:diag.results?.length||0,finishOrder:diag.finishOrder?.slice(0,3)||[]},diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()};
      // Ver.9.9.17: the diagnostic endpoint uses the same official RaceMarkTable parser.
      // If it proves HTTP+parse success and returns a complete finish order, promote that
-     // result to authoritative success instead of leaving the UI as api_fetch/unknown_error.
+     // result to authoritative success instead of leaving the UI as a primary-fetch failure.
      const recoveredOrder=Array.isArray(diag.finishOrder)?diag.finishOrder.map(Number).filter(Number.isFinite).slice(0,3):[];
      if(diag.ok&&recoveredOrder.length>=3){
        const recoveredData={...diag,finishOrder:recoveredOrder,results:Array.isArray(diag.results)?diag.results:[],actualTimes:diag.actualTimes&&typeof diag.actualTimes==='object'?diag.actualTimes:{},resultMeta:diag.resultMeta||{},quality:diag.quality||null,acquiredAt:diag.checkedAt||new Date().toISOString(),source:'NAR公式 診断経路復旧'};
@@ -721,14 +723,14 @@ async function syncNar(options={}){
          state.horses.forEach(h=>{const t=state.actualTimes[String(h.horseNo)];if(t)h.actualTime=t});
        }
        state.resultFetchCheckedAt=new Date().toISOString();
-       state.resultFetchAudit={apiOk:true,stage:'diagnostic_recovery',errorCode:null,httpStatus:diag.httpStatus??200,attemptCount:diag.attemptCount||1,clientAttemptCount:3,urlType:diag.urlType||'RaceMarkTable',fallbackUsed:!!diag.fallbackUsed,fallbackTried:!!diag.fallbackTried,diagnostics:diag.diagnostics||[],diagnosticOk:true,diagnosticCheckedAt:diag.checkedAt||state.resultFetchCheckedAt,recoveredFrom:'sync_error'};
+       state.resultFetchAudit={...state.resultFetchAudit,resultFetchSuccess:true,recoveryAudit:{success:true,stage:'diagnostic_recovery_complete',errorCode:null,httpStatus:diag.httpStatus??200,route:diag.urlType||'RaceMarkTable',parsedRows:diag.results?.length||0,finishOrder:recoveredOrder},postFetchAudit:{success:null,stage:'not_started'},diagnosticCheckedAt:diag.checkedAt||state.resultFetchCheckedAt};
        state.resultErrorType=null;state.resultFetchError='';state.resultStatus='fetched';
        let postFetchStage='save_start';
        try{
-         saveFetchedResult(recoveredOrder,{silent:true,source:'NAR公式 診断経路復旧',resultData:recoveredData,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,stage:'diagnostic_recovery_post_fetch',postFetchStage:stage}}});
-         state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'diagnostic_recovery_complete',postFetchStage:'complete',postFetchError:''};
+         saveFetchedResult(recoveredOrder,{silent:true,source:'NAR公式 診断経路復旧',resultData:recoveredData,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,postFetchAudit:{success:null,stage}}}});
+         state.resultFetchAudit={...state.resultFetchAudit,resultFetchSuccess:true,postFetchAudit:{success:true,stage:'complete',persist:'success',cloud:'pending',validation:'success',render:'success'}};
        }catch(saveError){
-         state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'diagnostic_recovery_post_fetch_error',errorCode:`post_fetch_${postFetchStage}`,postFetchStage,postFetchError:String(saveError?.message||saveError).slice(0,180)};
+         const postCode=postFetchStage==='persist'?'persist_failed':postFetchStage==='build_validation'?'validation_failed':postFetchStage.startsWith('render')?'render_failed':'response_build_failed';state.resultFetchAudit={...state.resultFetchAudit,resultFetchSuccess:true,postFetchAudit:{success:false,stage:postFetchStage,errorCode:postCode,message:String(saveError?.message||saveError).slice(0,180)}};
          if(!(state.resultSnapshot?.finishOrder||[]).length){
            state.result={finishOrder:recoveredOrder,memo:$('memo')?.value||'',autoDiagnosis:'',at:new Date().toISOString(),actualTimes:{...state.actualTimes},source:'NAR公式 診断経路復旧',autoSaved:true};
            state.resultSnapshot={schemaVersion:3,source:'NAR公式 診断経路復旧',fetchedAt:recoveredData.acquiredAt,finishOrder:recoveredOrder,actualTimes:{...state.actualTimes},horses:recoveredData.results,weather:recoveredData.resultMeta?.weather||'',trackCondition:recoveredData.resultMeta?.trackCondition||'',quality:recoveredData.quality||null,market:state.resultMarketSnapshot||null};
