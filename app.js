@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.21';
+const APP_VERSION='9.9.22';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -11,9 +11,8 @@ const ODDS_HISTORY='chass_v90_odds_history';
 let oddsTimer=null;
 let autoRaceSelectTimer=null;
 let raceLoadController=null,liveOddsController=null;
-let raceLoadGeneration=0,resultSyncGeneration=0,liveOddsGeneration=0;
-const resultFetchStates=new Map(),resultFetchCooldown=new Map();
-const RESULT_AUTO_COOLDOWN_MS=45000;
+let raceLoadGeneration=0,liveOddsGeneration=0;
+let resultFetchInProgress=null;
 let lastRaceFetchAudit=null;
 let quickExpanded=false;
 const dashboardUi={
@@ -41,6 +40,21 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
 const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
 function requestError(code,message,status=0){const e=new Error(message);e.code=code;e.status=status;return e}
 async function responseJson(res){try{return await res.json()}catch{throw requestError('parser_error','API応答を解析できませんでした。',res.status)}}
+async function fetchJsonSimple(url,{signal,timeoutMs=10000}={}){
+ const controller=signal?null:new AbortController(),activeSignal=signal||controller.signal;
+ const timer=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
+ try{
+  const res=await fetch(url,{cache:'no-store',signal:activeSignal});
+  const text=await res.text();
+  let data;try{data=JSON.parse(text)}catch{throw requestError('parse_error','API応答を解析できませんでした。',res.status)}
+  if(!res.ok)throw requestError(data?.errorCode||'http_error',data?.error||`HTTP ${res.status}`,res.status);
+  return {res,data};
+ }catch(error){
+  if(error?.name==='AbortError')throw requestError('timeout','取得がタイムアウトしました。');
+  if((error instanceof TypeError||error?.name==='TypeError')&&!error.code)throw requestError('network_error',String(error.message||error));
+  throw error;
+ }finally{if(timer)clearTimeout(timer)}
+}
 async function fetchNarSyncApi(url,{signal,attempts=1}={}){
  let lastError=null;
  for(let attempt=1;attempt<=attempts;attempt++){
@@ -614,26 +628,27 @@ function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保�
  return true;
 }
 
-function resultRequestId(){return `result-${Date.now()}-${Math.random().toString(36).slice(2,8)}`}
-function resultFetchLog(flight,action,errorCode=''){console.info('[CHASS RESULT FETCH]',{requestId:flight.requestId,raceId:flight.raceId,priority:flight.priority,action,errorCode,elapsed:Date.now()-flight.startedMs})}
-function abortResultFlight(flight,reason){if(!flight||flight.controller.signal.aborted)return false;flight.abortReason=reason||'user_cancel';flight.controller.abort();return true}
-function acquireResultFlight(map,rid,priority,createFlight){const existing=map.get(rid);if(existing){existing.joinCount=(existing.joinCount||0)+1;existing.singleFlight='join';if(priority==='manual'&&existing.priority==='auto'){existing.priority='manual';existing.promotedFrom='auto'}return {flight:existing,joined:true,promoted:existing.promotedFrom==='auto'}}const flight=createFlight();map.set(rid,flight);return {flight,joined:false,promoted:false}}
-function syncNar(options={}){if(options instanceof Event)options={};const auto=!!options.auto,priority=auto?'auto':'manual',r=raceFromForm(),rid=raceId(r);if(auto&&Date.now()-(resultFetchCooldown.get(rid)||0)<RESULT_AUTO_COOLDOWN_MS)return Promise.resolve({complete:false,pending:true,status:'cooldown'});const acquired=acquireResultFlight(resultFetchStates,rid,priority,()=>({raceId:rid,race:{...r},requestId:resultRequestId(),priority,singleFlight:'new',joinCount:0,controller:new AbortController(),abortReason:'',generation:++resultSyncGeneration,startedMs:Date.now(),requestedAt:new Date().toISOString(),visibilityStart:typeof document!=='undefined'?document.visibilityState:'unknown',onlineStart:typeof navigator!=='undefined'?navigator.onLine:null})),flight=acquired.flight;if(acquired.joined){resultFetchLog(flight,acquired.promoted?'promote_manual':'join');return flight.promise}flight.promise=performResultFetch(options,flight).finally(()=>{flight.completedAt=new Date().toISOString();flight.visibilityEnd=typeof document!=='undefined'?document.visibilityState:'unknown';flight.onlineEnd=typeof navigator!=='undefined'?navigator.onLine:null;flight.totalMs=Date.now()-flight.startedMs;resultFetchCooldown.set(rid,Date.now());if(resultFetchStates.get(rid)===flight)resultFetchStates.delete(rid);resultFetchLog(flight,'complete')});resultFetchLog(flight,'new');return flight.promise}
+function syncNar(options={}){
+ if(options instanceof Event)options={};
+ if(resultFetchInProgress)return resultFetchInProgress;
+ const r=raceFromForm(),flight={raceId:raceId(r),race:{...r},priority:options.auto?'auto':'manual',startedMs:Date.now()};
+ resultFetchInProgress=performResultFetch(options,flight).finally(()=>{resultFetchInProgress=null;setButtonBusy('narSync',false);renderResultDisplayState()});
+ return resultFetchInProgress;
+}
 async function performResultFetch(options={},flight){
  const auto=!!options.auto;
  const r=flight.race,code=narCode(r.track);if(!code){$('narStatus').textContent='NAR自動取得：この競馬場は未対応です。';return}
  if(!r.raceDate||!r.raceNo){$('narStatus').textContent='日付・競馬場・レース番号を確認してください。';return}
- const controller=flight.controller,generation=flight.generation,requestedId=flight.raceId;
- flight.timeoutTimer=setTimeout(()=>abortResultFlight(flight,'timeout'),20000);
- const isCurrent=()=>generation===resultSyncGeneration&&raceId(raceFromForm())===requestedId;
- const u=`/api/nar/sync-minimal?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;
+ const requestedId=flight.raceId;
+ const isCurrent=()=>raceId(raceFromForm())===requestedId;
+ const u=`/api/nar/sync?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`;
  if(!state.result?.finishOrder?.length){state.resultStatus='fetching';renderResultDisplayState()}
  setButtonBusy('narSync',true,'結果取得中…');
  $('narStatus').textContent='NAR公式から結果本体を取得中…';
  try{
    // 結果を参照する前に予想時点の値を固定する。結果データから予想を再計算しない。
    if(!state.predictionSnapshot||!state.finalSnapshot){makeSnapshot();state.predictionSaved=true;persist(false)}
-   const apiFetch=await fetchNarMinimalApi(`${u}&requestId=${encodeURIComponent(flight.requestId)}`,{signal:controller.signal,generation,isCurrent,requestId:flight.requestId,getAbortReason:()=>flight.abortReason}),res=apiFetch.res,d=apiFetch.data;
+   const apiFetch=await fetchJsonSimple(u,{timeoutMs:10000}),res=apiFetch.res,d=apiFetch.data;
    d.resultMeta={weather:d.weather||'',trackCondition:d.trackCondition||''};
    if(!isCurrent())throw requestError('stale_request','古い結果取得を破棄しました。');
 
@@ -656,7 +671,7 @@ async function performResultFetch(options={},flight){
    const complete=Array.isArray(d.finishOrder)&&d.finishOrder.length>=3;
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={requestId:flight.requestId,singleFlight:{priority:flight.priority,mode:flight.singleFlight,joinCount:flight.joinCount,raceId:flight.raceId,visibilityStart:flight.visibilityStart,onlineStart:flight.onlineStart},resultFetchSuccess:complete,transportAudit:apiFetch.transportAudit,primarySyncAudit:{success:complete,stage:complete?'parse_complete':'result_rows_insufficient',httpStatus:res.status,route:d.source||'RaceMarkTable',parsedRows:d.results?.length||0,finishOrder:d.finishOrder?.slice(0,3)||[],attemptCount:1,errorCode:null,payloadBytes:d.payloadBytes??null,workerTotalMs:d.audit?.workerTotalMs??null,narFetchMs:d.audit?.narFetchMs??null},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},checkedAt:state.resultFetchCheckedAt};
+   state.resultFetchAudit={resultFetchSuccess:complete,primarySyncAudit:{success:complete,stage:complete?'parse_complete':'result_rows_insufficient',httpStatus:res.status,route:'/api/nar/sync',parsedRows:d.results?.length||0,finishOrder:d.finishOrder?.slice(0,3)||[],attemptCount:1,errorCode:null},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},checkedAt:state.resultFetchCheckedAt};
    state.resultFetchError='';state.resultErrorType='';
    if(complete){
      // API取得成功と保存・再描画を分離する。後段で例外が起きても取得成功を失敗扱いへ戻さない。
@@ -698,7 +713,7 @@ async function performResultFetch(options={},flight){
      : alreadyComplete?`${base} / 保存済みの検証結果は維持しました`:`結果待ち｜公式結果はまだ公開されていません。予想は保存済みです。`;
    return {complete:complete||alreadyComplete,pending:!complete&&!alreadyComplete,status:complete||alreadyComplete?'fetched':'pending',data:d};
   }catch(e){
-   if(e?.name==='AbortError'||e?.code==='stale_request')return {complete:false,pending:false,status:'cancelled'};
+   if(e?.code==='aborted'||e?.code==='stale_request')return {complete:false,pending:false,status:'cancelled'};
    if(!isCurrent())return {complete:false,pending:false,status:'cancelled'};
    state.predictionSaved=!!(state.predictionSaved||state.predictionSnapshot);
    const alreadyComplete=(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3;
@@ -706,8 +721,8 @@ async function performResultFetch(options={},flight){
    state.resultErrorType=e?.code||(e instanceof TypeError?'fetch_failed':'post_process_failed');
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
-   state.resultFetchAudit={requestId:flight.requestId,singleFlight:{priority:flight.priority,mode:flight.singleFlight,joinCount:flight.joinCount,raceId:flight.raceId,abortReason:flight.abortReason||null,visibilityStart:flight.visibilityStart,visibilityEnd:typeof document!=='undefined'?document.visibilityState:'unknown',onlineStart:flight.onlineStart,onlineEnd:typeof navigator!=='undefined'?navigator.onLine:null},resultFetchSuccess:false,transportAudit:e?.transportAudit||null,primarySyncAudit:{success:false,stage:e?.stage||'api_fetch',errorCode:state.resultErrorType,errorName:e?.name||'',errorMessage:String(e?.message||e).slice(0,180),httpStatus:e?.status||null,route:'sync-minimal',attemptCount:1},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},checkedAt:state.resultFetchCheckedAt};
-   const recoveryStarted=Date.now();flight.recoveryStartedAt=new Date().toISOString();const diag=await fetchResultDiagnostic(r,flight.requestId);flight.recoveryMs=Date.now()-recoveryStarted;
+   state.resultFetchAudit={resultFetchSuccess:false,primarySyncAudit:{success:false,stage:e?.stage||'api_fetch',errorCode:state.resultErrorType,errorName:e?.name||'',errorMessage:String(e?.message||e).slice(0,180),httpStatus:e?.status||null,route:'/api/nar/sync',attemptCount:1},recoveryAudit:null,postFetchAudit:{success:null,stage:'not_started'},checkedAt:state.resultFetchCheckedAt};
+   const recoveryStarted=Date.now();const diag=await fetchResultDiagnostic(r);flight.recoveryMs=Date.now()-recoveryStarted;
    if(diag){
      state.resultFetchAudit={...state.resultFetchAudit,recoveryAudit:{success:!!(diag.ok&&diag.resultSuccess),stage:diag.stage||(diag.ok?'diagnostic_received':'diagnostic_failed'),errorCode:diag.errorCode||null,httpStatus:diag.httpStatus??null,route:diag.urlType||'RaceMarkTable',parsedRows:diag.results?.length||0,finishOrder:diag.finishOrder?.slice(0,3)||[]},diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()};
      // Ver.9.9.17: the diagnostic endpoint uses the same official RaceMarkTable parser.
@@ -744,10 +759,7 @@ async function performResultFetch(options={},flight){
    renderResultDisplayState();renderResultDiagnostics();
    $('narStatus').textContent=alreadyComplete?`結果：取得済 ${((state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).slice(0,3)).join('-')}｜再取得：失敗（保存済み結果には影響なし）｜${errorLabel(e)}`:`取得エラー｜${errorLabel(e)} 予想データは保存されています。再取得できます。`;
    return {complete:alreadyComplete,pending:false,status:alreadyComplete?'fetched':'error',error:e};
- }finally{
-   clearTimeout(flight.timeoutTimer);
-   if(generation===resultSyncGeneration){setButtonBusy('narSync',false);renderResultDisplayState()}
- }
+ }finally{}
 }
 function saveValidation(){
  const f=[num($('finish1').value),num($('finish2').value),num($('finish3').value)].filter(x=>x!=null);
@@ -1218,7 +1230,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchNarMinimalApi,acquireResultFlight,abortResultFlight,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getResultDisplayState,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,legacyValueCandidates,compareLongshotModels,getResultDisplayState,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;

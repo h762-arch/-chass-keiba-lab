@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.21
+# CHASS KEIBA LAB Ver.9.9.22
+
+## Ver.9.9.22 Stable Transport Rebase
+
+- NAR結果取得の通常経路を `/api/nar/sync` に統一しました。
+- Ver.9.9.8型の単純な fetch → parse → JSON 応答を通常経路へ戻しました。
+- `sync-minimal` と診断APIは通常失敗時の非常用に限定しました。
+- 結果取得の連打防止は単純な処理中ロックへ整理しました。
+- D1、検証ダッシュボード、Snapshot、予想・穴馬ロジックは維持しています。
 
 ## Ver.9.9.21 Result Fetch Single-Flight / Safari Abort Isolation
 

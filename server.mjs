@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION="9.9.21";
+const VERSION="9.9.22";
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC=process.env.CHASS_PUBLIC_DIR ? path.resolve(process.env.CHASS_PUBLIC_DIR) : __dirname;
 const PORT=Number(process.env.PORT||3000);
@@ -155,7 +155,7 @@ async function apiRace(u,res){
   if(!code||!date||!race)return sendJson(res,400,{ok:false,error:"code,date,race are required"});
   const urls=narUrls(code,date,race);
   try{
-    const audit={detail:{success:false,route:'DebaTableSmall'},card:{success:false,route:'RaceMarkTable',fallbackRoute:'RaceMarkTable_ipat'},odds:{success:false,route:'OddsTanFuku',optional:true}};let dh='',ch='',oh='';try{const r=await fetchRetry(urls.detail);dh=r.html;audit.detail={...audit.detail,success:true,httpStatus:200,attemptCount:r.attemptCount}}catch(e){audit.detail.errorCode=e.code||'http_error'}try{const r=await fetchRetry(urls.result);ch=r.html;audit.card={...audit.card,success:true,httpStatus:200,attemptCount:r.attemptCount,activeRoute:'RaceMarkTable'}}catch(e){audit.card.errorCode=e.code||'http_error';try{const r=await fetchRetry(urls.resultIpat,{attempts:1});ch=r.html;audit.card={...audit.card,success:true,httpStatus:200,fallbackUsed:true,activeRoute:'RaceMarkTable_ipat'}}catch(f){audit.card.fallbackErrorCode=f.code||'http_error'}}try{oh=await fetchText(urls.odds,{timeoutMs:3000});audit.odds={...audit.odds,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.odds.errorCode=e.code||'http_error'}
+    const audit={detail:{success:false,route:'DebaTableSmall'},card:{success:false,route:'RaceMarkTable',optional:true},odds:{success:false,route:'OddsTanFuku',optional:true}};let dh='',ch='',oh='';try{dh=await fetchText(urls.detail,{timeoutMs:8000});audit.detail={...audit.detail,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.detail.errorCode=e.code||'http_error'}try{ch=await fetchText(urls.result,{timeoutMs:8000});audit.card={...audit.card,success:true,httpStatus:200,attemptCount:1,activeRoute:'RaceMarkTable'}}catch(e){audit.card.errorCode=e.code||'http_error'}try{oh=await fetchText(urls.odds,{timeoutMs:4000});audit.odds={...audit.odds,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.odds.errorCode=e.code||'http_error'}
     const detailHorses=parseRaceCard(dh),fallbackHorses=parseRaceCard(ch),cardHorses=detailHorses.length>=2?detailHorses:fallbackHorses;if(cardHorses.length<2)throw Object.assign(new Error('出走馬データを取得できませんでした'),{code:!dh&&!ch?'network_error':'parser_error',raceFetchAudit:audit});const meta=parseRaceMeta(dh||ch),odds=parseTanFuku(oh);
     const cm=new Map(cardHorses.map(x=>[String(x.horseNo),x]));
     const om=new Map(odds.map(x=>[String(x.horseNo),x]));
@@ -214,7 +214,7 @@ http.createServer(async(req,res)=>{
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
   if(u.pathname==="/api/nar/race"||u.pathname==="/api/nar/race-diagnostic")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
-  if(u.pathname==="/api/nar/sync-minimal")return apiSyncMinimal(u,res);
-  if(u.pathname==="/api/nar/sync"||u.pathname==="/api/nar/result-diagnostic")return apiSync(u,res);
+  if(u.pathname==="/api/nar/sync-minimal"||u.pathname==="/api/nar/result-diagnostic")return apiSyncMinimal(u,res);
+  if(u.pathname==="/api/nar/sync")return apiSync(u,res);
   return staticFile(u,res);
 }).listen(PORT,"0.0.0.0",()=>console.log(`CHASS KEIBA LAB Ver.${VERSION} :${PORT} / public=${PUBLIC}`));
