@@ -1,18 +1,19 @@
-CHASS KEIBA LAB Ver.9.9.20
+CHASS KEIBA LAB Ver.9.9.21
 
-NAR Result Minimal Fetch / Safari Transport Isolation
+Result Fetch Single-Flight / Safari Abort Isolation
 
 主な変更
-1. 軽量な/api/nar/sync-minimalを新設し、iPhone側の標準結果取得へ採用。
-2. 通常結果レスポンスからオッズ・retry全文・重複診断を分離。
-3. Safari側でRequest・Headers・Body・JSON・Payloadを個別監査。
-4. fetch_failed / response_body_failed / json_parse_failed等へ細分化。
-5. RaceMarkTable成功時に結果を確定し、IPAT公式fallbackを維持。
-6. D1保存はブラウザへ結果を返した後の別処理として維持。
-7. payloadBytes・workerTotalMs・narFetchMs・parseMsを追加。
-8. 保存済み結果、予想ロジック、D1スキーマは変更なし。
+1. 同一raceIdの結果取得を1本のPromiseへ統合。
+2. 手動連打・auto重複は既存flightへjoin。
+3. auto中の手動要求は新規fetchを増やさずmanualへ昇格。
+4. 新規sync開始時の無条件AbortController.abort()を廃止。
+5. requestIdを通常・復旧経路とWorkerレスポンスヘッダーで共有。
+6. Safari TypeError名・メッセージ、visibility、online状態、段階時刻を保存。
+7. 予想取得後のautoを800ms遅延し、autoに45秒cooldownを追加。
+8. 別レースの古い応答はstaleとしてUIへ反映しない。
+9. 保存済み結果、パーサー、競馬ロジック、D1構造は変更なし。
 
 確認
 - node --check app.js / worker.js / chass-latest.js / server.mjs: PASS
-- npm test: 105/105 PASS
-- npm run check: 105/105 PASS
+- npm test: 115/115 PASS
+- npm run check: 115/115 PASS

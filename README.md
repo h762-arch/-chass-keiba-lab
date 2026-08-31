@@ -1,4 +1,12 @@
-# CHASS KEIBA LAB Ver.9.9.20
+# CHASS KEIBA LAB Ver.9.9.21
+
+## Ver.9.9.21 Result Fetch Single-Flight / Safari Abort Isolation
+
+- 同一raceIdの結果取得を1本のPromiseへ統合します。
+- manualはautoより優先し、auto実行中の手動要求は既存flightをmanualへ昇格します。
+- 無条件abortを廃止し、別レースの完了結果はstaleとしてUIへ反映しません。
+- requestIdを通常・復旧経路へ引き継ぎ、Safariエラー名・メッセージ・visibility・online状態を監査します。
+- 予想取得後のauto確認は800ms遅延し、同一レースのautoには45秒cooldownを設けます。
 
 ## Ver.9.9.20 NAR Result Minimal Fetch / Safari Transport Isolation
 
