@@ -1,6 +1,11 @@
-# CHASS KEIBA LAB Ver.9.9.7
+# CHASS KEIBA LAB Ver.9.9.8
 
-## Ver.9.9.7 D1 Validation Source Reconciliation
+## Ver.9.9.8 D1 Validation Audit Completion
+
+- `RESULT_MISSING` を検証除外から分離し、予想保存＝結果取得済＋結果未取得、結果取得済＝検証可能＋検証除外を監査します。
+- D1結果未取得一覧から個別にNAR結果取得を開始できます。
+- D1からの復元は予想Snapshot一致時だけ不足情報を追加し、差異は自動上書きせず競合として保護します。
+- D1/Local Cacheの参照元、同期方向、旧形式/現行形式フィルター、モデル別穴馬捕捉指標を追加しました。
 
 - D1の`races`・`predictions`・`results`を読み取り結合し、結果テーブルだけに残る公式結果を安全に復元
 - オンライン時の検証母集団をCloudflare D1、IndexedDBをキャッシュ・オフライン退避として明確化
