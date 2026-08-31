@@ -1,4 +1,11 @@
-# CHASS KEIBA LAB Ver.9.9.13
+# CHASS KEIBA LAB Ver.9.9.14
+
+## Result Fetch Diagnostic / 原因可視化
+
+- 再取得失敗時に `取得診断` を自動表示し、HTTP、エラーコード、通常/IPAT経路、Worker試行、端末試行、各経路の成否を確認できます。
+- `/api/nar/result-diagnostic` を追加し、通常の `/api/nar/sync` が失敗した場合でも原因調査を独立実行します。
+- 保存済み結果がある場合は `結果：取得済 ...｜再取得：失敗（保存済み結果には影響なし）` と明示します。
+- 予想ロジック、AI勝率/TOP3率、TIME、期待値、穴馬判定、D1研究データ構造は変更していません。
 
 ## NAR Result Fetch Resilience II
 
