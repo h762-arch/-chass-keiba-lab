@@ -1,5 +1,5 @@
-# CHASS KEIBA LAB Ver.9.9.16
-## Ver.9.9.16 Parse-Complete Success Lock
+# CHASS KEIBA LAB Ver.9.9.17
+## Ver.9.9.17 Parse-Complete Success Lock
 
 - RaceMarkTable が HTTP 200 かつ着順解析成功した時点で「結果取得成功」を確定します。
 - 最終オッズ・メタ情報・結果補完の失敗は optionalErrors として分離し、結果取得全体を 5xx に戻しません。

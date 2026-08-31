@@ -1,4 +1,4 @@
-CHASS KEIBA LAB Ver.9.9.16
+CHASS KEIBA LAB Ver.9.9.17
 
 RaceMarkTable解析成功時点で結果取得成功をロック。オッズ・メタ・補完処理の失敗は付随エラーへ分離し、HTTP 200の有効な着順をunknown_errorへ戻さない。
 Result Fetch / Post-Fetch Separation

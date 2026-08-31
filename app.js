@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.16';
+const APP_VERSION='9.9.17';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -707,7 +707,39 @@ async function syncNar(options={}){
    state.resultFetchError=String(e.message||e);
    state.resultFetchCheckedAt=new Date().toISOString();
    state.resultFetchAudit={apiOk:false,stage:'api_fetch',errorCode:state.resultErrorType,httpStatus:e?.status||null,attemptCount:e?.attemptCount||null,clientAttemptCount:3,urlType:e?.urlType||'RaceMarkTable',fallbackTried:!!e?.fallbackTried,diagnostics:e?.diagnostics||[],checkedAt:state.resultFetchCheckedAt};
-   const diag=await fetchResultDiagnostic(r);if(diag){state.resultFetchAudit={...state.resultFetchAudit,errorCode:diag.errorCode||state.resultFetchAudit.errorCode,httpStatus:diag.httpStatus??state.resultFetchAudit.httpStatus,attemptCount:diag.attemptCount??state.resultFetchAudit.attemptCount,urlType:diag.urlType||state.resultFetchAudit.urlType,fallbackUsed:!!diag.fallbackUsed,fallbackTried:diag.fallbackTried??state.resultFetchAudit.fallbackTried,diagnostics:diag.diagnostics?.length?diag.diagnostics:state.resultFetchAudit.diagnostics,diagnosticOk:!!diag.ok,diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()}}
+   const diag=await fetchResultDiagnostic(r);
+   if(diag){
+     state.resultFetchAudit={...state.resultFetchAudit,errorCode:diag.errorCode||state.resultFetchAudit.errorCode,httpStatus:diag.httpStatus??state.resultFetchAudit.httpStatus,attemptCount:diag.attemptCount??state.resultFetchAudit.attemptCount,urlType:diag.urlType||state.resultFetchAudit.urlType,fallbackUsed:!!diag.fallbackUsed,fallbackTried:diag.fallbackTried??state.resultFetchAudit.fallbackTried,diagnostics:diag.diagnostics?.length?diag.diagnostics:state.resultFetchAudit.diagnostics,diagnosticOk:!!diag.ok,diagnosticCheckedAt:diag.checkedAt||new Date().toISOString()};
+     // Ver.9.9.17: the diagnostic endpoint uses the same official RaceMarkTable parser.
+     // If it proves HTTP+parse success and returns a complete finish order, promote that
+     // result to authoritative success instead of leaving the UI as api_fetch/unknown_error.
+     const recoveredOrder=Array.isArray(diag.finishOrder)?diag.finishOrder.map(Number).filter(Number.isFinite).slice(0,3):[];
+     if(diag.ok&&recoveredOrder.length>=3){
+       const recoveredData={...diag,finishOrder:recoveredOrder,results:Array.isArray(diag.results)?diag.results:[],actualTimes:diag.actualTimes&&typeof diag.actualTimes==='object'?diag.actualTimes:{},resultMeta:diag.resultMeta||{},quality:diag.quality||null,acquiredAt:diag.checkedAt||new Date().toISOString(),source:'NAR公式 診断経路復旧'};
+       if(recoveredData.actualTimes&&typeof recoveredData.actualTimes==='object'){
+         state.actualTimes={...state.actualTimes,...recoveredData.actualTimes};
+         state.horses.forEach(h=>{const t=state.actualTimes[String(h.horseNo)];if(t)h.actualTime=t});
+       }
+       state.resultFetchCheckedAt=new Date().toISOString();
+       state.resultFetchAudit={apiOk:true,stage:'diagnostic_recovery',errorCode:null,httpStatus:diag.httpStatus??200,attemptCount:diag.attemptCount||1,clientAttemptCount:3,urlType:diag.urlType||'RaceMarkTable',fallbackUsed:!!diag.fallbackUsed,fallbackTried:!!diag.fallbackTried,diagnostics:diag.diagnostics||[],diagnosticOk:true,diagnosticCheckedAt:diag.checkedAt||state.resultFetchCheckedAt,recoveredFrom:'sync_error'};
+       state.resultErrorType=null;state.resultFetchError='';state.resultStatus='fetched';
+       let postFetchStage='save_start';
+       try{
+         saveFetchedResult(recoveredOrder,{silent:true,source:'NAR公式 診断経路復旧',resultData:recoveredData,onStage:stage=>{postFetchStage=stage;state.resultFetchAudit={...state.resultFetchAudit,stage:'diagnostic_recovery_post_fetch',postFetchStage:stage}}});
+         state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'diagnostic_recovery_complete',postFetchStage:'complete',postFetchError:''};
+       }catch(saveError){
+         state.resultFetchAudit={...state.resultFetchAudit,apiOk:true,stage:'diagnostic_recovery_post_fetch_error',errorCode:`post_fetch_${postFetchStage}`,postFetchStage,postFetchError:String(saveError?.message||saveError).slice(0,180)};
+         if(!(state.resultSnapshot?.finishOrder||[]).length){
+           state.result={finishOrder:recoveredOrder,memo:$('memo')?.value||'',autoDiagnosis:'',at:new Date().toISOString(),actualTimes:{...state.actualTimes},source:'NAR公式 診断経路復旧',autoSaved:true};
+           state.resultSnapshot={schemaVersion:3,source:'NAR公式 診断経路復旧',fetchedAt:recoveredData.acquiredAt,finishOrder:recoveredOrder,actualTimes:{...state.actualTimes},horses:recoveredData.results,weather:recoveredData.resultMeta?.weather||'',trackCondition:recoveredData.resultMeta?.trackCondition||'',quality:recoveredData.quality||null,market:state.resultMarketSnapshot||null};
+         }
+         try{persist(true)}catch{}
+       }
+       try{render()}catch{try{renderResultDisplayState();renderResultDiagnostics()}catch{}}
+       $('narStatus').textContent=`結果取得成功：${recoveredOrder.join('-')}｜通常経路失敗後、RaceMarkTable診断経路から復旧しました。`;
+       return {complete:true,pending:false,status:'fetched',data:recoveredData,recovered:true};
+     }
+   }
    persist(existingValidated(raceId(r)));
    renderResultDisplayState();renderResultDiagnostics();
    $('narStatus').textContent=alreadyComplete?`結果：取得済 ${((state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).slice(0,3)).join('-')}｜再取得：失敗（保存済み結果には影響なし）｜${errorLabel(e)}`:`取得エラー｜${errorLabel(e)} 予想データは保存されています。再取得できます。`;
