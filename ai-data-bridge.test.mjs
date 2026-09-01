@@ -40,7 +40,7 @@ const envFor=db=>({DB:db,CHASS_BRIDGE_TOKEN:'secret-token'});
 const req=(path,{token='secret-token',method='GET',origin}={})=>new Request(`https://example.test${path}`,{method,headers:{...(token==null?{}:{authorization:`Bearer ${token}`}),...(origin?{origin}:{})}});
 const json=async response=>({response,body:await response.json()});
 
-test('bridge version is 9.9.34',()=>assert.equal(VERSION,'9.9.34'));
+test('bridge version is 9.9.35',()=>assert.equal(VERSION,'9.9.35'));
 test('missing and invalid credentials are rejected',async()=>{
   const db=new FakeD1();
   assert.equal((await handleChassBridge(req('/api/chass/v1/context',{token:null}),envFor(db))).status,401);

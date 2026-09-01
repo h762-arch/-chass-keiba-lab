@@ -1,4 +1,14 @@
-CHASS KEIBA LAB Ver.9.9.34
+CHASS KEIBA LAB Ver.9.9.35
+
+Active Meeting-Aware Race Selector
+- 日付に応じて開催会場だけを有効化
+- meeting_calendar / 端末cacheをHistorical Collectorと共有
+- 実在raceNumbersだけを表示（11R/12R対応）
+- 同日Meeting Discoveryをsingle-flight化
+- 判定失敗はnon_meetingにせず、明示付き手動選択へfallback
+- NAR通常通信、Background Collector、Similarity、AI Bridge、MCP、予想ロジックは維持
+
+旧版記録: Ver.9.9.34
 
 Cloud Background Historical Collector
 - D1有限Jobと既存5分CronでSafari終了後も少量ずつ継続

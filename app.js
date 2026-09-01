@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.34';
+const APP_VERSION='9.9.35';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -9,7 +9,6 @@ const CURRENT='chass_v90_current';
 const LEGACY_CURRENT='chass_v80_current';
 const ODDS_HISTORY='chass_v90_odds_history';
 let oddsTimer=null;
-let autoRaceSelectTimer=null;
 let raceLoadController=null,liveOddsController=null;
 let raceLoadGeneration=0,liveOddsGeneration=0;
 let resultFetchInProgress=null;
@@ -31,6 +30,8 @@ let historyCollection=null;
 let historyCollectorRunning=false,historyCollectorAbort=false;
 let backgroundHistoricalJob=null,backgroundHistoricalPollTimer=null;
 let meetingCalendarCache={schemaVersion:1,entries:{}};
+const MEETING_SELECTOR_TTL_MS=20*60_000,meetingDiscoveryPromises=new Map();
+let meetingSelectorState={date:'',status:'idle',entries:{},source:null,fallback:false,error:null};
 const AUTO_RESULT_SETTING='chass_auto_result_v1',AUTO_RESULT_RETRY_MINUTES=[5,5,10,15,30],AUTO_RESULT_MAX_ATTEMPTS=6;
 let autoResultRunInProgress=null,autoResultTimer=null;
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -641,6 +642,30 @@ function initAutoRaceControls(){
    dd.value=local.toISOString().slice(0,10);
  }
 }
+function localIsoDate(now=new Date()){return new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,10)}
+function meetingEntryFresh(entry,date,now=Date.now()){if(!entry||!['meeting','non_meeting'].includes(entry.status))return false;if(date<localIsoDate(new Date(now)))return true;const checked=Date.parse(entry.checkedAt||entry.checked_at||'');return Number.isFinite(checked)&&now-checked<MEETING_SELECTOR_TTL_MS}
+function meetingEntriesForDate(date,now=Date.now()){const entries={};for(const track of Object.keys(NAR_TRACKS)){const found=meetingCacheEntry(date,track);if(meetingEntryFresh(found,date,now))entries[track]=found}return entries}
+function selectorRaceNumbers(track){const entry=meetingSelectorState.entries?.[track];if(entry?.status==='meeting'&&entry.raceNumbers?.length)return [...new Set(entry.raceNumbers.map(Number).filter(n=>n>0))].sort((a,b)=>a-b);if(meetingSelectorState.fallback&&entry?.status!=='non_meeting')return Array.from({length:12},(_,i)=>i+1);return []}
+function renderMeetingSelector({message=''}={}){
+ const td=$('autoTrack'),rn=$('autoRaceNo'),button=$('autoRaceLoad'),status=$('meetingSelectorStatus');if(!td||!rn)return;const state=meetingSelectorState,tracks=Object.keys(NAR_TRACKS),meeting=tracks.filter(t=>state.entries[t]?.status==='meeting'),nonMeeting=tracks.filter(t=>state.entries[t]?.status==='non_meeting'),unknown=tracks.filter(t=>!state.entries[t]||state.entries[t]?.status==='unknown'),previous=td.value;
+ const group=(label,items,kind)=>items.length?`<optgroup label="${esc(label)}">${items.map(t=>`<option value="${esc(t)}" ${kind==='non'?'disabled':''}>${esc(t)}${kind==='non'?'（この日は非開催）':kind==='unknown'?'（開催未確認）':''}</option>`).join('')}</optgroup>`:'';
+ td.innerHTML=group(state.date===localIsoDate()?'本日開催':'この日の開催',meeting,'meeting')+group('この日は非開催',nonMeeting,'non')+(state.fallback?group('手動選択',unknown,'unknown'):group('開催情報未確定',unknown,'non'));
+ const usable=meeting.includes(previous)||state.fallback&&unknown.includes(previous)?previous:meeting[0]||(state.fallback?unknown[0]:'');if(usable)td.value=usable;
+ const previousRace=Number(rn.value),numbers=selectorRaceNumbers(td.value);rn.innerHTML=numbers.map(n=>`<option value="${n}">${n}R</option>`).join('');if(numbers.includes(previousRace))rn.value=String(previousRace);else if(numbers.length)rn.value=String(numbers[0]);
+ const loading=state.status==='loading',noMeeting=state.status==='empty',blocked=loading||noMeeting||!td.value||!numbers.length;td.disabled=loading||noMeeting;rn.disabled=blocked;button.disabled=blocked;
+ if($('track'))$('track').value=td.value||'';if($('raceNo'))$('raceNo').value=rn.value||'';
+ if(status){if(loading)status.textContent='開催情報を確認中…';else if(noMeeting)status.textContent='この日は地方競馬開催がありません。';else if(state.fallback)status.textContent='開催情報を確認できないため手動選択モードです。既存選択は維持できます。';else status.textContent=`${state.date===localIsoDate()?'本日':'この日'}開催 ${meeting.length}場｜${state.source==='local_cache'?'端末cache':state.source==='d1_meeting_calendar'?'共有cache':'NAR開催情報'}`}
+ if(message&&$('autoRaceStatus'))$('autoRaceStatus').textContent=message;
+}
+async function discoverSelectorTrack(date,track,{refresh=false}={}){const code=narCode(track),response=await fetch(`/api/nar/meeting?code=${code}&date=${encodeURIComponent(date)}${refresh?'&refresh=1':''}`,{cache:'no-store'}),data=await responseJson(response);if(!response.ok||!['meeting','non_meeting'].includes(data.status))throw requestError(data.errorCode||'meeting_lookup_failed',data.error||'開催情報を取得できませんでした',response.status);await setMeetingCache(date,track,data);return meetingCacheEntry(date,track)}
+async function refreshMeetingSelector(date,{force=false}={}){
+ date=String(date||'');if(!date)return null;if(meetingDiscoveryPromises.has(date))return meetingDiscoveryPromises.get(date);const task=(async()=>{const previousTrack=$('autoTrack')?.value||'',previousRace=Number($('autoRaceNo')?.value)||null;meetingSelectorState={date,status:'loading',entries:force?{}:meetingEntriesForDate(date),source:null,fallback:false,error:null};renderMeetingSelector();
+  if(!force&&Object.keys(meetingSelectorState.entries).length===Object.keys(NAR_TRACKS).length){meetingSelectorState.status=Object.values(meetingSelectorState.entries).some(x=>x.status==='meeting')?'ready':'empty';meetingSelectorState.source='local_cache';renderMeetingSelector();return meetingSelectorState}
+  try{const cached=await cloudRequest(`/api/db/meetings?date=${encodeURIComponent(date)}`);for(const item of cached.tracks||[])if(meetingEntryFresh(item,date)){await setMeetingCache(date,item.track,item);meetingSelectorState.entries[item.track]=meetingCacheEntry(date,item.track)}if((cached.tracks||[]).length)meetingSelectorState.source='d1_meeting_calendar'}catch{}
+  const missing=Object.keys(NAR_TRACKS).filter(track=>!meetingEntryFresh(meetingSelectorState.entries[track],date));let failures=0;for(const track of missing){try{meetingSelectorState.entries[track]=await discoverSelectorTrack(date,track,{refresh:force||!!meetingCacheEntry(date,track)});meetingSelectorState.source=meetingSelectorState.source||'nar_discovery'}catch(error){failures++;meetingSelectorState.entries[track]={date,track,status:'unknown',raceNumbers:[],errorCode:error?.code||'meeting_lookup_failed'}}}
+  const active=Object.values(meetingSelectorState.entries).filter(x=>x.status==='meeting');meetingSelectorState.fallback=failures>0;meetingSelectorState.error=failures?`${failures}場の開催情報を確認できませんでした`:null;meetingSelectorState.status=active.length?'ready':failures?'fallback':'empty';renderMeetingSelector({message:previousTrack&&$('autoTrack')?.value!==previousTrack?'開催会場変更に伴い競馬場・レースを変更しました。':previousRace&&Number($('autoRaceNo')?.value)!==previousRace?'開催情報に伴いレースを1Rへ変更しました。':''});return meetingSelectorState})().finally(()=>meetingDiscoveryPromises.delete(date));meetingDiscoveryPromises.set(date,task);return task
+}
+function meetingSelectionValid(date,track,raceNo){if(meetingSelectorState.date!==date||meetingSelectorState.status==='loading')return false;const entry=meetingSelectorState.entries?.[track];if(entry?.status==='meeting')return (entry.raceNumbers||[]).map(Number).includes(Number(raceNo));return meetingSelectorState.fallback&&entry?.status!=='non_meeting'}
 function abilityPlace(win,allWins){const w=Math.pow(Math.max(Number(win)||.01,.01),.72),den=allWins.reduce((s,x)=>s+Math.pow(Math.max(Number(x)||.01,.01),.72),0)||1;return Math.max(1,Math.min(88,300*w/den))}
 function buildAbilityRoot(d,date,track,raceNo){
  const horses=Array.isArray(d.horses)?d.horses:[],ready=horses.filter(h=>Number.isFinite(Number(h.abilityWinRate))).length,wins=horses.map(h=>Number(h.abilityWinRate)||0),abilityMode=ready>=Math.max(2,Math.ceil(horses.length*.5));
@@ -683,6 +708,8 @@ async function loadAutoRace(){
  const date=$('autoRaceDate')?.value,track=$('autoTrack')?.value,raceNo=Number($('autoRaceNo')?.value);
  const code=narCode(track);
  if(!date||!code||!raceNo){$('autoRaceStatus').textContent='日付・競馬場・レースを確認してください。';return}
+ if(meetingSelectorState.date!==date||['idle','loading'].includes(meetingSelectorState.status))await refreshMeetingSelector(date);
+ if(!meetingSelectionValid(date,track,raceNo)){$('autoRaceStatus').textContent=meetingSelectorState.status==='empty'?'この日は地方競馬開催がありません。':'選択した競馬場・レースは開催情報にありません。開催会場と実在レースを選択してください。';renderMeetingSelector();return}
  raceLoadController?.abort();liveOddsController?.abort();
  const controller=new AbortController(),generation=++raceLoadGeneration,requestedId=raceId({raceDate:date,track,raceNo});raceLoadController=controller;
  const isCurrent=()=>generation===raceLoadGeneration&&!controller.signal.aborted&&currentSelectionId()===requestedId;
@@ -701,7 +728,7 @@ async function loadAutoRace(){
    if(!isCurrent())return;
    try{const diag=await fetchNarSyncApi(`/api/nar/race-diagnostic?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`,{signal:controller.signal,attempts:1}),d=diag.data;if(!isCurrent())return;const committed=commitAutoRaceData(d,{date,track,raceNo,recovered:true});$('autoRaceStatus').textContent=committed.base+'｜通常経路失敗後、診断復旧で予想保存済';setTimeout(()=>{if(isCurrent())syncNar({auto:true}).catch(()=>{})},800);return}catch(recoveryError){if(!isCurrent())return;lastRaceFetchAudit=recoveryError?.raceFetchAudit||null;renderRaceFetchDiagnostics();const hasSaved=state?.horses?.length>=2&&raceId(state.race)===requestedId;$('autoRaceBadge').textContent=hasSaved?'保存済み':'取得失敗';$('autoRaceStatus').textContent=hasSaved?`保存済み予想を表示中｜最新データ更新のみ失敗（${errorLabel(recoveryError)}）`:`取得エラー｜${errorLabel(recoveryError)} 予想済みデータは削除していません。`}
  }finally{
-   if(generation===raceLoadGeneration){raceLoadController=null;setButtonBusy('autoRaceLoad',false)}
+   if(generation===raceLoadGeneration){raceLoadController=null;setButtonBusy('autoRaceLoad',false);renderMeetingSelector()}
  }
 }
 
@@ -1529,7 +1556,7 @@ function migrateLegacy(){
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
    APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
-   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,originalLayerHorses,scratchImpactScore,buildLiveAdjustedPrediction,applyScratchStatuses,buildScratchValidation,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
+   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,originalLayerHorses,scratchImpactScore,buildLiveAdjustedPrediction,applyScratchStatuses,buildScratchValidation,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
 }
@@ -1537,16 +1564,14 @@ initAutoRaceControls();
 if($('autoRaceLoad'))$('autoRaceLoad').onclick=loadAutoRace;
 if($('autoTrack'))$('autoTrack').onchange=e=>{
   if($('track'))$('track').value=e.target.value;
-  if($('autoRaceNo')?.value){if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);}
+  const before=Number($('autoRaceNo')?.value)||null;renderMeetingSelector({message:before&&!selectorRaceNumbers(e.target.value).includes(before)?'開催会場変更に伴いレースを1Rへ変更しました。':''});
 };
 if($('autoRaceDate'))$('autoRaceDate').onchange=e=>{
   if($('raceDate'))$('raceDate').value=e.target.value;
-  if($('autoRaceNo')?.value){if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);}
+  refreshMeetingSelector(e.target.value).catch(()=>{});
 };
 if($('autoRaceNo'))$('autoRaceNo').onchange=e=>{
   if($('raceNo'))$('raceNo').value=e.target.value;
-  if(autoRaceSelectTimer)clearTimeout(autoRaceSelectTimer);
-  autoRaceSelectTimer=setTimeout(()=>loadAutoRace(),180);
 };
 $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;try{await importFile(f)}catch(err){$('importStatus').textContent='取込失敗：'+err.message;alert($('importStatus').textContent)}e.target.value=''});
 ['category','raceDate','track','raceNo','distance','trackCondition','chaos','pace'].forEach(id=>$(id).addEventListener('input',()=>{state.race=raceFromForm();render()}));
@@ -1579,6 +1604,7 @@ async function bootApp(){
  ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});
  const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});
  if(last&&db[last]){state=db[last];state.actualTimes=state.actualTimes||state.result?.actualTimes||{};state.predictionSaved=state.predictionSaved??!!state.predictionSnapshot;state.resultStatus=state.result?.finishOrder?.length>=3?'success':state.resultStatus||'waiting';state.validationCompleted=state.validationCompleted??!!(state.validated&&state.result?.finishOrder?.length>=3);state.horses=(state.horses||[]).map(h=>({...h,sourceMark:h.sourceMark||'',abilityMark:h.abilityMark||(['◎','○','▲','△'].includes(h.mark)?h.mark:''),valueMark:h.valueMark||(h.mark?.includes?.('💎')?h.mark:''),warningMark:h.warningMark||h.warning||'',finalMark:h.finalMark||''}));fillRace(state.race);render()}else{fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()}
+ await refreshMeetingSelector($('autoRaceDate')?.value).catch(()=>{});
  renderAutoResultQueue();startAutoResultScheduler();
 }
 bootApp().catch(error=>{storageReady=true;researchStorageMode='localStorage-fallback';console.error('Storage initialization failed:',error);['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});fillRace({category:'地方競馬',chaos:50,pace:'標準'});render()});

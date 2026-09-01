@@ -1,4 +1,4 @@
-# CHASS KEIBA LAB MCP Ver.9.9.34
+# CHASS KEIBA LAB MCP Ver.9.9.35
 
 CHASS AI Data BridgeをChatGPT/Codexへ接続する、独立したRead-Only MCP Serverです。データは保存せず、NARへ直接アクセスせず、`/api/chass/v1/*`のGETだけを中継します。
 

@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.34</title>
+  <title>チャス競馬研究所 Ver.9.9.35</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.34</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.35</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -35,6 +35,7 @@
         <div class="primary-controls-head"><strong id="primaryControlsTitle">⚙️ 公式データ取得・予想設定</strong><span>常時操作</span></div>
         <section class="auto-race-panel">
           <div class="grid auto-race-grid"><label class="auto-date-field">日付<input id="autoRaceDate" type="date"></label><label>競馬場<select id="autoTrack"></select></label><label>レース<select id="autoRaceNo"></select></label></div>
+          <p id="meetingSelectorStatus" class="meeting-selector-status" role="status">開催情報を確認中…</p>
           <button id="autoRaceLoad" class="primary wide">NAR公式データを取得・予想開始</button>
           <p id="autoRaceStatus" class="muted status-line">出馬表・過去走・オッズを取得して能力先行で評価します。</p>
           <details id="raceFetchDiagnostics" class="result-diagnostics" hidden><summary>予想取得診断</summary><div id="raceFetchDiagnosticsBody" class="result-diagnostics-body"></div></details>
