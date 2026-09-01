@@ -1,17 +1,12 @@
 {
-  "name": "chass-keiba-lab-mcp",
-  "version": "9.9.35",
+  "name": "chass-keiba-lab",
+  "version": "10.0.1",
   "private": true,
   "type": "module",
-  "description": "Read-only MCP connector for CHASS KEIBA LAB AI Data Bridge",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test ../tests/mcp-connector.test.mjs ../tests/mcp-live-integration.test.mjs",
-    "check": "node --check server.mjs && node --check bridge-client.mjs && node --check chass-tools.mjs && node --test ../tests/mcp-connector.test.mjs ../tests/mcp-live-integration.test.mjs"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.20.2",
-    "zod": "^3.25.76"
+    "test": "node --test regression.test.mjs tests/*.test.mjs",
+    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --check jra-normalizer.js && node --check jra-model.js && node --check jra-adapter.js && node --check similarity-intelligence.mjs && node --check meeting-discovery.mjs && node --check mcp/bridge-client.mjs && node --check mcp/chass-tools.mjs && node --check mcp/server.mjs && node --test regression.test.mjs tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

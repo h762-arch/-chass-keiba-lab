@@ -7,9 +7,9 @@ test('UI, Worker and package versions match',async()=>{
   const [app,index,packageText]=await Promise.all([readFile(new URL('../app.js',import.meta.url),'utf8'),readFile(new URL('../index.html',import.meta.url),'utf8'),readFile(new URL('../package.json',import.meta.url),'utf8')]);
   const pkg=JSON.parse(packageText);
   const appVersion=app.match(/APP_VERSION='([^']+)'/)?.[1];
-  const htmlVersion=index.match(/Ver\.([0-9.]+-dev)/)?.[1];
-  assert.equal(appVersion,'10.0-dev');
+  const htmlVersion=index.match(/Ver\.([0-9.]+)/)?.[1];
+  assert.equal(appVersion,'10.0.1');
   assert.equal(workerVersion,appVersion);
   assert.equal(htmlVersion,appVersion);
-  assert.equal(pkg.version,'10.0.0-dev');
+  assert.equal(pkg.version,'10.0.1');
 });

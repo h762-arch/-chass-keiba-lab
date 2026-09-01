@@ -41,11 +41,31 @@ test('JRA model calculates all horses and normalizes win probability',()=>{
  assert.equal(result.state.horses.length,14);
  assert.deepEqual(Array.from(result.state.horses,h=>h.horseNo),Array.from({length:14},(_,i)=>i+1));
  assert.ok(Math.abs(result.prediction.quality.winProbabilityTotal-100)<0.02);
+ assert.ok(Math.abs(result.prediction.quality.placeProbabilityTotal-300)<0.05);
+ assert.equal(result.prediction.quality.probabilityInvariant,true);
  for(const h of result.state.horses){
-  assert.ok(h.win>0&&h.win<100);
-  assert.ok(h.place>=1&&h.place<=88);
+  assert.ok(h.win>=0&&h.win<100);
+  assert.ok(h.place>=h.win,`${h.horseNo}: P(TOP3) must be >= P(win)`);
+  assert.ok(h.second>=0&&h.second<=100);
   for(const key of ['speed','recent','distance','course','finish','pace','total'])assert.ok(Number.isFinite(h.jraIndices[key]),`${h.horseNo}:${key}`);
  }
+});
+
+test('rank simulation is deterministic and distance uncertainty widens unknown evidence',()=>{
+ const data=fixture(),first=A.run(N.normalizeJraData(data)).prediction,second=A.run(N.normalizeJraData(data)).prediction;
+ assert.deepEqual(Array.from(first.horses,h=>[h.win,h.second,h.place]),Array.from(second.horses,h=>[h.win,h.second,h.place]));
+ const unknown=fixture();unknown.race.distance=2600;
+ const result=A.run(N.normalizeJraData(unknown)).prediction;
+ assert.ok(result.horses.every(h=>h.probabilityUncertainty>=.8));
+ assert.ok(Math.max(...result.horses.map(h=>h.win))<50,'unknown distance must broaden the field probability distribution');
+ assert.ok(result.race.predictionConfidenceReasons.includes('距離実績の不確実性'));
+});
+
+test('market heat and ability danger are separate signals',()=>{
+ const result=A.run(N.normalizeJraData(fixture())).prediction;
+ const favorites=result.horses.filter(h=>h.popularity<=3);
+ assert.ok(favorites.every(h=>Array.isArray(h.abilityRisk)&&Array.isArray(h.marketHeat)));
+ for(const horse of favorites)if(!horse.abilityRisk.length&&horse.marketHeat.length)assert.equal(horse.warningMark,'市場過熱');
 });
 
 test('market fields never alter ability or AI probabilities',()=>{
@@ -91,4 +111,15 @@ test('app keeps JRA and NAR engines separated',()=>{
  assert.match(source,/CHASS_JRA_ADAPTER\.run/);
  assert.match(source,/registerResultWaiting\(state,rid\)/);
  assert.doesNotMatch(source,/commitJraNormalized[^\n]+registerResultWaiting/);
+});
+
+test('JRA result provenance, condition delta and automatic validation remain explicit',()=>{
+ const source=fs.readFileSync(new URL('app.js',root),'utf8');
+ assert.match(source,/resultSource:source==='手動修正保存'\?'manual':'official'/);
+ assert.match(source,/predictionTrackCondition/);
+ assert.match(source,/actualTrackCondition/);
+ assert.match(source,/buildJraValidationMetrics/);
+ assert.match(source,/結果データ：🟠 手動入力/);
+ assert.match(source,/単勝オッズ/);
+ assert.match(source,/人気順/);
 });
