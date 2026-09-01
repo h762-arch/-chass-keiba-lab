@@ -1,6 +1,6 @@
 {
   "name": "chass-keiba-lab-mcp",
-  "version": "9.9.32",
+  "version": "9.9.33",
   "private": true,
   "type": "module",
   "description": "Read-only MCP connector for CHASS KEIBA LAB AI Data Bridge",

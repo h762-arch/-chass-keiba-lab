@@ -2,8 +2,9 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {parseNarRaceList} from './meeting-discovery.mjs';
 
-const VERSION="9.9.32";
+const VERSION="9.9.33";
 const CHASS_BRIDGE_SCHEMA_VERSION="1.0";
 function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,11 @@ async function fetchText(url,{timeoutMs=15000}={}){
   },redirect:"follow",signal:controller.signal});
   if(!r.ok){const error=new Error(`NAR HTTP ${r.status}`);error.status=r.status;throw error}
   const text=await r.text();if(!text)throw Object.assign(new Error('NAR empty response'),{code:'empty_response'});return text}catch(error){if(error?.name==='AbortError')throw Object.assign(new Error('NAR timeout'),{code:'timeout'});if(error instanceof TypeError&&!error.code)error.code='network_error';throw error}finally{clearTimeout(timer)}
+}
+async function apiMeeting(u,res){
+ const code=u.searchParams.get('code'),date=u.searchParams.get('date');if(!code||!date)return sendJson(res,400,{ok:false,errorCode:'invalid_request',error:'code,date are required'});
+ const track=TRACK_NAMES[String(code)]||'',q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(String(date).replaceAll('-','/'))}`,url=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?${q}`,started=Date.now();
+ try{const html=await fetchText(url,{timeoutMs:8000}),parsed=parseNarRaceList(html,{track,date});return sendJson(res,200,{ok:true,...parsed,code:String(code),checkedAt:new Date().toISOString(),elapsedMs:Date.now()-started})}catch(e){return sendJson(res,e?.status===404?404:502,{ok:false,status:'meeting_unknown',meeting:false,code,date,errorCode:e?.code||(e?.status?'http_error':'network_error'),error:String(e?.message||e),checkedAt:new Date().toISOString()})}
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function fetchRetry(url,{attempts=2,timeoutMs=8000}={}){let last;for(let i=1;i<=attempts;i++){try{return {html:await fetchText(url,{timeoutMs}),attemptCount:i}}catch(e){last=e;e.attemptCount=i;if(!(['network_error','timeout'].includes(e.code)||[429,500,502,503,504].includes(Number(e.status)))||i===attempts)throw e;await sleep(800)}}throw last}
@@ -221,6 +227,7 @@ http.createServer(async(req,res)=>{
   if(u.pathname==="/api/chass/context"||u.pathname.startsWith('/api/chass/v1/'))return localChassBridge(req,res,u);
   if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
+  if(u.pathname==="/api/nar/meeting")return apiMeeting(u,res);
   if(u.pathname==="/api/nar/race"||u.pathname==="/api/nar/race-diagnostic")return apiRace(u,res);
   if(u.pathname==="/api/nar/odds")return apiOdds(u,res);
   if(u.pathname==="/api/nar/sync-minimal"||u.pathname==="/api/nar/result-diagnostic")return apiSyncMinimal(u,res);

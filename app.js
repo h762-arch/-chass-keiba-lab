@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.32';
+const APP_VERSION='9.9.33';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -26,8 +26,10 @@ const NAR_TRACKS={
   '名古屋':24,'園田':27,'姫路':28,'高知':31,'佐賀':32,'門別':36
 };
 const HISTORY_COLLECTION_KEY='chass_history_collection_v1';
+const MEETING_CALENDAR_KEY='chass_meeting_calendar_v1';
 let historyCollection=null;
 let historyCollectorRunning=false,historyCollectorAbort=false;
+let meetingCalendarCache={schemaVersion:1,entries:{}};
 const AUTO_RESULT_SETTING='chass_auto_result_v1',AUTO_RESULT_RETRY_MINUTES=[5,5,10,15,30],AUTO_RESULT_MAX_ATTEMPTS=6;
 let autoResultRunInProgress=null,autoResultTimer=null;
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
@@ -162,6 +164,7 @@ async function initResearchStorage(){
    for(const row of savedRaces){const local=raceCache[row.id],localAt=Date.parse(local?.updatedAt||'')||0,dbAt=Date.parse(row.data?.updatedAt||row.updatedAt||'')||0;if(!local||dbAt>localAt)raceCache[row.id]=row.data}
    for(const row of savedOdds){if(!oddsHistoryCache[row.raceId])oddsHistoryCache[row.raceId]=row.history||[]}
    const savedCurrent=settings.find(x=>x.key==='currentRace')?.value;if(savedCurrent)currentRaceCache=savedCurrent;
+   const savedMeeting=settings.find(x=>x.key==='meetingCalendar')?.value||localStore.get(MEETING_CALENDAR_KEY,null);if(savedMeeting?.entries)meetingCalendarCache=savedMeeting;
    await Promise.all([idbPutMany('races',Object.entries(raceCache).map(([id,data])=>({id,data,updatedAt:stableRecordUpdatedAt(data)}))),idbPutMany('oddsHistory',Object.entries(oddsHistoryCache).map(([raceId,history])=>({raceId,history,updatedAt:new Date().toISOString()}))),idbPut('settings',{key:'migration',value:{schemaVersion:1,completedAt:new Date().toISOString(),source:'localStorage',legacyPreserved:true}})]);
    researchStorageMode='indexedDB';localStore.set(CURRENT,currentRaceCache);
  }catch(e){researchDb=null;researchStorageMode='localStorage-fallback';console.warn('IndexedDB fallback:',e?.message||e)}
@@ -963,13 +966,23 @@ function saveValidation(){
 
 function historyDefaultState(){
  const today=new Date(),end=new Date(today);end.setDate(end.getDate()-1);const start=new Date(end);start.setDate(start.getDate()-29);const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
- return {schemaVersion:1,status:'idle',preset:'30',startDate:iso(start),endDate:iso(end),tracks:['浦和','船橋','大井','川崎'],cursor:0,total:0,done:0,saved:0,skipped:0,failed:0,pending:0,lastItem:'',startedAt:null,updatedAt:null,errors:[]};
+ return {schemaVersion:2,status:'idle',phase:'meeting_discovery',preset:'30',startDate:iso(start),endDate:iso(end),tracks:['浦和','船橋','大井','川崎'],meetingCursor:0,meetingChecked:0,meetingTotal:0,meetingFound:0,nonMeetingDays:0,unknownMeetings:[],discoveredMeetings:[],collectionMeetingIndex:0,raceIndex:0,raceTargets:0,raceProcessed:0,saved:0,alreadySaved:0,raceNotScheduled:0,resultWaiting:0,networkFailure:0,parseFailure:0,cloudFailure:0,unexpectedFailure:0,lastItem:'',startedAt:null,updatedAt:null,errors:[],requestStats:{meetingRequests:0,raceRequests:0,resultRequests:0,cacheHits:0},trackStats:{}};
 }
-function getHistoryState(){if(!historyCollection)historyCollection=localStore.get(HISTORY_COLLECTION_KEY,null)||historyDefaultState();return historyCollection}
+function migrateHistoryState(value){if(value?.schemaVersion===2)return value;const fresh=historyDefaultState();if(value){fresh.startDate=value.startDate||fresh.startDate;fresh.endDate=value.endDate||fresh.endDate;fresh.tracks=Array.isArray(value.tracks)?value.tracks:fresh.tracks;fresh.preset=value.preset||fresh.preset}return fresh}
+function getHistoryState(){if(!historyCollection)historyCollection=migrateHistoryState(localStore.get(HISTORY_COLLECTION_KEY,null));return historyCollection}
 function saveHistoryState(){const st=getHistoryState();st.updatedAt=new Date().toISOString();localStore.set(HISTORY_COLLECTION_KEY,st);renderHistoryCollector()}
 function historyDateRange(start,end){const out=[],a=new Date(`${start}T00:00:00`),b=new Date(`${end}T00:00:00`);if(!Number.isFinite(a.getTime())||!Number.isFinite(b.getTime())||a>b)return out;for(let d=new Date(a);d<=b;d.setDate(d.getDate()+1))out.push(new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10));return out}
-function historyPlan(st=getHistoryState()){const dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);const plan=[];for(const date of dates)for(const track of tracks)for(let raceNo=1;raceNo<=12;raceNo++)plan.push({date,track,raceNo,id:raceId({raceDate:date,track,raceNo})});return plan}
-function historyPresetDays(days){const st=getHistoryState(),end=new Date();end.setDate(end.getDate()-1);const start=new Date(end);start.setDate(start.getDate()-Math.max(0,Number(days||1)-1));const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);st.startDate=iso(start);st.endDate=iso(end);st.preset=String(days);st.cursor=0;saveHistoryState()}
+function historyMeetingPair(st,index){const dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);if(!tracks.length)return null;const date=dates[Math.floor(index/tracks.length)],track=tracks[index%tracks.length];return date&&track?{date,track,key:`${date}_${track}`} :null}
+function historyRequestMetrics(st=getHistoryState()){const dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]),legacyCandidateCount=dates.length*tracks.length*12,estimatedLegacyRequests=legacyCandidateCount+(st.raceTargets||0),actualRequests=(st.requestStats?.meetingRequests||0)+(st.requestStats?.raceRequests||0)+(st.requestStats?.resultRequests||0),reductionRate=estimatedLegacyRequests?Math.max(0,100*(1-actualRequests/estimatedLegacyRequests)):0;return {legacyCandidateCount,estimatedLegacyRequests,actualRequests,reductionRate:Number(reductionRate.toFixed(1))}}
+function resetHistoryProgress(st){const fresh=historyDefaultState();for(const key of ['status','phase','meetingCursor','meetingChecked','meetingTotal','meetingFound','nonMeetingDays','unknownMeetings','discoveredMeetings','collectionMeetingIndex','raceIndex','raceTargets','raceProcessed','saved','alreadySaved','raceNotScheduled','resultWaiting','networkFailure','parseFailure','cloudFailure','unexpectedFailure','lastItem','startedAt','updatedAt','errors','requestStats','trackStats'])st[key]=cloneData(fresh[key]);return st}
+function historyPresetDays(days){const st=getHistoryState(),end=new Date();end.setDate(end.getDate()-1);const start=new Date(end);start.setDate(start.getDate()-Math.max(0,Number(days||1)-1));const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);st.startDate=iso(start);st.endDate=iso(end);st.preset=String(days);resetHistoryProgress(st);saveHistoryState()}
+function meetingCacheEntry(date,track){return meetingCalendarCache.entries?.[`${date}_${track}`]||null}
+async function saveMeetingCalendarCache(){meetingCalendarCache.updatedAt=new Date().toISOString();localStore.set(MEETING_CALENDAR_KEY,meetingCalendarCache);if(researchDb)await idbPut('settings',{key:'meetingCalendar',value:meetingCalendarCache})}
+async function setMeetingCache(date,track,value){if(!['meeting','non_meeting'].includes(value?.status))return;meetingCalendarCache.entries=meetingCalendarCache.entries||{};meetingCalendarCache.entries[`${date}_${track}`]={...value,date,track,checkedAt:value.checkedAt||new Date().toISOString()};await saveMeetingCalendarCache()}
+function historyTrackStat(st,track){return st.trackStats[track]||(st.trackStats[track]={meetingDays:0,nonMeetingDays:0,raceTargets:0,raceProcessed:0,saved:0,alreadySaved:0})}
+function addDiscoveredMeeting(st,item){if(st.discoveredMeetings.some(x=>x.date===item.date&&x.track===item.track))return;const raceNumbers=[...new Set((item.raceNumbers||[]).map(Number).filter(n=>n>0))].sort((a,b)=>a-b);if(!raceNumbers.length)return;st.discoveredMeetings.push({date:item.date,track:item.track,raceNumbers});st.meetingFound++;st.raceTargets+=raceNumbers.length;const ts=historyTrackStat(st,item.track);ts.meetingDays++;ts.raceTargets+=raceNumbers.length}
+async function discoverMeeting(st,pair){const cached=meetingCacheEntry(pair.date,pair.track);if(cached){st.requestStats.cacheHits++;return cached}let lastError=null;for(let attempt=1;attempt<=3;attempt++){if(attempt>1)await new Promise(r=>setTimeout(r,attempt===2?2000:5000));try{st.requestStats.meetingRequests++;const code=narCode(pair.track),response=await fetch(`/api/nar/meeting?code=${code}&date=${encodeURIComponent(pair.date)}`,{cache:'no-store'}),data=await responseJson(response);if(!response.ok)throw requestError(data.errorCode||'network_failure',data.error||'開催日取得失敗',response.status);if(data.status==='meeting'&&data.raceNumbers?.length){await setMeetingCache(pair.date,pair.track,data);return data}if(data.status==='non_meeting'){await setMeetingCache(pair.date,pair.track,data);return data}lastError=requestError('meeting_unknown','開催日を確定できませんでした')}catch(e){lastError=e}}throw lastError||requestError('meeting_unknown','開催日を確定できませんでした')}
+async function waitForCollectorPriority(){while(!historyCollectorAbort&&(raceLoadController||liveOddsController||resultFetchInProgress||autoResultRunInProgress))await new Promise(r=>setTimeout(r,500));if(!historyCollectorAbort&&dueResultQueue().length)await runAutoResultQueue({limit:1,allowHistoricalBoundary:true})}
 function historySampleLabel(n){return n<30?'低信頼':n<100?'参考':n<300?'中':'高'}
 function historicalRecord(root,resultData){
  const previous=state,now=new Date().toISOString();
@@ -990,53 +1003,71 @@ function historicalRecord(root,resultData){
 async function persistHistoricalRecord(id,record){raceCache[id]=record;if(researchDb)await idbPut('races',{id,data:record,updatedAt:record.updatedAt});else localStore.set(KEY,raceCache)}
 async function syncHistoricalBatch(batch){if(!batch.length)return {created:0,updated:0,unchanged:0};try{return await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})})}catch(e){batch.forEach(x=>setCloudPending(x.raceId,true));throw e}}
 function renderHistoryCollector(){
- const box=$('historyCollector');if(!box)return;const st=getHistoryState(),plan=historyPlan(st),existing=cloudResearchAudit.counts?.d1PredictionSaved??Object.keys(raceCache).length,remaining1=Math.max(0,1000-existing),remaining3=Math.max(0,3000-existing);st.total=plan.length;
- const progress=st.total?Math.min(100,100*(st.cursor||0)/st.total):0;
+ const box=$('historyCollector');if(!box)return;const st=getHistoryState(),dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]),existing=cloudResearchAudit.counts?.d1PredictionSaved??Object.keys(raceCache).length,remaining1=Math.max(0,1000-existing),remaining3=Math.max(0,3000-existing);st.meetingTotal=dates.length*tracks.length;
+ const discovery=st.meetingTotal?Math.min(100,100*(st.meetingChecked||0)/st.meetingTotal):0,collection=st.raceTargets?Math.min(100,100*(st.raceProcessed||0)/st.raceTargets):0,isDiscovery=['meeting_discovery','meeting_retry'].includes(st.phase),progress=isDiscovery?discovery:collection,metrics=historyRequestMetrics(st);
  if($('historyStartDate'))$('historyStartDate').value=st.startDate||'';if($('historyEndDate'))$('historyEndDate').value=st.endDate||'';if($('historyPreset'))$('historyPreset').value=st.preset||'30';
  const trackBox=$('historyTrackGrid');if(trackBox&&!trackBox.dataset.ready){trackBox.innerHTML=Object.keys(NAR_TRACKS).map(t=>`<label><input type="checkbox" value="${esc(t)}">${esc(t)}</label>`).join('');trackBox.dataset.ready='1'}
  trackBox?.querySelectorAll('input').forEach(i=>i.checked=(st.tracks||[]).includes(i.value));
- if($('historyProgressText'))$('historyProgressText').textContent=`${st.status==='running'?'収集中':st.status==='paused'?'一時停止':st.status==='done'?'完了':'待機'}｜${st.cursor||0}/${st.total||0} (${progress.toFixed(1)}%)`;
+ const statusLabel=st.status==='running'?'収集中':st.status==='paused'?'一時停止':st.status==='done'?'収集完了':st.status==='done_with_retry'?'完了・再試行あり':'待機',phaseLabel=isDiscovery?'開催日探索':st.phase==='collection'?'レース収集':'完了';
+ if($('historyProgressText'))$('historyProgressText').textContent=`${statusLabel}｜${phaseLabel} ${isDiscovery?`${st.meetingChecked||0}/${st.meetingTotal||0}組`:`${st.raceProcessed||0}/${st.raceTargets||0}R`} (${progress.toFixed(1)}%)`;
  if($('historyProgressBar'))$('historyProgressBar').style.width=`${progress}%`;
- if($('historyCounts'))$('historyCounts').innerHTML=`<span>保存 ${st.saved||0}</span><span>スキップ ${st.skipped||0}</span><span>結果待ち ${st.pending||0}</span><span>失敗 ${st.failed||0}</span>`;
+ if($('historyCounts'))$('historyCounts').innerHTML=`<span>保存 ${st.saved||0}R</span><span>既取得 ${st.alreadySaved||0}R</span><span>非開催 ${st.nonMeetingDays||0}日</span><span>対象外R ${st.raceNotScheduled||0}R</span><span>結果待ち ${st.resultWaiting||0}R</span><span>通信失敗 ${st.networkFailure||0}R</span>`;
+ if($('historyTrackProgress'))$('historyTrackProgress').innerHTML=Object.entries(st.trackStats||{}).map(([track,x])=>`<span><b>${esc(track)}</b> 開催${x.meetingDays||0}日・非開催${x.nonMeetingDays||0}日・収集${x.raceProcessed||0}/${x.raceTargets||0}R</span>`).join('');
+ if($('historyEfficiency'))$('historyEfficiency').textContent=`旧候補 ${metrics.legacyCandidateCount.toLocaleString()}件 → NAR要求 ${metrics.actualRequests.toLocaleString()}件｜推定削減 ${metrics.reductionRate.toFixed(1)}%｜Cache ${st.requestStats?.cacheHits||0}件`;
  if($('historyGoals'))$('historyGoals').innerHTML=`<strong>研究母数 ${existing}R</strong><span>第一目標1,000Rまで あと${remaining1}R</span><span>推奨3,000Rまで あと${remaining3}R</span>`;
  if($('historyLast'))$('historyLast').textContent=st.lastItem?`最後: ${st.lastItem}`:'既取得race_idは安全にスキップします。';
  if($('historyStart'))$('historyStart').disabled=historyCollectorRunning;if($('historyPause'))$('historyPause').disabled=!historyCollectorRunning;
 }
-function updateHistoryOptionsFromUi(){const st=getHistoryState();st.startDate=$('historyStartDate')?.value||st.startDate;st.endDate=$('historyEndDate')?.value||st.endDate;st.preset=$('historyPreset')?.value||'custom';st.tracks=[...($('historyTrackGrid')?.querySelectorAll('input:checked')||[])].map(x=>x.value);st.cursor=0;st.status='idle';saveHistoryState()}
+function updateHistoryOptionsFromUi(){const st=getHistoryState();st.startDate=$('historyStartDate')?.value||st.startDate;st.endDate=$('historyEndDate')?.value||st.endDate;st.preset=$('historyPreset')?.value||'custom';st.tracks=[...($('historyTrackGrid')?.querySelectorAll('input:checked')||[])].map(x=>x.value);resetHistoryProgress(st);saveHistoryState()}
 async function runHistoricalCollector(){
- if(historyCollectorRunning)return;const st=getHistoryState();const plan=historyPlan(st);if(!plan.length){if($('historyLast'))$('historyLast').textContent='期間と競馬場を選択してください。';return}
+ if(historyCollectorRunning)return;const st=getHistoryState(),dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);if(!dates.length||!tracks.length){if($('historyLast'))$('historyLast').textContent='期間と競馬場を選択してください。';return}
  if(autoResultRunInProgress)await autoResultRunInProgress;
- historyCollectorRunning=true;historyCollectorAbort=false;st.status='running';st.startedAt=st.startedAt||new Date().toISOString();st.total=plan.length;saveHistoryState();let batch=[];
+ const retryUnknown=st.status==='done_with_retry';historyCollectorRunning=true;historyCollectorAbort=false;if(retryUnknown)st.phase='meeting_retry';st.status='running';st.startedAt=st.startedAt||new Date().toISOString();st.meetingTotal=dates.length*tracks.length;saveHistoryState();let batch=[];
  try{
-  for(let i=st.cursor||0;i<plan.length;i++){
-   if(historyCollectorAbort){st.status='paused';break}
-   if(dueResultQueue().length)await runAutoResultQueue({limit:1,allowHistoricalBoundary:true});
-   const item=plan[i];st.cursor=i;st.lastItem=`${item.date} ${item.track}${item.raceNo}R`;saveHistoryState();
-   if(raceCache[item.id]||cloudResearchAudit.datasetRaceIds?.includes(item.id)){st.skipped++;st.cursor=i+1;continue}
+  if(st.phase==='meeting_discovery')for(let i=st.meetingCursor||0;i<st.meetingTotal;i++){
+   if(historyCollectorAbort){st.status='paused';break}await waitForCollectorPriority();if(historyCollectorAbort)break;
+   const pair=historyMeetingPair(st,i);st.lastItem=`Meeting Discovery ${pair.date} ${pair.track}`;saveHistoryState();
+   try{const found=await discoverMeeting(st,pair);if(found.status==='meeting')addDiscoveredMeeting(st,{...found,...pair});else{st.nonMeetingDays++;historyTrackStat(st,pair.track).nonMeetingDays++}}catch(e){st.unknownMeetings.push({...pair,errorCode:e?.code||'meeting_unknown'});st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e?.code||e?.message})}
+   st.meetingCursor=i+1;st.meetingChecked=i+1;saveHistoryState();
+  }
+  if(!historyCollectorAbort&&st.phase==='meeting_discovery'){st.phase='collection';st.collectionMeetingIndex=st.collectionMeetingIndex||0;st.raceIndex=st.raceIndex||0;saveHistoryState()}
+  if(!historyCollectorAbort&&st.phase==='meeting_retry'){
+   const retryItems=[...(st.unknownMeetings||[])];st.unknownMeetings=[];for(const pair of retryItems){if(historyCollectorAbort)break;await waitForCollectorPriority();try{const found=await discoverMeeting(st,pair);if(found.status==='meeting')addDiscoveredMeeting(st,{...found,...pair});else{st.nonMeetingDays++;historyTrackStat(st,pair.track).nonMeetingDays++}}catch(e){st.unknownMeetings.push({...pair,errorCode:e?.code||'meeting_unknown'})}}st.phase='collection';saveHistoryState();
+  }
+  for(let mi=st.collectionMeetingIndex||0;!historyCollectorAbort&&mi<st.discoveredMeetings.length;mi++){
+   const meeting=st.discoveredMeetings[mi],numbers=meeting.raceNumbers||[];
+   for(let ri=mi===(st.collectionMeetingIndex||0)?(st.raceIndex||0):0;ri<numbers.length;ri++){
+    if(historyCollectorAbort){st.status='paused';break}await waitForCollectorPriority();if(historyCollectorAbort)break;
+    const item={date:meeting.date,track:meeting.track,raceNo:Number(numbers[ri])};item.id=raceId({raceDate:item.date,track:item.track,raceNo:item.raceNo});st.collectionMeetingIndex=mi;st.raceIndex=ri;st.lastItem=`Race Fetch ${item.date} ${item.track}${item.raceNo}R`;saveHistoryState();
+   if(raceCache[item.id]||cloudResearchAudit.datasetRaceIds?.includes(item.id)){st.alreadySaved++;st.raceProcessed++;historyTrackStat(st,item.track).alreadySaved++;historyTrackStat(st,item.track).raceProcessed++;st.raceIndex=ri+1;continue}
    const code=narCode(item.track);
    try{
-    const raceRes=await fetch(`/api/nar/race?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),raceData=await responseJson(raceRes);
-    if(!raceRes.ok||!Array.isArray(raceData.horses)||raceData.horses.length<2){if(raceRes.status===404||raceData.errorCode==='race_not_found'){st.skipped++;st.cursor=i+1;continue}throw requestError(raceData.errorCode||'parser_error',raceData.error||'出走馬取得失敗',raceRes.status)}
+    st.requestStats.raceRequests++;const raceRes=await fetch(`/api/nar/race?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),raceData=await responseJson(raceRes);
+    if(!raceRes.ok||!Array.isArray(raceData.horses)||raceData.horses.length<2){if(raceRes.status===404||raceData.errorCode==='race_not_found'){st.raceNotScheduled++;continue}throw requestError(raceData.errorCode||'parse_failure',raceData.error||'出走馬取得失敗',raceRes.status)}
     const root=buildAbilityRoot(raceData,item.date,item.track,item.raceNo);root.race.historicalResearch=true;root.race.researchMode='historical_research';root.race.predictionKind='backtest_prediction';
-    let resultData=null;try{const resultRes=await fetch(`/api/nar/sync?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),rd=await responseJson(resultRes);if(resultRes.ok&&rd.finishOrder?.length>=3)resultData=rd;else st.pending++}catch{st.pending++}
-    const record=historicalRecord(root,resultData);await persistHistoricalRecord(item.id,record);batch.push({raceId:item.id,record});st.saved++;st.cursor=i+1;
-    if(batch.length>=10){try{await syncHistoricalBatch(batch);batch=[]}catch(e){st.failed+=batch.length;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message});batch=[]}}
-   }catch(e){st.failed++;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message})}
+    let resultData=null;try{st.requestStats.resultRequests++;const resultRes=await fetch(`/api/nar/sync?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),rd=await responseJson(resultRes);if(resultRes.ok&&rd.finishOrder?.length>=3)resultData=rd;else st.resultWaiting++}catch{st.resultWaiting++}
+    const record=historicalRecord(root,resultData);await persistHistoricalRecord(item.id,record);batch.push({raceId:item.id,record});st.saved++;historyTrackStat(st,item.track).saved++;
+    if(batch.length>=10){try{await syncHistoricalBatch(batch);batch=[]}catch(e){st.cloudFailure+=batch.length;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message});batch=[]}}
+   }catch(e){if(e?.code==='parse_failure'||e?.code==='parser_error')st.parseFailure++;else if(['network_error','network_failure','timeout','nar_timeout','http_error'].includes(e?.code)||e?.status)st.networkFailure++;else st.unexpectedFailure++;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message})}
+   finally{st.raceProcessed++;historyTrackStat(st,item.track).raceProcessed++;st.raceIndex=ri+1}
    saveHistoryState();await new Promise(r=>setTimeout(r,700+Math.floor(Math.random()*700)));
+   }
+   if(!historyCollectorAbort){st.collectionMeetingIndex=mi+1;st.raceIndex=0}
   }
-  if(batch.length){try{await syncHistoricalBatch(batch)}catch(e){st.failed+=batch.length}}
-  if(!historyCollectorAbort&&st.cursor>=plan.length){st.status='done'}
+  if(batch.length){try{await syncHistoricalBatch(batch)}catch(e){st.cloudFailure+=batch.length}}
+  if(!historyCollectorAbort){st.phase='done';st.status=st.unknownMeetings.length?'done_with_retry':'done'}
  }finally{
   historyCollectorRunning=false;historyCollectorAbort=false;saveHistoryState();try{await refreshCloudResearchDataset({persist:true,render:false});renderCloudDatasetSummary();renderDashboard()}catch{}renderHistoryCollector();
  }
 }
 function pauseHistoricalCollector(){historyCollectorAbort=true;const st=getHistoryState();st.status='paused';saveHistoryState()}
-function resetHistoricalCollector(){if(historyCollectorRunning)return;historyCollection=historyDefaultState();saveHistoryState()}
+function resetHistoricalCollector(){if(historyCollectorRunning)return;const old=getHistoryState(),fresh=historyDefaultState();fresh.startDate=old.startDate;fresh.endDate=old.endDate;fresh.preset=old.preset;fresh.tracks=[...(old.tracks||[])];historyCollection=fresh;saveHistoryState()}
+async function resetMeetingCalendarCache(){if(historyCollectorRunning)return;meetingCalendarCache={schemaVersion:1,entries:{},updatedAt:new Date().toISOString()};await saveMeetingCalendarCache();if($('historyLast'))$('historyLast').textContent='開催日キャッシュをリセットしました。研究データは保持しています。'}
 function bindHistoricalCollector(){
- const box=$('historyCollector');if(!box)return;historyCollection=localStore.get(HISTORY_COLLECTION_KEY,null)||historyDefaultState();
+ const box=$('historyCollector');if(!box)return;historyCollection=migrateHistoryState(localStore.get(HISTORY_COLLECTION_KEY,null));
  $('historyPreset')?.addEventListener('change',e=>{const v=e.target.value;if(v==='custom')return;historyPresetDays(Number(v))});
  for(const id of ['historyStartDate','historyEndDate'])$(id)?.addEventListener('change',()=>{const st=getHistoryState();st.preset='custom';updateHistoryOptionsFromUi()});
- $('historyTrackGrid')?.addEventListener('change',updateHistoryOptionsFromUi);$('historyStart')?.addEventListener('click',runHistoricalCollector);$('historyPause')?.addEventListener('click',pauseHistoricalCollector);$('historyReset')?.addEventListener('click',resetHistoricalCollector);renderHistoryCollector();
+ $('historyTrackGrid')?.addEventListener('change',updateHistoryOptionsFromUi);$('historyStart')?.addEventListener('click',runHistoricalCollector);$('historyPause')?.addEventListener('click',pauseHistoricalCollector);$('historyReset')?.addEventListener('click',resetHistoricalCollector);$('historyCacheReset')?.addEventListener('click',resetMeetingCalendarCache);renderHistoryCollector();
 }
 
 function createResearchBackup(){
@@ -1477,7 +1508,7 @@ function migrateLegacy(){
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
    APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
-   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,originalLayerHorses,scratchImpactScore,buildLiveAdjustedPrediction,applyScratchStatuses,buildScratchValidation,makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
+   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,originalLayerHorses,scratchImpactScore,buildLiveAdjustedPrediction,applyScratchStatuses,buildScratchValidation,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,makeSnapshot,setState(value){state=value},getState(){return state},saveRaceRecord,getRaceCache(){return raceCache}
  };
  return;
 }

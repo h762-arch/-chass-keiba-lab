@@ -1,6 +1,7 @@
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
+import {parseNarRaceList} from './meeting-discovery.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.9.32";
+export const VERSION="9.9.33";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
 const CHASS_BRIDGE_RATE_LIMIT=60,CHASS_BRIDGE_WINDOW_MS=60_000,bridgeRateBuckets=new Map();
 export function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
@@ -60,6 +61,10 @@ function plausibleHorseName(value=""){
  return /[一-龠々〆ヵヶぁ-んァ-ヶーA-Za-z]/.test(s);
 }
 async function fetchText(url,{timeoutMs=15000}={}){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{headers:{"user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,"accept":"text/html,application/xhtml+xml","accept-language":"ja"},redirect:"follow",signal:controller.signal});if(!r.ok){const e=new Error(`NAR HTTP ${r.status}`);e.status=r.status;throw e}const text=await r.text();if(!text)throw Object.assign(new Error('NAR empty response'),{code:'empty_response'});return text}catch(error){if(error?.name==='AbortError'){const e=new Error('NAR通信がタイムアウトしました');e.code='nar_timeout';throw e}if(error instanceof TypeError&&!error.code)error.code='network_error';throw error}finally{clearTimeout(timer)}}
+export async function fetchNarMeeting({code,date,fetcher=fetchText}={}){
+ const track=TRACK_NAMES[Number(code)]||'',q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}`,url=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?${q}`,started=Date.now(),html=await fetcher(url,{timeoutMs:8000}),parsed=parseNarRaceList(html,{track,date});
+ return {ok:true,...parsed,code:String(code),checkedAt:new Date().toISOString(),elapsedMs:Date.now()-started};
+}
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function retryableNarError(error){return error?.code==='network_error'||error?.code==='nar_timeout'||[429,500,502,503,504].includes(Number(error?.status))}
 export async function fetchNarResultWithRetry(url,{attempts=3,delays=[0,700,1500],fetcher=fetchText,sleeper=wait,urlType='RaceMarkTable',diagnostics=[]}={}){let lastError;for(let attempt=1;attempt<=attempts;attempt++){if(delays[attempt-1])await sleeper(delays[attempt-1]);const started=Date.now();try{const value=await fetcher(url),html=typeof value==='string'?value:value?.html??String(value??'');diagnostics.push({urlType,attempt,ok:true,httpStatus:value?.status??200,durationMs:Date.now()-started,bytes:html.length});return {html,attemptCount:attempt,urlType,diagnostics}}catch(error){lastError=error;error.attemptCount=attempt;error.urlType=urlType;diagnostics.push({urlType,attempt,ok:false,httpStatus:Number(error?.status)||null,errorCode:error?.code||'fetch_error',message:String(error?.message||error).slice(0,160),durationMs:Date.now()-started});if(!retryableNarError(error)||attempt===attempts){error.diagnostics=diagnostics;throw error}}}if(lastError)lastError.diagnostics=diagnostics;throw lastError}
@@ -411,6 +416,10 @@ export default{
  const u=new URL(request.url);
   if(u.pathname==='/api/chass/context'||u.pathname.startsWith('/api/chass/v1/'))return handleChassBridge(request,env);
   if(u.pathname==="/api/health")return json({ok:true,version:VERSION,service:"chass-keiba-lab"});
+  if(u.pathname==="/api/nar/meeting"){
+    const code=u.searchParams.get("code"),date=u.searchParams.get("date");if(!code||!date)return json({ok:false,errorCode:'invalid_request',error:'code,date are required'},400);
+    try{return json(await fetchNarMeeting({code,date}))}catch(e){return json({ok:false,status:'meeting_unknown',meeting:false,code,date,errorCode:errorPayload(e).errorCode,error:String(e?.message||e),checkedAt:new Date().toISOString()},e?.status===404?404:502)}
+  }
   if(u.pathname==="/api/db/health"){
     const DB=getResearchDb(env);if(!DB)return json({ok:false,error:"d1_binding_unavailable"},503);
     try{await DB.prepare("SELECT 1 AS ok").first();return json({ok:true,database:"connected"})}catch(e){return json({ok:false,error:"d1_query_failed",detail:String(e?.message||e)},503)}

@@ -19,7 +19,7 @@ const race={
 };
 
 function fakeRequest(path,{query}={}){
- if(path.endsWith('/health'))return Promise.resolve({ok:true,bridgeVersion:'1.1',modelVersion:'9.9.32',database:true,generatedAt:'2026-09-01T10:01:00.000Z'});
+ if(path.endsWith('/health'))return Promise.resolve({ok:true,bridgeVersion:'1.1',modelVersion:'9.9.33',database:true,generatedAt:'2026-09-01T10:01:00.000Z'});
  if(path.endsWith('/race'))return Promise.resolve({ok:true,race,generatedAt:'2026-09-01T10:01:00.000Z',query});
  if(path.endsWith('/research'))return Promise.resolve({ok:true,summary:{validatedRaces:194},researchMetrics:{validatedRaceCount:194,evaluatedHorseCount:2040,top3CaptureRate:84.3,timeMae:1.3,popular7PlusCaptured:{rate:25},popular10PlusCaptured:{rate:15.4}},longshotMetrics:{diamondTop3Rate:{rate:13.4}},volatilityMetrics:{highVolatilityActualUpsetRate:{rate:66}},similarityMetrics:{mode:'walk_forward_shadow',adopted:false,evaluatedCount:120},generatedAt:'2026-09-01T10:01:00.000Z'});
  if(path.endsWith('/pending'))return Promise.resolve({ok:true,pendingResults:{page:[{raceId:'2026-09-01|大井|9',status:'result_waiting'}],total:1,nextCursor:null},generatedAt:'2026-09-01T10:01:00.000Z'});
@@ -27,7 +27,7 @@ function fakeRequest(path,{query}={}){
  return Promise.resolve({ok:true,latestPredictions:{page:[race,{...race,raceId:'2026-09-01|船橋|8',track:'船橋'}],total:2,nextCursor:null},generatedAt:'2026-09-01T10:01:00.000Z'});
 }
 
-test('connector version and six focused tool definitions are stable',()=>{assert.equal(CONNECTOR_VERSION,'9.9.32');assert.deepEqual(Object.keys(TOOL_DEFINITIONS),['chass_health','chass_get_race','chass_get_latest','chass_get_pending','chass_get_research','chass_get_recent']);for(const tool of Object.values(TOOL_DEFINITIONS))assert.ok(tool.description.length>40)});
+test('connector version and six focused tool definitions are stable',()=>{assert.equal(CONNECTOR_VERSION,'9.9.33');assert.deepEqual(Object.keys(TOOL_DEFINITIONS),['chass_health','chass_get_race','chass_get_latest','chass_get_pending','chass_get_research','chass_get_recent']);for(const tool of Object.values(TOOL_DEFINITIONS))assert.ok(tool.description.length>40)});
 test('today is resolved in Asia/Tokyo and track aliases are explicit',()=>{assert.equal(jstDate(now),'2026-09-01');assert.equal(normalizeDate('today',now),'2026-09-01');assert.equal(normalizeDate('2026-02-30',now),null);assert.equal(normalizeTrack('Ohi'),'大井');assert.equal(normalizeTrack('おおい'),'大井');assert.equal(normalizeTrack('unknown'),null)});
 test('race requires raceId or complete absolute race identity',async()=>{const tools=createChassTools({request:fakeRequest,now:()=>now}),bad=await tools.getRace({track:'大井',raceNo:8});assert.equal(bad.ok,false);assert.equal(bad.error,'invalid_request')});
 test('race tool normalizes today and Ohi without guessing another field',async()=>{let captured;const tools=createChassTools({request:async(path,options)=>{captured={path,...options};return fakeRequest(path,options)},now:()=>now}),result=await tools.getRace({date:'today',track:'Ohi',raceNo:8,detail:'full'});assert.equal(result.ok,true);assert.deepEqual(captured.query,{date:'2026-09-01',track:'大井',raceNo:8,detail:'full'});assert.equal(result.data.race.original.predictionMode,'original');assert.equal(result.data.race.liveAdjusted.predictionMode,'live_adjusted');assert.equal(result.data.race.historicalSimilarity.original.similarRaceCount,42)});
