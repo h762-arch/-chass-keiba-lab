@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.33</title>
+  <title>チャス競馬研究所 Ver.9.9.34</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.33</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.34</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -56,12 +56,13 @@
   <section id="dashboardView" class="view dashboard-view"><section class="card dashboard-shell"><header class="dashboard-header"><div><p class="eyebrow">VALIDATION</p><h2>予想検証ダッシュボード</h2><p class="muted">オンライン時はCloudflare D1を正式な母集団として集計し、ローカル保存はキャッシュとして使用します。</p></div><div class="dashboard-actions"><button id="recalcDash" class="primary">再集計</button><a href="#dashRaces">保存レース</a></div></header><div class="cloud-sync-bar"><div><strong id="cloudSource">ローカル IndexedDB</strong><span id="cloudSyncStatus">ローカルのみ</span></div><div class="cloud-sync-actions"><button id="cloudSyncButton" type="button">クラウドへ同期</button><button id="cloudRestoreButton" type="button">クラウドから復元</button></div></div><div id="cloudDatasetSummary" class="cloud-dataset-summary"></div><details id="cloudExclusions" class="cloud-exclusions"><summary>検証除外の詳細</summary><div id="cloudExclusionList"></div></details><details id="historyCollector" class="history-collector">
   <summary><span>研究データ収集</span><small>過去NARレースをD1へ安全に追加</small></summary>
   <div class="history-collector-body">
+    <div class="history-background-banner"><strong>BACKGROUND COLLECTOR</strong><span>バックグラウンド収集 ON</span><small id="historyBackgroundState">Cloudflare側の状態を確認中...</small></div>
     <div id="historyGoals" class="history-goals"></div>
     <div class="history-controls-row"><label>期間<select id="historyPreset"><option value="1">1日</option><option value="7">7日</option><option value="30">30日</option><option value="90">3か月</option><option value="180">6か月</option><option value="365">1年</option><option value="custom">カスタム</option></select></label><label>開始<input id="historyStartDate" type="date"></label><label>終了<input id="historyEndDate" type="date"></label></div>
     <div><span class="history-label">競馬場</span><div id="historyTrackGrid" class="history-track-grid"></div></div>
     <div class="history-actions"><button id="historyStart" type="button" class="primary">収集開始 / 続きから再開</button><button id="historyPause" type="button" class="ghost">一時停止</button><button id="historyReset" type="button" class="ghost">進捗リセット</button><button id="historyCacheReset" type="button" class="ghost">開催日キャッシュをリセット</button></div>
     <div class="history-progress"><div><strong id="historyProgressText">待機</strong><span id="historyLast"></span></div><div class="history-progress-rail"><i id="historyProgressBar"></i></div><div id="historyCounts" class="history-counts"></div><div id="historyTrackProgress" class="history-track-progress"></div><small id="historyEfficiency" class="history-efficiency"></small></div>
-    <p class="muted history-note">NAR公式の当日メニューから開催日と実在レース番号を先に確認し、非開催日の2R〜12Rは呼びません。過去研究は <b>historical_research / backtest_prediction</b> として通常のリアルタイム予想と区別します。進捗リセットで保存済み研究データや開催日キャッシュは削除されません。</p>
+    <p class="muted history-note">画面を閉じてもCloudflare側で少量ずつ継続します。現在の予想・結果取得を優先するため速度は状況に応じて調整されます。NAR公式の当日メニューから開催日と実在レース番号を先に確認し、非開催日の2R〜12Rは呼びません。過去研究は <b>historical_research / backtest_prediction</b> として通常予想と区別します。</p>
   </div>
 </details><section class="auto-result-card" aria-labelledby="autoResultTitle"><div class="auto-result-head"><div><span class="eyebrow">AUTO RESULT</span><strong id="autoResultTitle">レース後結果を自動取得</strong></div><label class="switch"><input id="autoResultToggle" type="checkbox" checked><span></span></label></div><div class="auto-result-counts"><span>待機 <b id="autoResultWaiting">0</b>R</span><span>取得済 <b id="autoResultDone">0</b>R</span><span>再試行 <b id="autoResultRetry">0</b>R</span></div><small id="autoResultStatus">発走時刻+10分から低頻度で確認</small></section><details class="research-backup"><summary>研究データのバックアップ</summary><div><button id="exportResearch" type="button" class="ghost">JSON書き出し</button><label class="ghost backup-import">JSON復元<input id="researchImportFile" type="file" accept=".json,application/json" hidden></label></div><p id="backupStatus" class="muted">既存データを消さず、新しい保存レースだけを安全に統合します。</p></details><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div><p class="dashboard-footnote">※ オンライン時はD1、利用不能時はIndexedDBの保存済みレースから集計します。</p></section></section>
 </main>

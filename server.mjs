@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {parseNarRaceList} from './meeting-discovery.mjs';
 
-const VERSION="9.9.33";
+const VERSION="9.9.34";
 const CHASS_BRIDGE_SCHEMA_VERSION="1.0";
 function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
@@ -225,6 +225,7 @@ async function staticFile(u,res){
 http.createServer(async(req,res)=>{
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
   if(u.pathname==="/api/chass/context"||u.pathname.startsWith('/api/chass/v1/'))return localChassBridge(req,res,u);
+  if(u.pathname==='/api/db/historical-job'||u.pathname.startsWith('/api/db/historical-job/'))return sendJson(res,503,{ok:false,error:'background_collector_unavailable_local',message:'Cloudflare D1とscheduled handlerが必要です。ローカルではForeground Collectorを使用します。'});
   if(req.method==="OPTIONS"){res.writeHead(204,cors);return res.end();}
   if(u.pathname==="/api/health")return sendJson(res,200,{ok:true,service:"chass-keiba-lab",version:VERSION});
   if(u.pathname==="/api/nar/meeting")return apiMeeting(u,res);

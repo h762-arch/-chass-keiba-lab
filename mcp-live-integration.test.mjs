@@ -38,7 +38,7 @@ test('real Streamable HTTP MCP lists six tools and calls chass_health',async t=>
     res.writeHead(200,{'content-type':'application/json; charset=utf-8'}).end(JSON.stringify({
       ok:true,
       bridgeVersion:'1.1',
-      modelVersion:'9.9.33',
+      modelVersion:'9.9.34',
       schemaVersion:'1.1',
       database:true,
       generatedAt:'2026-08-31T12:00:00.000Z',
@@ -79,7 +79,7 @@ test('real Streamable HTTP MCP lists six tools and calls chass_health',async t=>
   const called=await client.callTool({name:'chass_health',arguments:{}});
   assert.equal(called.isError,false);
   assert.equal(called.structuredContent.ok,true);
-  assert.equal(called.structuredContent.connectorVersion,'9.9.33');
+  assert.equal(called.structuredContent.connectorVersion,'9.9.34');
   assert.equal(called.structuredContent.data.databaseAvailable,true);
   assert.equal(called.structuredContent.source,'CHASS KEIBA LAB D1');
 });

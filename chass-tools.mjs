@@ -1,6 +1,6 @@
 import {ChassConnectorError,requestBridge} from './bridge-client.mjs';
 
-export const CONNECTOR_VERSION='9.9.33';
+export const CONNECTOR_VERSION='9.9.34';
 export const TIME_ZONE='Asia/Tokyo';
 const TRACK_ALIASES=new Map([
  ['大井','大井'],['おおい','大井'],['オオイ','大井'],['ohi','大井'],['oi','大井'],['ooi','大井'],

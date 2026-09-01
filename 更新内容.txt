@@ -1,4 +1,13 @@
-CHASS KEIBA LAB Ver.9.9.29
+CHASS KEIBA LAB Ver.9.9.34
+
+Cloud Background Historical Collector
+- D1有限Jobと既存5分CronでSafari終了後も少量ずつ継続
+- Meeting Discovery → Race Discovery → Collectionを維持
+- Auto Result優先、最大3件、18秒deadline、2分lock
+- pause/resume、D1進捗表示、45秒Read-Only polling
+- NAR通常API、予想ロジック、Similarity、AI Bridge、MCPは維持
+
+旧版記録: Ver.9.9.29
 
 Scratch Horse Snapshot Preservation & Live Adjustment
 - Original Snapshotを固定したまま取消・除外を別レイヤーで反映

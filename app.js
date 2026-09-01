@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.33';
+const APP_VERSION='9.9.34';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -29,6 +29,7 @@ const HISTORY_COLLECTION_KEY='chass_history_collection_v1';
 const MEETING_CALENDAR_KEY='chass_meeting_calendar_v1';
 let historyCollection=null;
 let historyCollectorRunning=false,historyCollectorAbort=false;
+let backgroundHistoricalJob=null,backgroundHistoricalPollTimer=null;
 let meetingCalendarCache={schemaVersion:1,entries:{}};
 const AUTO_RESULT_SETTING='chass_auto_result_v1',AUTO_RESULT_RETRY_MINUTES=[5,5,10,15,30],AUTO_RESULT_MAX_ATTEMPTS=6;
 let autoResultRunInProgress=null,autoResultTimer=null;
@@ -1019,7 +1020,7 @@ function renderHistoryCollector(){
  if($('historyStart'))$('historyStart').disabled=historyCollectorRunning;if($('historyPause'))$('historyPause').disabled=!historyCollectorRunning;
 }
 function updateHistoryOptionsFromUi(){const st=getHistoryState();st.startDate=$('historyStartDate')?.value||st.startDate;st.endDate=$('historyEndDate')?.value||st.endDate;st.preset=$('historyPreset')?.value||'custom';st.tracks=[...($('historyTrackGrid')?.querySelectorAll('input:checked')||[])].map(x=>x.value);resetHistoryProgress(st);saveHistoryState()}
-async function runHistoricalCollector(){
+async function runHistoricalCollectorForeground(){
  if(historyCollectorRunning)return;const st=getHistoryState(),dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);if(!dates.length||!tracks.length){if($('historyLast'))$('historyLast').textContent='期間と競馬場を選択してください。';return}
  if(autoResultRunInProgress)await autoResultRunInProgress;
  const retryUnknown=st.status==='done_with_retry';historyCollectorRunning=true;historyCollectorAbort=false;if(retryUnknown)st.phase='meeting_retry';st.status='running';st.startedAt=st.startedAt||new Date().toISOString();st.meetingTotal=dates.length*tracks.length;saveHistoryState();let batch=[];
@@ -1060,14 +1061,34 @@ async function runHistoricalCollector(){
   historyCollectorRunning=false;historyCollectorAbort=false;saveHistoryState();try{await refreshCloudResearchDataset({persist:true,render:false});renderCloudDatasetSummary();renderDashboard()}catch{}renderHistoryCollector();
  }
 }
-function pauseHistoricalCollector(){historyCollectorAbort=true;const st=getHistoryState();st.status='paused';saveHistoryState()}
-function resetHistoricalCollector(){if(historyCollectorRunning)return;const old=getHistoryState(),fresh=historyDefaultState();fresh.startDate=old.startDate;fresh.endDate=old.endDate;fresh.preset=old.preset;fresh.tracks=[...(old.tracks||[])];historyCollection=fresh;saveHistoryState()}
-async function resetMeetingCalendarCache(){if(historyCollectorRunning)return;meetingCalendarCache={schemaVersion:1,entries:{},updatedAt:new Date().toISOString()};await saveMeetingCalendarCache();if($('historyLast'))$('historyLast').textContent='開催日キャッシュをリセットしました。研究データは保持しています。'}
+function backgroundJobLabel(job){return ({running:'バックグラウンド収集中',paused:'一時停止',completed:'収集完了',failed:'停止・要確認',cancelled:'取消済',queued:'開始待ち'})[job?.status]||'待機'}
+function renderBackgroundHistoricalJob(){
+ const job=backgroundHistoricalJob;if(!job)return;const st=job.state||{},meetingTotal=(st.dates?.length||job.periodDays||0)*(st.tracks?.length||job.tracks?.length||0),isDiscovery=['meeting_discovery','race_discovery'].includes(job.phase),done=isDiscovery?(st.meetingChecked||0):(st.raceProcessed||0),total=isDiscovery?meetingTotal:(st.raceTargets||0),progress=total?Math.min(100,100*done/total):(job.status==='completed'?100:0);
+ if($('historyProgressText'))$('historyProgressText').textContent=`${backgroundJobLabel(job)}｜${isDiscovery?'開催日探索':'レース収集'} ${done}/${total}${isDiscovery?'組':'R'} (${progress.toFixed(1)}%)`;
+ if($('historyProgressBar'))$('historyProgressBar').style.width=`${progress}%`;
+ if($('historyCounts'))$('historyCounts').innerHTML=`<span>保存 ${st.saved||0}R</span><span>既取得 ${st.alreadySaved||0}R</span><span>非開催 ${st.nonMeetingDays||0}日</span><span>結果待ち ${st.resultWaiting||0}R</span><span>通信失敗 ${st.networkFailure||0}R</span>`;
+ if($('historyEfficiency')){const requests=(st.requestStats?.meetingRequests||0)+(st.requestStats?.raceRequests||0)+(st.requestStats?.resultRequests||0),legacy=meetingTotal*12,reduction=legacy?Math.max(0,100*(1-requests/legacy)):0;$('historyEfficiency').textContent=`旧候補 ${legacy.toLocaleString()}件 → NAR要求 ${requests.toLocaleString()}件｜推定削減 ${reduction.toFixed(1)}%｜Cache ${st.requestStats?.cacheHits||0}件`}
+ if($('historyBackgroundState'))$('historyBackgroundState').textContent=`${backgroundJobLabel(job)}｜最終実行 ${job.lastRunAt?new Date(job.lastRunAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}):'—'}｜次回予定 ${job.nextRunAt?'約'+new Date(job.nextRunAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}):'—'}｜Runs ${job.backgroundRuns||0} / Last ${job.lastBatchCount||0}`;
+ if($('historyLast'))$('historyLast').textContent=job.lastError?`前回: ${job.lastError}`:`Job ${job.id}`;
+ if($('historyStart'))$('historyStart').disabled=job.status==='running';if($('historyPause'))$('historyPause').disabled=job.status!=='running';
+}
+async function refreshBackgroundHistoricalJob(){
+ try{const data=await cloudRequest('/api/db/historical-job');backgroundHistoricalJob=data.job||null;renderHistoryCollector();renderBackgroundHistoricalJob();return backgroundHistoricalJob}catch{return null}
+}
+async function runHistoricalCollector(){
+ if(backgroundHistoricalJob?.status==='paused'){try{const data=await cloudRequest('/api/db/historical-job/resume',{method:'POST',body:'{}'});backgroundHistoricalJob=data.job;renderBackgroundHistoricalJob();return}catch(error){if(error.code!=='d1_binding_unavailable')throw error}}
+ const st=getHistoryState(),dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]);if(!dates.length||!tracks.length){if($('historyLast'))$('historyLast').textContent='期間と競馬場を選択してください。';return}
+ try{const data=await cloudRequest('/api/db/historical-job/start',{method:'POST',body:JSON.stringify({startDate:dates[0],endDate:dates.at(-1),tracks})});backgroundHistoricalJob=data.job;renderHistoryCollector();renderBackgroundHistoricalJob()}
+ catch(error){if(['d1_binding_unavailable','background_collector_unavailable_local'].includes(error.code))return runHistoricalCollectorForeground();if($('historyLast'))$('historyLast').textContent=`開始失敗：${error.code||error.message}`}
+}
+async function pauseHistoricalCollector(){if(backgroundHistoricalJob?.status==='running'){try{const data=await cloudRequest('/api/db/historical-job/pause',{method:'POST',body:'{}'});backgroundHistoricalJob=data.job;renderBackgroundHistoricalJob();return}catch{}}historyCollectorAbort=true;const st=getHistoryState();st.status='paused';saveHistoryState()}
+async function resetHistoricalCollector(){if(historyCollectorRunning)return;if(backgroundHistoricalJob&&['paused','completed','failed','cancelled'].includes(backgroundHistoricalJob.status)){try{const data=await cloudRequest('/api/db/historical-job/reset',{method:'POST',body:'{}'});backgroundHistoricalJob=data.job;renderBackgroundHistoricalJob();return}catch{}}const old=getHistoryState(),fresh=historyDefaultState();fresh.startDate=old.startDate;fresh.endDate=old.endDate;fresh.preset=old.preset;fresh.tracks=[...(old.tracks||[])];historyCollection=fresh;saveHistoryState()}
+async function resetMeetingCalendarCache(){if(historyCollectorRunning)return;meetingCalendarCache={schemaVersion:1,entries:{},updatedAt:new Date().toISOString()};await saveMeetingCalendarCache();try{await cloudRequest('/api/db/historical-job/meeting-cache/reset',{method:'POST',body:'{}'})}catch{}if($('historyLast'))$('historyLast').textContent='開催日キャッシュをリセットしました。研究データは保持しています。'}
 function bindHistoricalCollector(){
  const box=$('historyCollector');if(!box)return;historyCollection=migrateHistoryState(localStore.get(HISTORY_COLLECTION_KEY,null));
  $('historyPreset')?.addEventListener('change',e=>{const v=e.target.value;if(v==='custom')return;historyPresetDays(Number(v))});
  for(const id of ['historyStartDate','historyEndDate'])$(id)?.addEventListener('change',()=>{const st=getHistoryState();st.preset='custom';updateHistoryOptionsFromUi()});
- $('historyTrackGrid')?.addEventListener('change',updateHistoryOptionsFromUi);$('historyStart')?.addEventListener('click',runHistoricalCollector);$('historyPause')?.addEventListener('click',pauseHistoricalCollector);$('historyReset')?.addEventListener('click',resetHistoricalCollector);$('historyCacheReset')?.addEventListener('click',resetMeetingCalendarCache);renderHistoryCollector();
+ $('historyTrackGrid')?.addEventListener('change',updateHistoryOptionsFromUi);$('historyStart')?.addEventListener('click',runHistoricalCollector);$('historyPause')?.addEventListener('click',pauseHistoricalCollector);$('historyReset')?.addEventListener('click',resetHistoricalCollector);$('historyCacheReset')?.addEventListener('click',resetMeetingCalendarCache);renderHistoryCollector();refreshBackgroundHistoricalJob();if(typeof window!=='undefined'&&!window.__CHASS_TEST__){clearInterval(backgroundHistoricalPollTimer);backgroundHistoricalPollTimer=setInterval(()=>{if(document.visibilityState==='visible')refreshBackgroundHistoricalJob()},45_000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshBackgroundHistoricalJob()})}
 }
 
 function createResearchBackup(){
