@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.35</title>
+  <title>チャス競馬研究所 Ver.10.0-dev</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.35</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.10.0-dev</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -18,6 +18,7 @@
     <button class="tab active" data-view="predictionView">予想入力</button>
     <button class="tab" data-view="dashboardView">検証ダッシュボード</button>
   </nav>
+  <section class="race-mode-bar" aria-label="競馬種別"><label>競馬種別<select id="raceMode"><option value="NAR" selected>地方競馬</option><option value="JRA">中央競馬</option></select></label><small id="raceModeStatus">地方競馬 Ver.9.9.35互換モード</small></section>
   <section id="predictionView" class="view active">
     <section class="card race-summary">
       <div class="race-head"><h2 id="raceTitle">レース情報未入力</h2><span id="resultStatusBadge" class="summary-status">未取得</span><span id="autoRaceBadge" class="visually-hidden" aria-live="polite">未取得</span></div>
@@ -33,12 +34,20 @@
       <div class="quick-actions" aria-label="レース操作"><button id="quickPredict" type="button">予想更新</button><button id="quickOdds" type="button">現在オッズ</button><button id="quickResult" type="button">結果検証</button></div>
       <section class="primary-controls" aria-labelledby="primaryControlsTitle">
         <div class="primary-controls-head"><strong id="primaryControlsTitle">⚙️ 公式データ取得・予想設定</strong><span>常時操作</span></div>
-        <section class="auto-race-panel">
+        <section id="narInputPanel" class="auto-race-panel">
           <div class="grid auto-race-grid"><label class="auto-date-field">日付<input id="autoRaceDate" type="date"></label><label>競馬場<select id="autoTrack"></select></label><label>レース<select id="autoRaceNo"></select></label></div>
           <p id="meetingSelectorStatus" class="meeting-selector-status" role="status">開催情報を確認中…</p>
           <button id="autoRaceLoad" class="primary wide">NAR公式データを取得・予想開始</button>
           <p id="autoRaceStatus" class="muted status-line">出馬表・過去走・オッズを取得して能力先行で評価します。</p>
           <details id="raceFetchDiagnostics" class="result-diagnostics" hidden><summary>予想取得診断</summary><div id="raceFetchDiagnosticsBody" class="result-diagnostics-body"></div></details>
+        </section>
+        <section id="jraInputPanel" class="jra-input-panel" hidden>
+          <div class="jra-panel-head"><div><strong>JRA DATA INPUT</strong><small>無料・手動データ入力 Phase 1</small></div><span>自動取得なし</span></div>
+          <div class="grid jra-race-grid"><label>開催日<input id="jraDate" type="date"></label><label>競馬場<select id="jraCourse"><option>札幌</option><option>函館</option><option>福島</option><option>新潟</option><option>東京</option><option>中山</option><option>中京</option><option>京都</option><option>阪神</option><option>小倉</option></select></label><label>レース<input id="jraRaceNo" type="number" min="1" max="12" value="1"></label><label>レース名<input id="jraRaceName" type="text"></label><label>芝 / ダート<select id="jraSurface"><option>芝</option><option>ダート</option></select></label><label>距離<input id="jraDistance" type="number" min="800" step="100" value="1600"></label><label>内 / 外<select id="jraCourseType"><option value="">指定なし</option><option>内回り</option><option>外回り</option><option>直線</option></select></label><label>馬場<select id="jraCondition"><option>良</option><option>稍重</option><option>重</option><option>不良</option><option>不明</option></select></label><label>天候<input id="jraWeather" type="text" placeholder="晴"></label><label>想定ペース<select id="jraPace"><option>標準</option><option>スロー</option><option>ハイ</option></select></label></div>
+          <label class="file-button primary jra-file-button">JRAデータを読み込む<input id="jraDataFile" type="file" accept=".json,.csv,application/json,text/csv" hidden></label>
+          <details class="jra-manual"><summary>手動で馬データを入力</summary><div><p class="muted">1行1頭：馬番,枠番,馬名,性齢,斤量,騎手,調教師,単勝オッズ,人気,馬体重,増減,過去走JSON</p><textarea id="jraManualHorses" rows="5" placeholder='1,1,サンプルホース,牡4,57,騎手名,調教師名,8.5,5,480,+2,"[]"'></textarea><button id="jraManualAnalyze" type="button" class="ghost wide">手動データを計算</button></div></details>
+          <button id="jraAnalyze" type="button" class="primary wide" disabled>JRAデータから予想を計算</button>
+          <p id="jraStatus" class="muted status-line">JSON・CSVまたは手動入力で1レース分を読み込んでください。</p>
         </section>
         <details class="secondary-settings"><summary>詳細設定</summary><div class="secondary-settings-body"><div class="source-divider"><span>手動JSON</span></div><label class="file-button ghost">予想データファイルを選択<input id="raceImportFile" type="file" accept=".json,application/json" hidden /></label><div id="importStatus" class="muted status-line">ファイル未選択</div><details class="editor"><summary>レース情報を確認・修正</summary><div class="grid two"><label>競馬区分<select id="category"><option>地方競馬</option><option>中央競馬</option></select></label><label>日付<input id="raceDate" type="date"></label><label>競馬場<input id="track" placeholder="船橋"></label><label>レース番号<input id="raceNo" type="number" min="1" max="12"></label><label>距離<input id="distance" type="number"></label><label>馬場<select id="trackCondition"><option>不明</option><option>良</option><option>稍重</option><option>重</option><option>不良</option></select></label><label>波乱度<input id="chaos" type="number" min="0" max="100"></label><label>展開<input id="pace" placeholder="標準"></label></div></details></div></details>
       </section>
@@ -68,6 +77,9 @@
 </details><section class="auto-result-card" aria-labelledby="autoResultTitle"><div class="auto-result-head"><div><span class="eyebrow">AUTO RESULT</span><strong id="autoResultTitle">レース後結果を自動取得</strong></div><label class="switch"><input id="autoResultToggle" type="checkbox" checked><span></span></label></div><div class="auto-result-counts"><span>待機 <b id="autoResultWaiting">0</b>R</span><span>取得済 <b id="autoResultDone">0</b>R</span><span>再試行 <b id="autoResultRetry">0</b>R</span></div><small id="autoResultStatus">発走時刻+10分から低頻度で確認</small></section><details class="research-backup"><summary>研究データのバックアップ</summary><div><button id="exportResearch" type="button" class="ghost">JSON書き出し</button><label class="ghost backup-import">JSON復元<input id="researchImportFile" type="file" accept=".json,application/json" hidden></label></div><p id="backupStatus" class="muted">既存データを消さず、新しい保存レースだけを安全に統合します。</p></details><div id="dashKpis" class="kpi-grid"></div><div id="dashModels"></div><div id="dashRaces"></div><p class="dashboard-footnote">※ オンライン時はD1、利用不能時はIndexedDBの保存済みレースから集計します。</p></section></section>
 </main>
 <template id="horseTpl"><article class="horse-row"><div class="horse-head"><div class="horse-no"></div><div><strong class="horse-mark-name"></strong><small class="muted horse-sub"></small></div><div class="score-pill overall-pill"></div></div><div class="horse-metrics"><div><span>AI勝率</span><strong class="m-win">—</strong></div><div><span>AI TOP3率</span><strong class="m-place">—</strong></div><div><span>TIME</span><strong class="m-time">—</strong></div><div><span>総合</span><strong class="m-overall">—</strong></div></div><details class="horse-details"><summary>詳細分析を見る</summary><div class="horse-details-body"><div class="facts"></div><div class="logic"></div><p class="reason"></p></div></details></article></template>
+<script src="/jra-normalizer.js"></script>
+<script src="/jra-model.js"></script>
+<script src="/jra-adapter.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

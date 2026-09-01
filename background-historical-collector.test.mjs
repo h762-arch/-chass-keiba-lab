@@ -23,7 +23,7 @@ class JobDb {
 function post(path,body={}){return new Request(`https://example.test${path}`,{method:'POST',headers:{origin:'https://example.test','content-type':'application/json'},body:JSON.stringify(body)})}
 
 test('version and additive D1 job schema are present',async()=>{
-  assert.equal(VERSION,'9.9.35');
+  assert.equal(VERSION,'10.0-dev');
   const migration=await readFile(new URL('../migrations/0002_background_historical_collector.sql',import.meta.url),'utf8');
   assert.match(migration,/historical_collector_jobs/);assert.match(migration,/meeting_calendar/);assert.doesNotMatch(migration,/DROP\s+TABLE/i);
 });
