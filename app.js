@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.30';
+const APP_VERSION='9.9.31';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';

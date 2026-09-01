@@ -1,0 +1,49 @@
+import {ChassConnectorError,requestBridge} from './bridge-client.mjs';
+
+export const CONNECTOR_VERSION='9.9.31';
+export const TIME_ZONE='Asia/Tokyo';
+const TRACK_ALIASES=new Map([
+ ['大井','大井'],['おおい','大井'],['オオイ','大井'],['ohi','大井'],['oi','大井'],['ooi','大井'],
+ ['船橋','船橋'],['ふなばし','船橋'],['funabashi','船橋'],['川崎','川崎'],['かわさき','川崎'],['kawasaki','川崎'],
+ ['浦和','浦和'],['うらわ','浦和'],['urawa','浦和'],['門別','門別'],['もんべつ','門別'],['monbetsu','門別'],
+ ['園田','園田'],['そのだ','園田'],['sonoda','園田'],['姫路','姫路'],['ひめじ','姫路'],['himeji','姫路'],
+ ['盛岡','盛岡'],['もりおか','盛岡'],['morioka','盛岡'],['水沢','水沢'],['みずさわ','水沢'],['mizusawa','水沢'],
+ ['金沢','金沢'],['かなざわ','金沢'],['kanazawa','金沢'],['笠松','笠松'],['かさまつ','笠松'],['kasamatsu','笠松'],
+ ['名古屋','名古屋'],['なごや','名古屋'],['nagoya','名古屋'],['高知','高知'],['こうち','高知'],['kochi','高知'],
+ ['佐賀','佐賀'],['さが','佐賀'],['saga','佐賀'],['帯広','帯広'],['おびひろ','帯広'],['obihiro','帯広']
+]);
+const settled=new Set(['validated','result_fetched']);
+
+export function jstDate(now=new Date()){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:TIME_ZONE,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now),get=type=>parts.find(x=>x.type===type)?.value;return `${get('year')}-${get('month')}-${get('day')}`}
+export function normalizeDate(value,now=new Date()){const raw=String(value||'').trim().toLowerCase();if(raw==='today'||raw==='今日')return jstDate(now);if(!/^\d{4}-\d{2}-\d{2}$/.test(raw))return null;const [y,m,d]=raw.split('-').map(Number),valid=new Date(Date.UTC(y,m-1,d));return valid.getUTCFullYear()===y&&valid.getUTCMonth()===m-1&&valid.getUTCDate()===d?raw:null}
+export function normalizeTrack(value){const raw=String(value||'').normalize('NFKC').trim(),key=/^[A-Za-z]+$/.test(raw)?raw.toLowerCase():raw;return TRACK_ALIASES.get(key)||null}
+const limitValue=(value,max=20)=>Math.max(1,Math.min(max,Number(value)||10));
+const sourceUpdatedAt=r=>r?.resultAcquiredAt||r?.liveAdjusted?.adjustedPredictionCreatedAt||r?.scratch?.scratchDetectedAt||r?.oddsUpdatedAt||r?.predictionCreatedAt||null;
+function staleRace(race,now){const at=Date.parse(sourceUpdatedAt(race)||''),age=Number.isFinite(at)?now.getTime()-at:Infinity;return !settled.has(race?.status)&&age>30*60*1000}
+function topHorses(layer,count=5){return [...(layer?.horses||[])].filter(h=>h.status!=='scratched'&&h.status!=='excluded').sort((a,b)=>{const marks={'◎':0,'○':1,'▲':2,'△':3,'☆':4};return (marks[a.mark]??9)-(marks[b.mark]??9)||(b.aiWinProbability??-1)-(a.aiWinProbability??-1)}).slice(0,count)}
+function compactLayer(layer,mode){if(!layer)return null;const horses=topHorses(layer);return {predictionMode:mode,volatility:layer.volatility||null,topHorses:horses,longshots:(layer.horses||[]).filter(h=>h.longshotMark),dangerFavorites:(layer.horses||[]).filter(h=>h.dangerMark)}}
+export function prepareRace(race,{detail='compact',now=new Date()}={}){if(!race)return null;const provenance={source:'CHASS KEIBA LAB D1',generatedAt:new Date(now).toISOString(),sourceUpdatedAt:sourceUpdatedAt(race),isStale:staleRace(race,new Date(now)),staleRule:'Unsettled race data older than 30 minutes is stale.'},original={...(race.original||{}),predictionMode:'original'},live=race.liveAdjusted?{...race.liveAdjusted,predictionMode:'live_adjusted'}:null;if(detail==='full')return {...race,original,liveAdjusted:live,probabilityScale:'0-1',provenance};return {race:{raceId:race.raceId,date:race.date,track:race.track,raceNo:race.raceNo,distance:race.distance,surface:race.surface,class:race.class,postTime:race.postTime,modelVersion:race.modelVersion,status:race.status},original:compactLayer(original,'original'),liveAdjusted:compactLayer(live,'live_adjusted'),scratch:race.scratch||null,result:race.result?{finishOrder:race.result.finishOrder,resultAcquiredAt:race.result.resultAcquiredAt,trackCondition:race.result.trackCondition}:null,validation:race.validation||null,probabilityScale:'0-1',provenance}}
+function ok(data,generatedAt){return {ok:true,schemaVersion:'1.0',connectorVersion:CONNECTOR_VERSION,source:'CHASS KEIBA LAB D1',generatedAt:generatedAt||new Date().toISOString(),data}}
+function fail(error){const e=error instanceof ChassConnectorError?error:new ChassConnectorError('bridge_unavailable','CHASSデータを取得できませんでした。',{cause:error});return {ok:false,error:e.code,message:e.message,status:e.status??null,retryAfterSeconds:e.retryAfterSeconds??null}}
+async function safe(action){try{return await action()}catch(error){return fail(error)}}
+
+export function createChassTools({request=requestBridge,now=()=>new Date()}={}){
+ return {
+  async health(){return safe(async()=>{const payload=await request('/api/chass/v1/health');return ok({connected:payload.ok===true,bridgeVersion:payload.bridgeVersion,modelVersion:payload.modelVersion,databaseAvailable:payload.database===true,capabilities:{race:true,latest:true,recent:true,research:true,pending:true,originalSnapshot:true,liveAdjusted:true,readOnly:true}},payload.generatedAt)})},
+  async getRace(args={}){return safe(async()=>{const raceId=String(args.raceId||'').trim(),date=args.date==null?'':normalizeDate(args.date,now()),track=args.track==null?'':normalizeTrack(args.track),raceNo=Number(args.raceNo);if(!raceId&&(!date||!track||!Number.isInteger(raceNo)||raceNo<1||raceNo>12))throw new ChassConnectorError('invalid_request','raceId、またはdate・track・raceNoをすべて指定してください。日付不明時は推測しません。');const detail=args.detail==='full'?'full':'compact',payload=await request('/api/chass/v1/race',{query:raceId?{raceId}:{date,track,raceNo}});return ok({race:prepareRace(payload.race,{detail,now:now()})},payload.generatedAt)})},
+  async getLatest(args={}){return safe(async()=>{const track=args.track==null?'':normalizeTrack(args.track);if(args.track&&!track)throw new ChassConnectorError('invalid_request','対応していない競馬場名です。');const limit=limitValue(args.limit),payload=await request('/api/chass/v1/context',{query:{scope:'latest',limit:Math.min(20,Math.max(limit,10))}}),rows=(payload.latestPredictions?.page||[]).filter(r=>!track||r.track===track).slice(0,limit).map(r=>prepareRace(r,{detail:args.detail==='full'?'full':'compact',now:now()}));return ok({races:rows,nextCursor:payload.latestPredictions?.nextCursor??null,total:rows.length},payload.generatedAt)})},
+  async getPending(args={}){return safe(async()=>{const limit=limitValue(args.limit),payload=await request('/api/chass/v1/pending',{query:{limit}});return ok({pendingResults:payload.pendingResults?.page||[],nextCursor:payload.pendingResults?.nextCursor??null,total:payload.pendingResults?.total??0},payload.generatedAt)})},
+  async getResearch(){return safe(async()=>{const payload=await request('/api/chass/v1/research');return ok({summary:payload.summary,researchMetrics:payload.researchMetrics,longshotMetrics:payload.longshotMetrics,volatilityMetrics:payload.volatilityMetrics},payload.generatedAt)})},
+  async getRecent(args={}){return safe(async()=>{const track=args.track==null?'':normalizeTrack(args.track),date=args.date==null?'':normalizeDate(args.date,now());if(args.track&&!track)throw new ChassConnectorError('invalid_request','対応していない競馬場名です。');if(args.date&&!date)throw new ChassConnectorError('invalid_request','dateはYYYY-MM-DD、today、または今日で指定してください。');const limit=limitValue(args.limit),collected=[];let cursor='0',generatedAt=null;for(let pageNo=0;pageNo<20&&collected.length<limit;pageNo++){const payload=await request('/api/chass/v1/context',{query:{scope:'recent',limit:5,cursor}});generatedAt=generatedAt||payload.generatedAt;for(const race of payload.recentRaces?.page||[])if((!track||race.track===track)&&(!date||race.date===date))collected.push(prepareRace(race,{detail:args.detail==='full'?'full':'compact',now:now()}));cursor=payload.recentRaces?.nextCursor;if(!cursor)break}return ok({races:collected.slice(0,limit),nextCursor:cursor||null,total:collected.slice(0,limit).length},generatedAt)})}
+ };
+}
+
+export const TOOL_DEFINITIONS={
+ chass_health:{title:'Check CHASS connection',description:'Check whether the read-only CHASS KEIBA LAB AI Data Bridge and its D1 research database are available.'},
+ chass_get_race:{title:'Get one CHASS race',description:'Retrieve saved CHASS KEIBA LAB data for one specific race, including Original prediction, Live Adjusted prediction, AI win/place probabilities, TIME, volatility, longshot and danger marks, scratches, result, and validation. Use raceId or an explicit date, track, and race number.'},
+ chass_get_latest:{title:'Get latest CHASS predictions',description:'Retrieve the most recently saved CHASS KEIBA LAB predictions, optionally filtered by a normalized racecourse name.'},
+ chass_get_pending:{title:'Get pending CHASS results',description:'Retrieve CHASS races whose official results are still waiting, pending, or scheduled for retry.'},
+ chass_get_research:{title:'Get CHASS research metrics',description:'Retrieve read-only CHASS validation, TIME accuracy, longshot capture, model performance, and volatility calibration metrics.'},
+ chass_get_recent:{title:'Get recent CHASS races',description:'Retrieve recent saved CHASS races with prediction, result, and validation context, optionally filtered by explicit date and racecourse.'}
+};
+

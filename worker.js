@@ -1,5 +1,5 @@
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
-export const VERSION="9.9.30";
+export const VERSION="9.9.31";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.0";
 const CHASS_BRIDGE_RATE_LIMIT=60,CHASS_BRIDGE_WINDOW_MS=60_000,bridgeRateBuckets=new Map();
 export function horseStatusFromText(value){const s=String(value||'');if(/出走取消|取消/.test(s))return 'scratched';if(/競走除外|発走除外|除外/.test(s))return 'excluded';if(/出走取止|取止|取止め|取り止め/.test(s))return 'withdrawn';return 'active'}
