@@ -40,7 +40,7 @@ const envFor=db=>({DB:db,CHASS_BRIDGE_TOKEN:'secret-token'});
 const req=(path,{token='secret-token',method='GET',origin}={})=>new Request(`https://example.test${path}`,{method,headers:{...(token==null?{}:{authorization:`Bearer ${token}`}),...(origin?{origin}:{})}});
 const json=async response=>({response,body:await response.json()});
 
-test('bridge version is 9.9.31',()=>assert.equal(VERSION,'9.9.31'));
+test('bridge version is 9.9.32',()=>assert.equal(VERSION,'9.9.32'));
 test('missing and invalid credentials are rejected',async()=>{
   const db=new FakeD1();
   assert.equal((await handleChassBridge(req('/api/chass/v1/context',{token:null}),envFor(db))).status,401);
@@ -58,6 +58,17 @@ test('race scope returns one race with Original and Live separated',async()=>{
 });
 test('race can be found by date, track and race number',async()=>{
   const db=new FakeD1(),{body}=await json(await handleChassBridge(req('/api/chass/v1/race?date=2026-08-31&track=%E5%A4%A7%E4%BA%95&raceNo=8'),envFor(db)));assert.equal(body.race.raceId,'2026-08-31|大井|8');
+});
+test('race bridge adds walk-forward Historical Similarity without changing prediction',async()=>{
+  const db=new FakeD1(),target=db.rows.find(row=>row.race_id.endsWith('|8')),originalPrediction=target.prediction_json;
+  for(let day=1;day<=20;day++){const row=structuredClone(target),date=`2026-07-${String(day).padStart(2,'0')}`,prediction=JSON.parse(row.prediction_json),race=JSON.parse(row.race_json),result=JSON.parse(row.result_json);row.race_id=`${date}|大井|8`;race.raceDate=date;delete race.liveAdjustedPrediction;delete race.scratchAudit;prediction.createdAt=`${date}T08:00:00.000Z`;result.fetchedAt=`${date}T10:00:00.000Z`;row.race_json=JSON.stringify(race);row.prediction_json=JSON.stringify(prediction);row.result_json=JSON.stringify(result);row.prediction_created_at=prediction.createdAt;row.result_acquired_at=result.fetchedAt;row.updated_at=result.fetchedAt;db.rows.push(row)}
+  const {body}=await json(await handleChassBridge(req('/api/chass/v1/race?raceId=2026-08-31%7C%E5%A4%A7%E4%BA%95%7C8'),envFor(db)));
+  assert.equal(body.race.historicalSimilarity.similarityVersion,'similarity_v1');assert.equal(body.race.historicalSimilarity.original.similarRaceCount,20);assert.equal(body.race.historicalSimilarity.original.adopted,false);assert.equal(target.prediction_json,originalPrediction);
+});
+test('research bridge exposes shadow walk-forward metrics',async()=>{
+  const db=new FakeD1(),target=db.rows.find(row=>row.race_id.endsWith('|8'));
+  for(let day=1;day<=12;day++){const row=structuredClone(target),date=`2026-07-${String(day).padStart(2,'0')}`,prediction=JSON.parse(row.prediction_json),race=JSON.parse(row.race_json),result=JSON.parse(row.result_json);row.race_id=`${date}|大井|8`;race.raceDate=date;prediction.createdAt=`${date}T08:00:00.000Z`;result.fetchedAt=`${date}T10:00:00.000Z`;row.race_json=JSON.stringify(race);row.prediction_json=JSON.stringify(prediction);row.result_json=JSON.stringify(result);row.prediction_created_at=prediction.createdAt;row.result_acquired_at=result.fetchedAt;row.updated_at=result.fetchedAt;db.rows.push(row)}
+  const {body}=await json(await handleChassBridge(req('/api/chass/v1/research'),envFor(db)));assert.equal(body.similarityMetrics.mode,'walk_forward_shadow');assert.equal(body.similarityMetrics.adopted,false);assert.equal(body.similarityMetrics.officialPredictionDelta.brierScore,0);
 });
 test('unknown race is 404 and SQL-looking input is never interpolated',async()=>{
   const db=new FakeD1(),attack=encodeURIComponent("x' OR 1=1 --"),response=await handleChassBridge(req(`/api/chass/v1/race?raceId=${attack}`),envFor(db));assert.equal(response.status,404);assert.equal(db.sql.some(sql=>sql.includes("OR 1=1")),false);

@@ -1,4 +1,4 @@
-# CHASS KEIBA LAB MCP Ver.9.9.31
+# CHASS KEIBA LAB MCP Ver.9.9.32
 
 CHASS AI Data BridgeをChatGPT/Codexへ接続する、独立したRead-Only MCP Serverです。データは保存せず、NARへ直接アクセスせず、`/api/chass/v1/*`のGETだけを中継します。
 
@@ -64,7 +64,7 @@ https://your-mcp.example.com/mcp
 | Tool | 用途 | 主な入力 |
 |---|---|---|
 | `chass_health` | Bridge/D1接続確認 | なし |
-| `chass_get_race` | 1レースのOriginal/Live/結果/検証 | raceId、またはdate+track+raceNo、detail |
+| `chass_get_race` | 1レースのOriginal/Live/結果/検証/過去類似分析 | raceId、またはdate+track+raceNo、detail |
 | `chass_get_latest` | 最新保存予想 | track、limit、detail |
 | `chass_get_pending` | 結果未取得レース | limit |
 | `chass_get_research` | 研究・穴馬・波乱集計 | なし |
@@ -81,8 +81,8 @@ https://your-mcp.example.com/mcp
 
 ## compact / full
 
-- `compact`（既定）: レース基本情報、上位馬、穴馬、危険人気馬、波乱、結果状態
-- `full`: 全馬、Original、Live Adjusted、結果、検証
+- `compact`（既定）: レース基本情報、上位馬、穴馬、危険人気馬、波乱、結果状態、類似分析の主要指標と上位パターン
+- `full`: 全馬、Original、Live Adjusted、結果、検証、上位類似レースと馬別Historical Support
 
 Original Snapshotを正式な研究予想とし、Live Adjustedは別レイヤーとして返します。
 
@@ -104,4 +104,3 @@ Original Snapshotを正式な研究予想とし、Live Adjustedは別レイヤ�
 2. `chass_health`が`connected: true`、`databaseAvailable: true`
 3. `chass_get_race`が保存済みレースを返す
 4. ChatGPT Developer modeでMCPを追加後、上記の自然言語依頼から該当Toolが選択される
-

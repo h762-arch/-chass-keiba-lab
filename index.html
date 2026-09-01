@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07101f" />
-  <title>チャス競馬研究所 Ver.9.9.31</title>
+  <title>チャス競馬研究所 Ver.9.9.32</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <header class="topbar">
-  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.31</span></h1></div>
+  <div><p class="eyebrow">CHASS KEIBA LAB</p><h1>チャス競馬研究所 <span>Ver.9.9.32</span></h1></div>
   <button id="themeToggle" class="ghost">表示切替</button>
 </header>
 <main class="wrap">
@@ -28,6 +28,7 @@
         <div class="summary-mode"><span id="modeSummary" class="badge wide-chip">データ待ち</span></div>
       </div>
       <details id="volatilitySummary" class="volatility-summary" hidden><summary><strong id="volatilityHeadline">波乱指数 —</strong><span id="volatilityConfidence">信頼度 —</span></summary><div class="volatility-body"><div id="volatilityStats" class="volatility-stats"></div><div id="volatilityReasons" class="volatility-reasons"></div><small>レース全体の不確実性です。個別馬の穴馬推奨とは分離しています。</small></div></details>
+      <details id="historicalSimilaritySummary" class="historical-similarity" hidden><summary><strong id="historicalSimilarityHeadline">過去類似分析 —</strong><span id="historicalSimilarityConfidence">信頼度 —</span></summary><div class="historical-similarity-body"><div id="historicalSimilarityStats" class="historical-similarity-stats"></div><div id="historicalSimilarityPatterns" class="historical-similarity-patterns"></div><small>予想値を変更しないShadow補助情報です。予想時点より前に取得済みの結果だけを参照します。</small></div></details>
       <section id="scratchStatusBar" class="scratch-status-bar" hidden><div><strong id="scratchStatusText">取消反映待ち</strong><small id="scratchDiff"></small></div><div class="prediction-layer-toggle" role="group" aria-label="予想レイヤー"><button type="button" data-prediction-layer="original">元予想</button><button type="button" data-prediction-layer="live" class="active">取消反映後</button></div></section>
       <div class="quick-actions" aria-label="レース操作"><button id="quickPredict" type="button">予想更新</button><button id="quickOdds" type="button">現在オッズ</button><button id="quickResult" type="button">結果検証</button></div>
       <section class="primary-controls" aria-labelledby="primaryControlsTitle">

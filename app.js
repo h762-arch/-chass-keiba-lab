@@ -1,6 +1,6 @@
 (() => {
 'use strict';
-const APP_VERSION='9.9.31';
+const APP_VERSION='9.9.32';
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -16,6 +16,7 @@ let resultFetchInProgress=null;
 let lastRaceFetchAudit=null;
 let quickExpanded=false;
 let predictionViewMode='live';
+const historicalSimilarityCache=new Map(),historicalSimilarityFlights=new Map();
 const dashboardUi={
  open:{models:true,calibration:false,volatility:false,predictionAxes:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
  diagnosisFilter:'',raceType:'all',track:'all',period:'all',quality:'all',analysisQuality:'AB',modelVersion:'all',format:'all',raceSort:'new',raceLimit:10
@@ -501,6 +502,19 @@ function liveLayerActive(record=state){return !!record?.liveAdjustedPrediction?.
 function displayHorses(){if(liveLayerActive()&&predictionViewMode==='live')return state.liveAdjustedPrediction.horses||[];if(liveLayerActive()&&predictionViewMode==='original')return originalLayerHorses(state);return state.horses||[]}
 function currentVolatility(){return liveLayerActive()&&predictionViewMode==='live'?state.liveAdjustedPrediction.volatility:state.predictionSnapshot?.volatility||state.volatilitySnapshot||null}
 function renderScratchLayer(){const bar=$('scratchStatusBar');if(!bar)return;const live=state.liveAdjustedPrediction,active=liveLayerActive();bar.hidden=!active;if(!active)return;$('scratchStatusText').textContent=`取消・除外 ${live.excludedHorseNos.length}頭｜Live再計算済｜影響 ${live.scratchImpactScore}`;$('scratchDiff').textContent=`取消前 波乱${live.originalVolatilityIndex??'—'}% → Live ${live.liveVolatilityIndex??'—'}%｜◎ ${state.finalSnapshot?.top3?.[0]?.horseNo??'—'} → ${live.finalSnapshot?.top3?.[0]?.horseNo??'—'}`;document.querySelectorAll('[data-prediction-layer]').forEach(b=>{b.classList.toggle('active',b.dataset.predictionLayer===predictionViewMode);b.setAttribute('aria-pressed',String(b.dataset.predictionLayer===predictionViewMode))})}
+function similarityRate(metric){return metric?.rate==null?'—':`${(Number(metric.rate)*100).toFixed(1)}%`}
+function renderHistoricalSimilarity(rid=raceId(state.race)){
+ const box=$('historicalSimilaritySummary');if(!box)return;const cached=historicalSimilarityCache.get(rid);if(!rid||!state.predictionSnapshot){box.hidden=true;return}box.hidden=false;
+ if(!cached){$('historicalSimilarityHeadline').textContent='過去類似分析 読込中';$('historicalSimilarityConfidence').textContent='Shadow補助';$('historicalSimilarityStats').innerHTML='';$('historicalSimilarityPatterns').innerHTML='';return}
+ if(cached.error){$('historicalSimilarityHeadline').textContent='過去類似分析 利用不可';$('historicalSimilarityConfidence').textContent='現行予想を維持';$('historicalSimilarityStats').innerHTML='';$('historicalSimilarityPatterns').innerHTML=`<p>${esc(cached.error)}</p>`;return}
+ const bundle=cached.historicalSimilarity||cached,analysis=predictionViewMode==='live'&&bundle.liveAdjusted?.available?bundle.liveAdjusted:bundle.original;if(!analysis?.available){$('historicalSimilarityHeadline').textContent='過去類似分析 データ不足';$('historicalSimilarityConfidence').textContent='参考度 低';$('historicalSimilarityStats').innerHTML='';$('historicalSimilarityPatterns').innerHTML='<p>予想時点より前に結果取得済みの比較対象がありません。</p>';return}
+ const m=analysis.metrics||{};$('historicalSimilarityHeadline').textContent=`類似レース ${analysis.similarRaceCount}R｜平均 ${(Number(analysis.averageSimilarityScore||0)*100).toFixed(0)}%`;$('historicalSimilarityConfidence').textContent=`信頼度 ${analysis.confidenceLabel} ${analysis.similarityConfidence}%`;
+ $('historicalSimilarityStats').innerHTML=[["1人気TOP3",similarityRate(m.favoriteTop3Rate)],["7人気以下",similarityRate(m.sevenPlusTop3Rate)],["10人気以下",similarityRate(m.tenPlusTop3Rate)],["人気馬崩壊",similarityRate(m.favoriteCollapseRate)],["先行TOP3",similarityRate(m.frontTop3Rate)],["差しTOP3",similarityRate(m.stalkerTop3Rate)]].map(([label,value])=>`<span>${label}<b>${value}</b></span>`).join('');
+ const success=(analysis.successPatterns||[])[0],failure=(analysis.failurePatterns||[])[0],conflict=analysis.historicalConflict?'現行評価と過去傾向が競合':'過去傾向は現行評価と大きな競合なし';$('historicalSimilarityPatterns').innerHTML=`${success?`<p><strong>成功傾向</strong> ${esc(success.label)}｜TOP3 ${success.top3Rate==null?'—':(success.top3Rate*100).toFixed(1)+'%'}｜n=${success.sampleCount}</p>`:''}${failure?`<p><strong>失敗傾向</strong> ${esc(failure.label)}｜凡走 ${failure.failureRate==null?'—':(failure.failureRate*100).toFixed(1)+'%'}｜n=${failure.sampleCount}</p>`:''}<p><strong>Historical ${esc(String(analysis.historicalConsensus||'neutral').toUpperCase())}</strong> ${esc(conflict)}</p>`;
+}
+function requestHistoricalSimilarity(rid=raceId(state.race)){
+ const cached=historicalSimilarityCache.get(rid);if(!rid||!state.predictionSnapshot||(cached&&!cached.error)||cached?.checkedAt&&Date.now()-cached.checkedAt<30_000||historicalSimilarityFlights.has(rid))return;renderHistoricalSimilarity(rid);const task=fetchJsonSimple(`/api/db/similarity?raceId=${encodeURIComponent(rid)}`,{timeoutMs:6000}).then(data=>historicalSimilarityCache.set(rid,data)).catch(error=>historicalSimilarityCache.set(rid,{error:`類似分析のみ取得できませんでした（${error?.code||'similarity_unavailable'}）`,checkedAt:Date.now()})).finally(()=>{historicalSimilarityFlights.delete(rid);if(raceId(state.race)===rid)renderHistoricalSimilarity(rid)});historicalSimilarityFlights.set(rid,task)
+}
 function makeSnapshot(){
  const now=new Date().toISOString(),ranked=rankFinal();
  const top3=ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),score:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,odds:h.odds,popularity:h.popularity,predictedTime:h.predictedTime}));
@@ -548,7 +562,7 @@ function render(){
  if($('timeSummary'))$('timeSummary').textContent=`TIME ${time}/${h.length||'—'} ${h.length&&time===h.length?'✅':h.length?'△':''}`.trim();
  if($('modeSummary'))$('modeSummary').textContent=r.dataMode||'データ待ち';
  if($('integrityStatus')){$('integrityStatus').textContent=bad?'要確認':'正常';$('integrityStatus').classList.toggle('good',!bad);$('integrityStatus').classList.toggle('warn',bad);}
- renderScratchLayer();renderMarketDisplayState();renderResultDisplayState();renderCloudSyncState();renderFinal();renderValuePicks();renderQuick();renderHorses();
+ renderScratchLayer();renderMarketDisplayState();renderResultDisplayState();renderCloudSyncState();renderFinal();renderValuePicks();renderQuick();renderHorses();renderHistoricalSimilarity(rid);requestHistoricalSimilarity(rid);
 }
 function renderFinal(){
  const h=displayHorses();if(!h.length){$('finalBody').innerHTML='予想データを読み込むと自動表示します。';return}
