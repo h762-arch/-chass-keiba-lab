@@ -11,6 +11,13 @@ CREATE TABLE IF NOT EXISTS races (
   result_acquired_at TEXT,
   status TEXT NOT NULL DEFAULT 'prediction_saved',
   updated_at TEXT NOT NULL,
+  race_fp TEXT,
+  prediction_fp TEXT,
+  market_fp TEXT,
+  final_fp TEXT,
+  result_fp TEXT,
+  validation_fp TEXT,
+  live_fp TEXT,
   PRIMARY KEY (race_id, model_version)
 );
 
