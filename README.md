@@ -1,5 +1,22 @@
 # CHASS KEIBA LAB Ver.10.0.1
 
+## Public Read-Only Prediction API（Phase 4）
+
+Cloudflare D1へ保存済みのSnapshotだけを公開参照します。Bearer認証付きAI Data BridgeとMCPは従来どおり独立して利用できます。公開APIからNAR/JRA外部取得、予想再計算、D1書込は行いません。
+
+- `GET /api/chass/v1/public/health`
+- `GET /api/chass/v1/public/latest`
+- `GET /api/chass/v1/public/recent?limit=10`
+- `GET /api/chass/v1/public/races?date=YYYY-MM-DD&track=大井`
+- `GET /api/chass/v1/public/race?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
+- `GET /api/chass/v1/public/result?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
+
+`race`と`latest`は`format=compact`に対応します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
+
+環境変数`ENABLE_PUBLIC_API=false`で公開経路だけ停止できます。初期値は有効です。公開可否を決める前に、D1へ個人情報や非公開情報を保存していないことを運用側でも確認してください。
+
+Cloudflareへ通常どおりWorkerをデプロイ後、`/api/chass/v1/public/health`で接続を確認します。ローカル`server.mjs`にはD1 bindingがないため、公開データAPIは`DATABASE_UNAVAILABLE`を返します。
+
 ## JRA Calibration & Automatic Validation
 
 Ver.10.0.1ではJRA Phase 1を初回較正し、勝率・2着率・3着内率を同一の12,000回順位シミュレーションから算出します。各馬で `AI勝率 <= AI TOP3率` を保証し、距離実績が不確かな馬は平均能力を一律に落とさず確率分布を広げます。
