@@ -1,5 +1,6 @@
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
 import {parseNarRaceList} from './meeting-discovery.mjs';
+import {enqueueResearchSync,runResearchSyncQueue} from './research-storage-sync.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
@@ -17,9 +18,14 @@ const D1_SCHEMA=[
  `CREATE TABLE IF NOT EXISTS results (race_id TEXT NOT NULL, horse_no INTEGER NOT NULL, finish INTEGER, actual_time TEXT, final_3f REAL, passing_order TEXT, result_acquired_at TEXT, result_json TEXT NOT NULL, PRIMARY KEY (race_id, horse_no))`,
  `CREATE TABLE IF NOT EXISTS meeting_calendar (date TEXT NOT NULL, track TEXT NOT NULL, status TEXT NOT NULL, race_numbers_json TEXT NOT NULL DEFAULT '[]', checked_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'NAR RaceList', PRIMARY KEY (date,track))`,
  `CREATE TABLE IF NOT EXISTS historical_collector_jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, period_days INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, tracks_json TEXT NOT NULL, phase TEXT NOT NULL, current_date TEXT, current_track TEXT, current_race INTEGER, state_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, paused_at TEXT, last_run_at TEXT, next_run_at TEXT, locked_until TEXT, last_error TEXT, background_runs INTEGER NOT NULL DEFAULT 0, last_batch_count INTEGER NOT NULL DEFAULT 0)`,
+ `CREATE TABLE IF NOT EXISTS research_sync_queue (id TEXT PRIMARY KEY, race_id TEXT NOT NULL, model_version TEXT NOT NULL, organization TEXT NOT NULL, race_date TEXT NOT NULL, track TEXT, race_no INTEGER, status TEXT NOT NULL DEFAULT 'pending', content_hash TEXT NOT NULL, drive_status TEXT NOT NULL DEFAULT 'pending', airtable_status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT, locked_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, UNIQUE(race_id,model_version))`,
+ `CREATE TABLE IF NOT EXISTS research_archive_manifest (archive_key TEXT PRIMARY KEY, organization TEXT NOT NULL, archive_date TEXT NOT NULL, drive_file_id TEXT, content_hash TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+ `CREATE TABLE IF NOT EXISTS research_airtable_manifest (research_key TEXT PRIMARY KEY, organization TEXT NOT NULL, airtable_record_id TEXT, content_hash TEXT NOT NULL, updated_at TEXT NOT NULL)`,
  `CREATE INDEX IF NOT EXISTS idx_races_updated_at ON races(updated_at)`,
  `CREATE INDEX IF NOT EXISTS idx_results_race_id ON results(race_id)`
  ,`CREATE INDEX IF NOT EXISTS idx_historical_jobs_status ON historical_collector_jobs(status,updated_at)`
+ ,`CREATE INDEX IF NOT EXISTS idx_research_sync_due ON research_sync_queue(status,next_attempt_at,updated_at)`
+ ,`CREATE INDEX IF NOT EXISTS idx_research_sync_day ON research_sync_queue(organization,race_date)`
 ];
 const D1_SCHEMA_READY=new WeakSet();
 export async function ensureD1Schema(DB){if(!DB)throw Object.assign(new Error('d1_binding_unavailable'),{code:'d1_binding_unavailable'});if(D1_SCHEMA_READY.has(DB))return true;try{await DB.batch(D1_SCHEMA.map(sql=>DB.prepare(sql)));D1_SCHEMA_READY.add(DB);return true}catch(error){throw Object.assign(new Error(error?.message||'D1 schema initialization failed'),{code:'d1_schema_error',cause:error})}}
@@ -46,12 +52,14 @@ export async function saveD1Record(DB,raceId,record){
   const statements=[DB.prepare(`UPDATE races SET race_json=?,result_json=?,validation_json=?,result_acquired_at=?,status=?,updated_at=? WHERE race_id=? AND model_version=?`).bind(r.raceJson,resultChanged?r.resultJson:existing.result_json,validationChanged?r.validationJson:existing.validation_json,resultChanged?r.resultAcquiredAt:existing.result_acquired_at,r.status,r.updatedAt,r.raceId,r.modelVersion)];
   if(resultChanged)for(const x of rows.results)statements.push(DB.prepare(`INSERT INTO results (race_id,horse_no,finish,actual_time,final_3f,passing_order,result_acquired_at,result_json) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(race_id,horse_no) DO UPDATE SET finish=excluded.finish,actual_time=excluded.actual_time,final_3f=excluded.final_3f,passing_order=excluded.passing_order,result_acquired_at=excluded.result_acquired_at,result_json=excluded.result_json`).bind(x.raceId,x.horseNo,x.finish,x.actualTime,x.final3F,x.passingOrder,x.resultAcquiredAt,x.resultJson));
   await DB.batch(statements);await persistD1Fingerprints(DB,r,incoming);
+  await enqueueResearchSync(DB,raceId,record);
   return {raceId:r.raceId,modelVersion:r.modelVersion,status:'updated',written:true,predictions:0,results:resultChanged?rows.results.length:0,descriptor:incoming};
  }
  const statements=[DB.prepare(`INSERT INTO races (race_id,model_version,race_json,prediction_json,market_json,final_json,result_json,validation_json,prediction_created_at,result_acquired_at,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(r.raceId,r.modelVersion,r.raceJson,r.predictionJson,r.marketJson,r.finalJson,r.resultJson,r.validationJson,r.predictionCreatedAt,r.resultAcquiredAt,r.status,r.updatedAt)];
  for(const p of rows.predictions)statements.push(DB.prepare(`INSERT OR IGNORE INTO predictions (race_id,model_version,horse_no,horse_name,mark,ai_win_rate,ai_place_rate,overall,predicted_time,predicted_time_type,popularity,odds,expected_value,longshot_score,value_type,market_gap_score,snapshot_json,prediction_created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(p.raceId,p.modelVersion,p.horseNo,p.horseName,p.mark,p.aiWinRate,p.aiPlaceRate,p.overall,p.predictedTime,p.predictedTimeType,p.popularity,p.odds,p.expectedValue,p.longshotScore,p.valueType,p.marketGapScore,p.snapshotJson,p.predictionCreatedAt));
  for(const x of rows.results)statements.push(DB.prepare(`INSERT INTO results (race_id,horse_no,finish,actual_time,final_3f,passing_order,result_acquired_at,result_json) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(race_id,horse_no) DO UPDATE SET finish=excluded.finish,actual_time=excluded.actual_time,final_3f=excluded.final_3f,passing_order=excluded.passing_order,result_acquired_at=excluded.result_acquired_at,result_json=excluded.result_json`).bind(x.raceId,x.horseNo,x.finish,x.actualTime,x.final3F,x.passingOrder,x.resultAcquiredAt,x.resultJson));
  await DB.batch(statements);await persistD1Fingerprints(DB,r,incoming);
+ await enqueueResearchSync(DB,raceId,record);
  return {raceId:r.raceId,modelVersion:r.modelVersion,status:'created',written:true,predictions:rows.predictions.length,results:rows.results.length,descriptor:incoming};
 }
 export async function readD1Records(DB){await ensureD1Schema(DB);const response=await DB.prepare(`SELECT race_id,model_version,race_json,prediction_json,market_json,final_json,result_json,validation_json,prediction_created_at,result_acquired_at,status,updated_at FROM races ORDER BY updated_at DESC LIMIT 2000`).all(),records=[];for(const row of response.results||[]){const parse=(value,fallback)=>{try{return value?JSON.parse(value):fallback}catch{return fallback}},race=parse(row.race_json,{}),resultQueue=race?.resultQueue||null;if(race&&'resultQueue'in race)delete race.resultQueue;records.push({raceId:row.race_id,record:{race,resultQueue,predictionSnapshot:parse(row.prediction_json,null),marketSnapshot:parse(row.market_json,null),finalSnapshot:parse(row.final_json,null),resultSnapshot:parse(row.result_json,null),validationSnapshot:parse(row.validation_json,null),predictionCreatedAt:row.prediction_created_at,resultAcquiredAt:row.result_acquired_at,validationCompleted:row.status==='validated',validated:row.status==='validated',modelVersion:row.model_version,updatedAt:row.updated_at}})}return records}
@@ -521,13 +529,14 @@ async function handleHistoricalJobApi(request,env){
   return json({ok:false,error:'not_found'},404);
  }catch(error){const status=Number(error?.status)||(['historical_job_not_found'].includes(error?.code)?404:400);return json({ok:false,error:error?.code||'historical_job_operation_failed',message:String(error?.message||error).slice(0,160)},status)}
 }
-export async function runScheduledTasks(DB,{now=new Date(),resultRunner=runScheduledResultQueue,historicalRunner=runBackgroundHistoricalCollector}={}){
+export async function runScheduledTasks(DB,{now=new Date(),env={},resultRunner=runScheduledResultQueue,historicalRunner=runBackgroundHistoricalCollector,researchRunner=runResearchSyncQueue}={}){
  const autoResult=await resultRunner(DB,{now,limit:5});
  const autoProcessed=Number(autoResult?.processed)||0;
- if(autoProcessed>=3)return {autoResult,historical:{processed:0,skipped:true,reason:'auto_result_priority'}};
+ if(autoProcessed>=3)return {autoResult,historical:{processed:0,skipped:true,reason:'auto_result_priority'},research:{processed:0,skipped:true,reason:'auto_result_priority'}};
  const batchLimit=autoProcessed>0?1:HISTORICAL_RACE_BATCH;
  const historical=await historicalRunner(DB,{now,meetingLimit:batchLimit,raceLimit:batchLimit,deadlineMs:HISTORICAL_JOB_DEADLINE_MS});
- return {autoResult,historical}
+ const research=await researchRunner(DB,env,{now,limit:1,deadlineMs:8_000});
+ return {autoResult,historical,research}
 }
 export default{
  async fetch(request,env){
@@ -611,5 +620,5 @@ export default{
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
   return new Response("Not Found",{status:404});
  },
- async scheduled(controller,env,ctx){const task=runScheduledTasks(env?.DB,{now:new Date(controller?.scheduledTime||Date.now())});if(ctx?.waitUntil)ctx.waitUntil(task);else await task}
+ async scheduled(controller,env,ctx){const task=runScheduledTasks(env?.DB,{now:new Date(controller?.scheduledTime||Date.now()),env});if(ctx?.waitUntil)ctx.waitUntil(task);else await task}
 };

@@ -300,6 +300,17 @@ npm run check
 
 `regression.test.mjs`が`nar-fixtures.mjs`の固定fixtureを読み込み、Snapshot固定、TOP3・正式複勝判定、95%信頼区間、診断分類、較正、TIME、NAR Parser、旧データ移行を検証します。
 
+## Phase 5: Research Archive / Index（既定OFF）
+
+D1をOperational Source of Truthのまま維持し、D1保存成功後に研究同期キューをbest-effort登録します。5分Cronは `Auto Result → Historical Collector → Research Sync` の順で、Research Syncは1回最大1件・8秒deadlineです。Drive/Airtable障害は予想・結果・D1保存の成功判定へ影響しません。
+
+- Google Drive: `JRA/Daily/YYYY/MM/YYYY-MM-DD-research.json` と `NAR/Daily/...` を物理分離し、日次ファイルをfileId＋contentHashで更新します。
+- Airtable: 完全D1コピーではなく、印・💎・⚠️・重大検証失敗・大きなMarket Gapを含む重要レースだけを1 Race = 1 Recordで索引化します。
+- Prediction / Result / Validation Snapshotは別フィールドに保持し、PredictionSourceは現在 `CHASS_APP` のみです。
+- 同期は `ENABLE_DRIVE_SYNC=true` / `ENABLE_AIRTABLE_INDEX=true` の個別Feature Flagで有効化します。初期値は両方OFFです。
+
+ローカルのキー名は `.dev.vars.example` を参照し、実値は `wrangler secret put` で登録してください。Secretを`.dev.vars`以外のソース、ブラウザ、GitHub、APIレスポンスへ置かないでください。先に `migrations/0004_research_storage_sync.sql` をD1へ適用します。
+
 ## Compatibility
 
 `chass-latest.js`は旧配置との互換性を維持するためのlegacy compatibility placeholderです。現在の本体処理は`app.js`に統合されています。
