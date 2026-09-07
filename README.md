@@ -313,6 +313,29 @@ D1をOperational Source of Truthのまま維持し、D1保存成功後に研究�
 
 ローカルのキー名は `.dev.vars.example` を参照し、実値は `wrangler secret put` で登録してください。Secretを`.dev.vars`以外のソース、ブラウザ、GitHub、APIレスポンスへ置かないでください。先に `migrations/0004_research_storage_sync.sql` をD1へ適用します。
 
+### Google Drive本番有効化
+
+Drive OAuthはWorker内だけで実行します。対象GoogleアカウントでDrive APIを有効化し、offline accessで取得したRefresh Tokenと、書き込み可能な既存Root Folder IDを次の名前で設定します。値はコマンドライン引数や設定ファイルへ書かず、各コマンドの入力プロンプトへ貼り付けてください。
+
+```sh
+npx wrangler secret put GOOGLE_DRIVE_CLIENT_ID
+npx wrangler secret put GOOGLE_DRIVE_CLIENT_SECRET
+npx wrangler secret put GOOGLE_DRIVE_REFRESH_TOKEN
+npx wrangler secret put GOOGLE_DRIVE_ROOT_FOLDER_ID
+npx wrangler secret put ENABLE_DRIVE_SYNC
+```
+
+最後の値は `true` です。Airtableを同時に有効化しない場合は `ENABLE_AIRTABLE_INDEX` を未設定または `false` のままにします。緊急停止時は `ENABLE_DRIVE_SYNC` を `false` へ変更してください。
+
+```sh
+npx wrangler d1 migrations apply chass-keiba-research-db --remote
+npx wrangler deploy
+```
+
+デプロイ後、アプリの「AI連携API → Google Drive 研究保存 → Google Drive接続確認」を実行します。この確認はOAuth token取得と指定Root Folderのmetadata・書込権限確認だけを行い、テストファイルは作成しません。設定値そのものは画面へ返しません。
+
+接続成功後はD1のResearch Sync Queueを5分Cronが最大1件ずつ処理します。保存先は `JRA/Daily/YYYY/MM/YYYY-MM-DD-research.json` または `NAR/Daily/...` です。同一日・同一organizationはmanifestのfileIdを更新し、研究内容のcontentHashが同一ならDrive I/Oをスキップします。Drive障害時もD1保存と通常の予想・結果・Validationは成功扱いのままです。
+
 ## Phase 6: Longshot Scenario Intelligence（Shadow Mode）
 
 既存の💎・FINAL・AI勝率・AI TOP3率・EVを変更せず、予想時点Snapshotに`longshotScenario`を追加します。人気8位以下／単勝15倍以上、10位以下／30倍以上を研究用に再確認し、保存済みの根拠が2件以上ある場合だけ候補化します。

@@ -1,6 +1,6 @@
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
 import {parseNarRaceList} from './meeting-discovery.mjs';
-import {enqueueResearchSync,runResearchSyncQueue} from './research-storage-sync.mjs';
+import {enqueueResearchSync,runResearchSyncQueue,readResearchSyncStatus,requeueResearchSyncFailures,verifyDriveConnection} from './research-storage-sync.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
@@ -510,6 +510,8 @@ function historicalJobMutationAllowed(request){
  if(!origin)return false;
  try{return origin===new URL(request.url).origin&&String(request.headers.get('content-type')||'').includes('application/json')}catch{return false}
 }
+function researchSyncAccessAllowed(request){try{const origin=new URL(request.url).origin,headerOrigin=request.headers.get('origin'),referer=request.headers.get('referer'),site=request.headers.get('sec-fetch-site');return headerOrigin===origin||site==='same-origin'||(referer&&new URL(referer).origin===origin)}catch{return false}}
+async function handleResearchSyncApi(request,env){const DB=getResearchDb(env),u=new URL(request.url);if(!DB)return json({ok:false,error:'d1_binding_unavailable'},503);if(!researchSyncAccessAllowed(request))return json({ok:false,error:'same_origin_required'},403);try{await ensureD1Schema(DB);if(u.pathname==='/api/db/research-sync'&&request.method==='GET')return json({ok:true,...await readResearchSyncStatus(DB,env),generatedAt:new Date().toISOString()});if(u.pathname.endsWith('/drive-check')&&request.method==='POST'){const connection=await verifyDriveConnection(env);if(connection.ok)connection.requeue=await requeueResearchSyncFailures(DB);return json({ok:connection.ok,connection},connection.ok?200:connection.errorCode==='DRIVE_CONFIG_INCOMPLETE'||connection.errorCode==='DRIVE_SYNC_DISABLED'?400:502)}return json({ok:false,error:'method_not_allowed'},405)}catch(error){return json({ok:false,error:error?.code||'research_sync_diagnostic_failed'},503)}}
 async function handleHistoricalJobApi(request,env){
  const DB=getResearchDb(env),u=new URL(request.url);
  if(!DB)return json({ok:false,error:'d1_binding_unavailable'},503);
@@ -543,6 +545,7 @@ export default{
  const u=new URL(request.url);
   if(u.pathname.startsWith('/api/chass/v1/public/'))return handlePublicApi(request,env);
   if(u.pathname==='/api/chass/context'||u.pathname.startsWith('/api/chass/v1/'))return handleChassBridge(request,env);
+  if(u.pathname==='/api/db/research-sync'||u.pathname.startsWith('/api/db/research-sync/'))return handleResearchSyncApi(request,env);
   if(u.pathname==='/api/db/historical-job'||u.pathname.startsWith('/api/db/historical-job/'))return handleHistoricalJobApi(request,env);
   if(u.pathname==="/api/health")return json({ok:true,version:VERSION,service:"chass-keiba-lab"});
   if(u.pathname==="/api/db/meetings"&&request.method==="GET"){
