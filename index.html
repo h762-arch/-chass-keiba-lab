@@ -53,7 +53,7 @@
       </section>
     </section>
     <section id="finalCard" class="card final-card"><div class="section-head"><div><p class="eyebrow">CHASS FINAL</p><h2>最終判断</h2></div><span id="marketStatus" class="badge">市場待ち</span></div><div id="finalBody" class="empty">予想データを読み込むと自動表示します。</div></section>
-    <section id="valuePicksCard" class="card value-picks-card"><div class="section-head"><div><p class="eyebrow">VALUE PICKS</p><h2>穴馬候補</h2></div><span class="badge">別レイヤー</span></div><div id="valuePicksBody" class="value-picks-body"><div class="value-empty">💎 有力穴馬なし</div></div></section>
+    <section id="valuePicksCard" class="card value-picks-card"><div class="section-head"><div><p class="eyebrow">VALUE PICKS</p><h2>穴馬候補</h2></div><span class="badge">別レイヤー</span></div><div id="valuePicksBody" class="value-picks-body"><div class="value-empty">💎 有力穴馬なし</div></div><details id="longshotScenarioPanel" class="longshot-scenario"><summary>CHASS LONGSHOT SCAN <small>Shadow</small></summary><div id="longshotScenarioBody" class="longshot-scenario-body">予想Snapshot作成後に表示します。</div></details></section>
     <section id="quickCard" class="card quick-card"><div class="section-head"><div><p class="eyebrow">QUICK VIEW</p><h2>全馬比較</h2></div><button id="quickToggle" class="text-button" type="button">全頭を見る ›</button></div><div id="quickList" class="quick-list empty">馬データを入力すると一覧表示します。</div></section>
     <section class="utility-stack card">
       <details id="integrityCard" class="utility-row"><summary><span class="utility-icon good-bg">✓</span><strong>データ整合性</strong><span id="integrityStatus" class="utility-value good">確認待ち</span></summary><div id="integrityGrid" class="integrity-grid utility-body"></div></details>
@@ -81,6 +81,7 @@
 <script src="/jra-normalizer.js"></script>
 <script src="/jra-model.js"></script>
 <script src="/jra-adapter.js"></script>
+<script src="/longshot-scenario.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

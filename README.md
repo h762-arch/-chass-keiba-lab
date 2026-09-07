@@ -311,6 +311,18 @@ D1をOperational Source of Truthのまま維持し、D1保存成功後に研究�
 
 ローカルのキー名は `.dev.vars.example` を参照し、実値は `wrangler secret put` で登録してください。Secretを`.dev.vars`以外のソース、ブラウザ、GitHub、APIレスポンスへ置かないでください。先に `migrations/0004_research_storage_sync.sql` をD1へ適用します。
 
+## Phase 6: Longshot Scenario Intelligence（Shadow Mode）
+
+既存の💎・FINAL・AI勝率・AI TOP3率・EVを変更せず、予想時点Snapshotに`longshotScenario`を追加します。人気8位以下／単勝15倍以上、10位以下／30倍以上を研究用に再確認し、保存済みの根拠が2件以上ある場合だけ候補化します。
+
+- 補助分類：能力穴、先行残り穴、差し込み穴、条件変化穴（複数可）
+- Front / Survival / Closingは既存値がある場合だけ使用し、欠損は`null`
+- 結果確定後は予想時Snapshotと照合し、7人気以下または20倍以上のTOP3で既存💎がない馬を`Missing Longshot`として記録
+- 原因は予想時に存在した証拠からのみ付与し、結果から新しい理由を後付けしない
+- `window.CHASS_FEATURES.ENABLE_LONGSHOT_SCENARIO=false`でShadow表示・生成だけを停止可能
+
+画面ではVALUE PICKS内の「CHASS LONGSHOT SCAN」を展開すると確認できます。これは研究表示であり、本番の印や買い目を自動変更しません。
+
 ## Compatibility
 
 `chass-latest.js`は旧配置との互換性を維持するためのlegacy compatibility placeholderです。現在の本体処理は`app.js`に統合されています。
