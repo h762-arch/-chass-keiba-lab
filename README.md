@@ -84,19 +84,21 @@ JRA Phase 1は外部サイトへ自動アクセスしません。入力にない
 - 全ToolはRead-Onlyで、NAR直接取得・D1書込み・予想再計算を行いません。
 - Bridge tokenはMCP環境変数だけに保持し、tool output、URL、ログへ出しません。
 - `today`はAsia/Tokyoで絶対日付化し、競馬場名は明示済みaliasだけを正規化します。
-- 既定はcompact、検証時のみfullを利用し、OriginalとLive Adjustedを明確に分離します。
+- 既定はcompact、検証時のみfullを利用します。旧Live Adjustedデータは互換読取専用で、新規予想はOriginal Snapshotを固定します。
 - アプリ本体、既存AI Data Bridge schema、D1 schema、NAR通信、予想ロジックは変更していません。
 
 ## Ver.9.9.30 CHASS AI Data Bridge
 
 - Bearer認証付きのRead-Only API（`/api/chass/v1/*`）から、保存済みD1研究データだけを返します。
 - `latest`、`race`、`recent`、`pending`、`research`を用途別に取得でき、既定・最大件数を制限します。
-- Original SnapshotとLive Adjusted Predictionを分離し、TIME欠損は`null`と欠損理由で表現します。
+- Original Prediction Snapshotを固定し、TIME欠損は`null`と欠損理由で表現します。旧Live Adjusted Predictionは互換読取専用です。
 - SQLは固定SELECTだけを許可し、GETからD1書込み・NAR再取得・任意SQLを実行できません。
 - CORSは許可Origin一致時のみ、最新系レスポンスは`Cache-Control: no-store`です。
 - OpenAPIは`/api/chass/v1/openapi.json`で公開し、書込み操作や実トークンを含めません。
 
 ## Ver.9.9.29 Scratch Horse Snapshot Preservation & Live Adjustment
+
+> 履歴注記：この節のLive Adjustmentは旧仕様です。現行Ver.10.0.1では取消・除外時もOriginal Predictionを変更せず、`runnerStatus`だけを更新します。
 
 - 通常取得失敗後に診断復旧で着順3頭以上を取得できた場合、最終状態を成功へ正規化します。
 - 結果未公開と一時通信失敗を分離し、5・5・10・15・30分の低頻度再確認を最大6回行います。
@@ -322,6 +324,22 @@ D1をOperational Source of Truthのまま維持し、D1保存成功後に研究�
 - `window.CHASS_FEATURES.ENABLE_LONGSHOT_SCENARIO=false`でShadow表示・生成だけを停止可能
 
 画面ではVALUE PICKS内の「CHASS LONGSHOT SCAN」を展開すると確認できます。これは研究表示であり、本番の印や買い目を自動変更しません。
+
+## Phase 7: TIME / Probability Calibration Research（Shadow Mode）
+
+固定Prediction Snapshotと後続Resultを使い、JRA/NARを混ぜずに確率とTIMEを研究します。本番のJRA 12,000回順位Simulation、AI確率、TOTAL、TIMEのrace baseline 62% / individual 38%は変更しません。
+
+- AI勝率・AI TOP3率：Brier Score、Log Loss、ECE、確率帯別実績
+- TIME：MAE、Mean Error、Median Error、Max Absolute Error、誤差方向
+- TIME条件別：競馬場、距離、surface、馬場、天候、脚質、斤量帯、距離変化
+- PredictionよりResult時刻が早いレコードは研究母集団から除外
+- 欠損確率・欠損TIMEは0へ補完せず除外
+- 50R未満は較正候補を比較しない
+- 50R以上は時間順70%/30%のWalk-Forwardでtemperature、logistic、isotonicをShadow比較
+- 候補は自動採用せず、`adopted=false`、`officialPredictionDelta=0`
+- `window.CHASS_FEATURES.ENABLE_CALIBRATION_RESEARCH=false`で研究表示だけを停止可能
+
+検証ダッシュボードの「JRA / NAR 較正研究」から確認できます。
 
 ## Compatibility
 
