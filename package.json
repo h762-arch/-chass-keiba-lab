@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test regression.test.mjs tests/*.test.mjs",
-    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --check jra-normalizer.js && node --check jra-model.js && node --check jra-adapter.js && node --check longshot-scenario.js && node --check similarity-intelligence.mjs && node --check meeting-discovery.mjs && node --check research-storage-sync.mjs && node --check mcp/bridge-client.mjs && node --check mcp/chass-tools.mjs && node --check mcp/server.mjs && node --test regression.test.mjs tests/*.test.mjs"
+    "check": "node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --check jra-normalizer.js && node --check jra-model.js && node --check jra-adapter.js && node --check longshot-scenario.js && node --check calibration-research.js && node --check similarity-intelligence.mjs && node --check meeting-discovery.mjs && node --check research-storage-sync.mjs && node --check mcp/bridge-client.mjs && node --check mcp/chass-tools.mjs && node --check mcp/server.mjs && node --test regression.test.mjs tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

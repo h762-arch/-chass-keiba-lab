@@ -2,6 +2,7 @@
 'use strict';
 const APP_VERSION='10.0.1';
 const ENABLE_LONGSHOT_SCENARIO=typeof window==='undefined'||window.CHASS_FEATURES?.ENABLE_LONGSHOT_SCENARIO!==false;
+const ENABLE_CALIBRATION_RESEARCH=typeof window==='undefined'||window.CHASS_FEATURES?.ENABLE_CALIBRATION_RESEARCH!==false;
 const BACKUP_SCHEMA_VERSION=1;
 const $=id=>document.getElementById(id);
 const KEY='chass_v90_races';
@@ -18,7 +19,7 @@ let quickExpanded=false;
 let predictionViewMode='original';
 const historicalSimilarityCache=new Map(),historicalSimilarityFlights=new Map();
 const dashboardUi={
- open:{models:true,calibration:false,volatility:false,predictionAxes:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
+ open:{models:true,calibration:false,calibrationResearch:false,volatility:false,predictionAxes:false,failures:true,distance:false,popularity:false,ev:false,diagnosis:false,saved:false},
  diagnosisFilter:'',raceType:'local',track:'all',period:'all',quality:'all',analysisQuality:'AB',modelVersion:'all',format:'all',raceSort:'new',raceLimit:10
 };
 const NAR_TRACKS={
@@ -1555,6 +1556,16 @@ function renderPredictionAxisComparison(races){
  return dashAccordion('predictionAxes','Prediction Axis比較',c.candidate.races?`${c.candidate.races}R`:'蓄積待ち',body,{summaryText:'候補モデル・未採用'});
 }
 
+function renderCalibrationResearch(records){
+ const engine=typeof window!=='undefined'?window.CHASS_CALIBRATION_RESEARCH:null;
+ if(!ENABLE_CALIBRATION_RESEARCH||!engine)return '';
+ const report=engine.buildCalibrationResearch(records,{minRaces:50});
+ const metric=value=>value==null?'—':Number(value).toFixed(3);
+ const seconds=value=>value==null?'—':`${Number(value).toFixed(2)}秒`;
+ const organizationCard=organization=>{const data=report.organizations[organization],candidate=data.calibrationCandidates.win,topCandidate=data.calibrationCandidates.top3,eligibility=candidate.eligible||topCandidate.eligible?'Shadow比較可能':'50R未満・参考度低';return `<article class="calibration-research-card"><header><strong>${organization}</strong><span>${data.raceCount}R｜${eligibility}</span></header><div class="calibration-research-grid"><div><span>勝率 Brier</span><b>${metric(data.win.brier)}</b></div><div><span>勝率 Log Loss</span><b>${metric(data.win.logLoss)}</b></div><div><span>勝率 ECE</span><b>${metric(data.win.ece)}</b></div><div><span>TOP3 Brier</span><b>${metric(data.top3.brier)}</b></div><div><span>TOP3 Log Loss</span><b>${metric(data.top3.logLoss)}</b></div><div><span>TOP3 ECE</span><b>${metric(data.top3.ece)}</b></div><div><span>TIME MAE</span><b>${seconds(data.time.mae)}</b></div><div><span>TIME 中央値誤差</span><b>${seconds(data.time.medianError)}</b></div><div><span>TIME 最大誤差</span><b>${seconds(data.time.maxAbsoluteError)}</b></div></div><p>将来側30%で比較：勝率 ${esc(candidate.recommendedCandidate||'採用候補なし')}／TOP3 ${esc(topCandidate.recommendedCandidate||'採用候補なし')}</p><small>時間順不整合の除外 ${data.excludedTemporalCount}R。候補はtemperature・logistic・isotonic。自動昇格なし。</small></article>`};
+ return dashAccordion('calibrationResearch','JRA / NAR 較正研究','Shadow',`<div class="calibration-research-list">${organizationCard('JRA')}${organizationCard('NAR')}</div><div class="metric-definition">固定Prediction Snapshotと後続Resultだけを時間順に評価します。本番の12,000回Simulation、TIME係数、AI確率は変更しません。50R未満は候補比較を行わず、50〜99Rも研究用低サンプルとして扱います。</div>`,{summaryText:'Brier・Log Loss・ECE・TIME'});
+}
+
 function renderDashboard(){
  renderAutoResultQueue();
  renderCloudSyncState();
@@ -1622,7 +1633,7 @@ function renderDashboard(){
  const versionHtml=dashAccordion('modelVersions','モデルバージョン別',`${Object.keys(versions).length}件`,Object.entries(versions).map(([version,g])=>{const vr=analysisRaces.filter(r=>(r.predictionSnapshot?.modelVersion||r.modelVersion||'Legacy')===version),ls=compareLongshotModels(vr).next;return `<div class="condition-row"><strong>${esc(version)}</strong><span>${g.n}R・${sampleLabel(g.n)}</span><span>FINAL勝 ${pct(g.win,g.n)} / TOP3 ${pct(g.top3,g.n)}</span><span>TIME ${g.time.length?mean(g.time).toFixed(2)+'秒':'—'} / 穴TOP3 ${pct(ls.top3,ls.candidates)}</span><span>7人気以下捕捉 ${ls.target7?pct(ls.capture7,ls.target7):'—'} / 10人気以下 ${ls.target10?pct(ls.capture10,ls.target10):'—'}</span></div>`}).join('')||'<p class="muted">データなし</p>',{summaryText:Object.entries(versions).sort((a,b)=>b[1].n-a[1].n)[0]?.[0]||''});
  const longshotComparison=compareLongshotModels(analysisRaces),comparisonRows=Object.values(longshotComparison).map(g=>`<div class="calibration-row"><strong>${g.label}</strong><span>候補 ${g.candidates}頭 / TOP3 ${g.top3} / 勝 ${g.win}</span><span>7人気以下捕捉 ${g.target7?pct(g.capture7,g.target7):'—'}（${g.capture7}/${g.target7}）・10人気以下 ${g.target10?pct(g.capture10,g.target10):'—'}（${g.capture10}/${g.target10}）・単勝ROI ${g.roiN?(g.roiReturn/g.roiN*100).toFixed(1)+'%':'—'}</span></div>`).join(''),comparisonHtml=dashAccordion('longshotCompare','穴馬ロジック比較','シミュレーション',`${comparisonRows}<div class="metric-definition">保存済みの予想Snapshotを読み取り専用で比較します。過去データは書き換えず、結果から穴馬判定を作り直すこともありません。</div>`,{summaryText:`新 TOP3 ${longshotComparison.next.top3}頭`});
  const excluded=races.length-analysisRaces.length,analysisNote=`<div class="analysis-scope">検証母集団 ${races.length}R｜分析対象 ${analysisRaces.length}R｜品質フィルター除外 ${excluded}R</div>`;
- $('dashModels').innerHTML=`${analysisNote}<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${renderIntegrityAudit(races)}${renderVolatilityCalibration(analysisRaces)}${renderPredictionAxisComparison(analysisRaces)}${modelHtml}${versionHtml}${calHtml}${timeHtml}${comparisonHtml}${renderFailureAnalysis(analysisRaces)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
+ $('dashModels').innerHTML=`${analysisNote}<div class="dashboard-expand-tools"><span>詳細分析</span><button type="button" data-dash-expand="all">すべて開く</button><button type="button" data-dash-expand="none">すべて閉じる</button></div>${renderIntegrityAudit(races)}${renderVolatilityCalibration(analysisRaces)}${renderPredictionAxisComparison(analysisRaces)}${modelHtml}${versionHtml}${calHtml}${renderCalibrationResearch(analysisRaces)}${timeHtml}${comparisonHtml}${renderFailureAnalysis(analysisRaces)}<div class="condition-grid">${renderGroupTable('距離別',adv.byDistance,'distance')}${renderGroupTable('人気帯別',adv.byPopularity,'popularity')}${renderGroupTable('期待値帯別',adv.byEvBand,'ev')}</div>`;
  $('dashRaces').innerHTML=renderSavedRaces(races);
  bindDashboardUi();
 }
