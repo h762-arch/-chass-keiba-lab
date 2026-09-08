@@ -51,9 +51,9 @@ test('authorized latest context is compact and reports freshness',async()=>{
   const db=new FakeD1(),{response,body}=await json(await handleChassBridge(req('/api/chass/v1/context'),envFor(db)));
   assert.equal(response.status,200);assert.equal(body.ok,true);assert.equal(body.probabilityScale,'0-1');assert.ok(body.responseBytes<100_000);assert.equal(body.latestPredictions.page.length,2);assert.equal(body.latestPredictions.page[0].raceNo,9);assert.equal(body.researchMetrics.validatedRaceCount,1);assert.ok(body.longshotMetrics);assert.ok(body.volatilityMetrics);
 });
-test('race scope returns one race with Original and Live separated',async()=>{
+test('race scope keeps Original and Live separated while result reconciles false scratch',async()=>{
   const db=new FakeD1(),{body}=await json(await handleChassBridge(req('/api/chass/v1/race?raceId=2026-08-31%7C%E5%A4%A7%E4%BA%95%7C8'),envFor(db)));
-  assert.equal(body.race.raceNo,8);assert.equal(body.race.original.horses[0].aiWinProbability,0.22);assert.equal(body.race.liveAdjusted.horses[0].aiWinProbability,0.579);assert.equal(body.race.scratch.scratchCount,1);
+  assert.equal(body.race.raceNo,8);assert.equal(body.race.original.horses[0].aiWinProbability,0.22);assert.equal(body.race.liveAdjusted.horses[0].aiWinProbability,0.579);assert.equal(body.race.scratch.scratchCount,0);assert.equal(body.race.original.horses.find(h=>h.horseNo===3).status,'active');
   const missing=body.race.original.horses.find(h=>h.horseNo===3);assert.equal(missing.predictedTimeSeconds,null);assert.equal(missing.predictedTimeMissingReason,'time_missing_no_history');
 });
 test('race can be found by date, track and race number',async()=>{
