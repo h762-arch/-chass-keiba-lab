@@ -8,10 +8,11 @@ Cloudflare D1へ保存済みのSnapshotだけを公開参照します。Bearer�
 - `GET /api/chass/v1/public/latest`
 - `GET /api/chass/v1/public/recent?limit=10`
 - `GET /api/chass/v1/public/races?date=YYYY-MM-DD&track=大井`
+- `GET /api/chass/v1/public/day?date=YYYY-MM-DD&track=大井&organization=NAR`
 - `GET /api/chass/v1/public/race?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
 - `GET /api/chass/v1/public/result?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
 
-`race`と`latest`は`format=compact`に対応します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
+`race`と`latest`は`format=compact`に対応します。`day`は通信量を抑えるためcompactが既定で、`format=full`を明示した場合だけ完全Schemaを返します。`day`は指定日・指定競馬場の保存済み予想を最大12R、レース番号順で一括取得します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
 
 環境変数`ENABLE_PUBLIC_API=false`で公開経路だけ停止できます。初期値は有効です。公開可否を決める前に、D1へ個人情報や非公開情報を保存していないことを運用側でも確認してください。
 
@@ -312,29 +313,6 @@ D1をOperational Source of Truthのまま維持し、D1保存成功後に研究�
 - 同期は `ENABLE_DRIVE_SYNC=true` / `ENABLE_AIRTABLE_INDEX=true` の個別Feature Flagで有効化します。初期値は両方OFFです。
 
 ローカルのキー名は `.dev.vars.example` を参照し、実値は `wrangler secret put` で登録してください。Secretを`.dev.vars`以外のソース、ブラウザ、GitHub、APIレスポンスへ置かないでください。先に `migrations/0004_research_storage_sync.sql` をD1へ適用します。
-
-### Google Drive本番有効化
-
-Drive OAuthはWorker内だけで実行します。対象GoogleアカウントでDrive APIを有効化し、offline accessで取得したRefresh Tokenと、書き込み可能な既存Root Folder IDを次の名前で設定します。値はコマンドライン引数や設定ファイルへ書かず、各コマンドの入力プロンプトへ貼り付けてください。
-
-```sh
-npx wrangler secret put GOOGLE_DRIVE_CLIENT_ID
-npx wrangler secret put GOOGLE_DRIVE_CLIENT_SECRET
-npx wrangler secret put GOOGLE_DRIVE_REFRESH_TOKEN
-npx wrangler secret put GOOGLE_DRIVE_ROOT_FOLDER_ID
-npx wrangler secret put ENABLE_DRIVE_SYNC
-```
-
-最後の値は `true` です。Airtableを同時に有効化しない場合は `ENABLE_AIRTABLE_INDEX` を未設定または `false` のままにします。緊急停止時は `ENABLE_DRIVE_SYNC` を `false` へ変更してください。
-
-```sh
-npx wrangler d1 migrations apply chass-keiba-research-db --remote
-npx wrangler deploy
-```
-
-デプロイ後、アプリの「AI連携API → Google Drive 研究保存 → Google Drive接続確認」を実行します。この確認はOAuth token取得と指定Root Folderのmetadata・書込権限確認だけを行い、テストファイルは作成しません。設定値そのものは画面へ返しません。
-
-接続成功後はD1のResearch Sync Queueを5分Cronが最大1件ずつ処理します。保存先は `JRA/Daily/YYYY/MM/YYYY-MM-DD-research.json` または `NAR/Daily/...` です。同一日・同一organizationはmanifestのfileIdを更新し、研究内容のcontentHashが同一ならDrive I/Oをスキップします。Drive障害時もD1保存と通常の予想・結果・Validationは成功扱いのままです。
 
 ## Phase 6: Longshot Scenario Intelligence（Shadow Mode）
 
