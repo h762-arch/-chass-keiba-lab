@@ -3,8 +3,8 @@
 ## 確認と変更
 
 - 現行コードの publicJson/publicText は100,000バイト超で413を返す。実運用の413本文は取得環境の制限で未確認。
-- day-ai既定出力を day-ai-light-1 に変更。馬ごとの重複キー・理由・重複サマリーを除去し、数値計算は既存 publicDayAi と共通。
-- JSONは馬ごとに改行。過去走/rawデータを公開しない。全馬を保持し、容量削減目的の切捨てはしない。
+- day-ai既定出力を day-ai-tabular-1 に変更。horseColumnsを一度だけ返し、各馬は同じ順序の配列にする。数値計算は既存 publicDayAi と共通。
+- 過去走/rawデータを公開しない。全馬・指定13項目を保持し、容量削減目的の切捨てはしない。
 - 旧詳細形式は format=full、既存テキスト形式は format=text で利用可能。旧既定スキーマに依存する利用者は format=full に移行が必要。
 - race-ai は既存の公開 race handlerを共有する詳細取得用エイリアス。day-ai各レースのdetailUrlから取得可能。
 - APIの100,000バイト安全制限は維持。極端に長いデータでは単一レースAPIを使用する。全データについて無条件の容量保証はしない。
@@ -16,13 +16,15 @@
 
 レース: raceNumber, raceName, raceVolatility, raceValueScore, favoriteReliability, horseCount, market, validation, detailUrl, horses。
 
-馬: horseNumber, horseName, abilityRank, score, winProb, top3Prob, odds, popularity, expectedValue, evRank, abilityPopularityGap, diamond, warning, mark, time, runnerStatus, oddsStatus。
+horseColumns: horseNumber, horseName, abilityRank, score, winProb, top3Prob, odds, popularity, expectedValue, evRank, abilityPopularityGap, diamond, warning。
+
+horsesの各要素はhorseColumnsと同じ順番の配列。例: `[1,"馬名",1,92,0.2,0.5,4.5,2,0.9,3,1,"💎",null]`。
 
 市場の鮮度・取得率・取消状態・確率検査を維持。期待値は倍率（1.0=100%）。欠損はnull。
 
 ## テスト
 
-- 12R×18頭=216頭の合成fixture: 旧詳細形式413、軽量版200・69,709バイト。
+- 12R×18頭=216頭の合成fixture: 旧詳細形式413、軽量版200・17,322バイト。
 - 全12R・216頭保持、raw情報非公開、各馬の出力値と旧詳細形式が一致。
 - race-ai詳細取得、404、POST/PUT/PATCH/DELETEの405、HEAD本文なしを確認。
 - npm run check: 301/301成功、失敗0。

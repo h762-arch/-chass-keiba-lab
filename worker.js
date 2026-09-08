@@ -472,13 +472,11 @@ function publicDay(races,{date,track,compact=true}={}){const ordered=[...races].
 function publicPopularityMap(horses){const active=horses.filter(h=>h.runnerStatus==='active'),complete=active.length>0&&active.every(h=>publicPositiveNumber(h.odds)!=null),map=new Map();if(complete){[...active].sort((a,b)=>a.odds-b.odds||Number(a.no)-Number(b.no)).forEach((horse,index)=>map.set(horse.no,index+1));return {map,source:'derived_from_saved_odds'}}for(const horse of horses){const popularity=publicPositiveInteger(horse.pop);if(publicPositiveNumber(horse.odds)!=null&&popularity!=null)map.set(horse.no,popularity)}return {map,source:map.size?'saved_market_snapshot':'unavailable'}}
 function publicDayAiLight(day){
  const pick=(object,keys)=>Object.fromEntries(keys.map(key=>[key,object[key]??null]));
+ const horseColumns=['horseNumber','horseName','abilityRank','score','winProb','top3Prob','odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'];
  return {...pick(day,['ok','apiVersion','mode','date','track','organization','raceCount','generatedAt']),
-  schemaVersion:'day-ai-light-1',format:'light',meta:day.meta,
-  races:day.races.map(race=>({...pick(race,['raceNumber','raceName','raceVolatility','raceValueScore','favoriteReliability','horseCount']),
-   market:pick(race.market,['oddsStatus','oddsType','oddsFetchedAt','oddsCoverage','evRankStatus']),
-   validation:race.validation,
-   detailUrl:'/api/chass/v1/public/race-ai?'+new URLSearchParams({date:day.date,track:day.track,organization:race.organization,race:String(race.raceNumber)}),
-   horses:race.horses.map(horse=>pick(horse,['horseNumber','horseName','abilityRank','score','winProb','top3Prob','odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning','mark','time','runnerStatus','oddsStatus']))
+  schemaVersion:'day-ai-tabular-1',format:'tabular',horseColumns,
+  races:day.races.map(race=>({...pick(race,['raceNumber','raceName','raceVolatility','raceValueScore','favoriteReliability']),
+   horses:race.horses.map(horse=>horseColumns.map(key=>horse[key]??null))
   }))};
 }
 function publicReasons(value){if(Array.isArray(value))return value.map(String).filter(Boolean);return value?[String(value)]:[]}
@@ -520,7 +518,7 @@ export async function handlePublicApi(request,env){
    if(output==='full')return publicJson(day,{cache,head,pretty:true});
    const light=publicDayAiLight(day);
    // One horse per line: valid JSON, readable without pretty-print's size overhead.
-   const text=JSON.stringify(light).replaceAll('},{','},\n{');
+   const text=JSON.stringify(light);
    return publicText(text,{cache,head,contentType:'application/json; charset=utf-8'});
   }
   if(u.pathname.endsWith('/day')){const races=mapped.filter(r=>r.date===date&&r.track===track&&(!filterOrg||publicOrganization(r)===filterOrg)&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested day were not found.',404,publicCorsHeaders('no-store'),head);const compact=u.searchParams.get('format')!=='full',allFinal=races.every(r=>!!r.result);return publicJson(publicDay(races,{date,track,compact}),{cache:allFinal?'public, max-age=3600, s-maxage=3600':'public, max-age=30, s-maxage=30',head,pretty:true})}

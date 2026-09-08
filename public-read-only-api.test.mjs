@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import worker,{handlePublicApi,normalizePublicTrack} from '../worker.js';
 
-test('light day keeps 12 races and 216 horses under 100KB without raw details',async()=>{
+test('light day keeps 12 races and 216 horses under 50KB without raw details',async()=>{
  const rows=Array.from({length:12},(_,i)=>{
   const r=row('大井','2026-09-01',i+1),p=JSON.parse(r.prediction_json);
   p.horses=Array.from({length:18},(_,j)=>({...p.horses[j%2],horseNo:j+1,horseName:'テストホース'+(j+1),rawHtml:'DO_NOT_EXPOSE'.repeat(1000)}));
@@ -13,12 +13,14 @@ test('light day keeps 12 races and 216 horses under 100KB without raw details',a
  const response=await handlePublicApi(request(url),{DB:db}),text=await response.text(),data=JSON.parse(text),bytes=Buffer.byteLength(text);
  assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/^application\/json/);
  assert.equal(data.raceCount,12);assert.equal(data.races.reduce((n,r)=>n+r.horses.length,0),216);
- assert.ok(bytes<100000);assert.equal(Number(response.headers.get('X-CHASS-Response-Bytes')),bytes);
- assert.ok(text.split('\n').length>=216);assert.ok(!text.includes('DO_NOT_EXPOSE'));
- for(const r of data.races)for(const h of r.horses){assert.ok('winProb' in h);assert.ok('runnerStatus' in h);assert.ok(!('diamondReasons' in h));assert.ok(!('no' in h))}
+ assert.ok(bytes<50000);assert.equal(Number(response.headers.get('X-CHASS-Response-Bytes')),bytes);
+ assert.ok(!text.includes('DO_NOT_EXPOSE'));
+ const horseKeys=['horseNumber','horseName','abilityRank','score','winProb','top3Prob','odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'];
+ assert.deepEqual(data.horseColumns,horseKeys);assert.equal(data.schemaVersion,'day-ai-tabular-1');
+ for(const r of data.races){assert.deepEqual(Object.keys(r),['raceNumber','raceName','raceVolatility','raceValueScore','favoriteReliability','horses']);for(const h of r.horses)assert.equal(h.length,horseKeys.length)}
  const old=await handlePublicApi(request(url+'&format=full'),{DB:new PublicD1(rows)});
  assert.equal(old.status,413);
- const detail=await handlePublicApi(request(data.races[0].detailUrl),{DB:new PublicD1(rows)});
+ const detail=await handlePublicApi(request('/api/chass/v1/public/race-ai?date=2026-09-01&track=大井&organization=NAR&race=1'),{DB:new PublicD1(rows)});
  assert.equal(detail.status,200);assert.equal((await detail.json()).horses.length,18);assert.equal(db.writes,0);
  console.log('LIGHT_DAY_216_HORSES_BYTES='+bytes);
 });
@@ -27,12 +29,12 @@ test('light market values equal full values; detail alias and HEAD remain read-o
  const base='/api/chass/v1/public/day-ai?date=2026-09-01&track=大井&organization=NAR';
  const fetch=async(path,method='GET')=>handlePublicApi(request(path,method),{DB:new PublicD1([row('大井','2026-09-01',1)])});
  const light=await (await fetch(base)).json(),full=await (await fetch(base+'&format=full')).json();
- for(const h of light.races[0].horses){
-  const f=full.races[0].horses.find(x=>x.horseNumber===h.horseNumber);
-  for(const key of Object.keys(h))assert.deepEqual(h[key],f[key],key);
+ for(const row of light.races[0].horses){
+  const h=Object.fromEntries(light.horseColumns.map((key,index)=>[key,row[index]])),f=full.races[0].horses.find(x=>x.horseNumber===h.horseNumber);
+  for(const key of light.horseColumns)assert.deepEqual(h[key],f[key],key);
  }
  assert.equal(await (await fetch(base,'HEAD')).text(),'');
- const detail=light.races[0].detailUrl;
+ const detail='/api/chass/v1/public/race-ai?date=2026-09-01&track=大井&organization=NAR&race=1';
  for(const method of ['POST','PUT','PATCH','DELETE'])assert.equal((await fetch(detail,method)).status,405);
  assert.equal((await fetch(detail.replace('race=1','race=12'))).status,404);
 });
