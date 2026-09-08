@@ -1,3 +1,4 @@
+import {parseTanFuku} from './worker.js';
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -131,31 +132,6 @@ function parseResult(html){
     if(tm)actualTimes[horseNo]=tm[0];
   }
   return {finishOrder:order.filter(Boolean),actualTimes};
-}
-function parseTanFuku(html){
-  const out=[];
-  for(const row of tableRows(html)){
-    const c=row.cells;
-    if(c.length<4)continue;
-
-    // Expected structure: 枠番 / 馬番 / 馬名 / 単勝 / 複勝...
-    const frame=String(c[0]||"").match(/^(\d{1,2})$/)?.[1];
-    const no=String(c[1]||"").match(/^(\d{1,2})$/)?.[1];
-    if(!no||Number(no)<1||Number(no)>18)continue;
-
-    const name=String(c[2]||"").trim();
-    const m=String(c[3]||"").replace(/,/g,"").match(/(\d+(?:\.\d+)?)/);
-    if(!m)continue;
-    const odds=Number(m[1]);
-    if(!Number.isFinite(odds)||odds<1||odds>=1000)continue;
-
-    out.push({frameNo:frame?Number(frame):null,horseNo:String(Number(no)),horseName:name,odds});
-  }
-  const byNo=new Map();
-  for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
-  const result=[...byNo.values()];
-  [...result].sort((a,b)=>a.odds-b.odds).forEach((x,i)=>x.popularity=i+1);
-  return result;
 }
 function narUrls(code,date,race){
   const q=new URLSearchParams({k_babaCode:code,k_raceDate:String(date).replaceAll("-","/"),k_raceNo:race}).toString();
