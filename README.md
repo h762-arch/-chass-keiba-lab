@@ -15,7 +15,9 @@ Cloudflare D1へ保存済みのSnapshotだけを公開参照します。Bearer�
 
 `race`と`latest`は`format=compact`に対応します。`day`は通信量を抑えるためcompactが既定で、`format=full`を明示した場合だけ完全Schemaを返します。`day`は指定日・指定競馬場の保存済み予想を最大12R、レース番号順で一括取得し、AIやテキスト取得環境が内容を行単位で展開できるよう改行・インデント付きJSONで返します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
 
-`day-ai`はChatGPT等の行指向取得環境向けです。`text/plain`で1レース1行・1頭1行を返し、保存済みの能力値と期待値からレスポンス表示用の`abilityRank`と`evRank`を算出します。予想SnapshotやD1は変更しません。アプリの「1日一括API URLをコピー」はこの経路を使用します。
+`day-ai`はChatGPT等の1日比較向けです。通常は改行付き`application/json`を返し、保存済みSnapshotから`abilityRank`、`evRank`、`abilityPopularityGap`、レース別Top3と市場サマリーを生成します。旧来の1レース1行・1頭1行形式は`format=text`で利用できます。
+
+市場値は保存済みMarket Snapshotだけを使用します。`0`や空値は未取得として`null`を返し、全出走馬の保存済み単勝オッズが揃う場合だけ人気順位を安定計算します。期待値はAPIレスポンス上で`winProb × odds`（1.00=100%）として統一します。Public APIから外部オッズ取得、Prediction再計算、D1書き込みは行いません。💎・⚠️は保存済みCHASS判定だけを返し、API独自の推測生成はしません。
 
 環境変数`ENABLE_PUBLIC_API=false`で公開経路だけ停止できます。初期値は有効です。公開可否を決める前に、D1へ個人情報や非公開情報を保存していないことを運用側でも確認してください。
 

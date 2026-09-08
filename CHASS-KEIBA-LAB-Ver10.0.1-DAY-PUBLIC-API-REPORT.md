@@ -27,8 +27,11 @@ Example:
 - Returns up to 12 saved Prediction Snapshots for one date and track.
 - Sorts races by race number.
 - Returns multiline, indented JSON so AI and line-oriented text readers can expand the response body.
-- `day-ai` returns `text/plain` with one race per `RACE` line and one horse per `HORSE` line.
-- `day-ai` includes response-only `abilityRank` and `evRank` derived from saved score and expected value.
+- `day-ai` returns multiline JSON by default; `format=text` preserves the line-oriented compatibility format.
+- Missing/zero odds, popularity and expected value are serialized as `null`, never as a fabricated zero.
+- With saved odds, `day-ai` derives popularity, `expectedValue = winProb × odds`, `expectedValuePercent`, `evRank`, and `abilityPopularityGap` for the response only.
+- Race summaries include ability/EV Top3, saved diamond/warning horses, saved volatility, response-only race value score, and favorite reliability.
+- Public API remains D1 snapshot-only: it performs no external odds fetch, prediction recalculation, signal invention, or D1 write.
 - Reads saved D1 data only.
 - Performs no external race fetch, prediction calculation, or D1 write.
 - Returns 400 for a missing/invalid date or track.
