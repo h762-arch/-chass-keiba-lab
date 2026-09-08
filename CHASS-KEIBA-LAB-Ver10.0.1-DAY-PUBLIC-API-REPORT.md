@@ -4,6 +4,10 @@
 
 `GET /api/chass/v1/public/day`
 
+ChatGPT line-oriented endpoint:
+
+`GET /api/chass/v1/public/day-ai`
+
 Required parameters:
 
 - `date=YYYY-MM-DD`
@@ -22,6 +26,9 @@ Example:
 
 - Returns up to 12 saved Prediction Snapshots for one date and track.
 - Sorts races by race number.
+- Returns multiline, indented JSON so AI and line-oriented text readers can expand the response body.
+- `day-ai` returns `text/plain` with one race per `RACE` line and one horse per `HORSE` line.
+- `day-ai` includes response-only `abilityRank` and `evRank` derived from saved score and expected value.
 - Reads saved D1 data only.
 - Performs no external race fetch, prediction calculation, or D1 write.
 - Returns 400 for a missing/invalid date or track.

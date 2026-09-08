@@ -9,10 +9,13 @@ Cloudflare D1へ保存済みのSnapshotだけを公開参照します。Bearer�
 - `GET /api/chass/v1/public/recent?limit=10`
 - `GET /api/chass/v1/public/races?date=YYYY-MM-DD&track=大井`
 - `GET /api/chass/v1/public/day?date=YYYY-MM-DD&track=大井&organization=NAR`
+- `GET /api/chass/v1/public/day-ai?date=YYYY-MM-DD&track=大井&organization=NAR`
 - `GET /api/chass/v1/public/race?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
 - `GET /api/chass/v1/public/result?date=YYYY-MM-DD&track=大井&race=10&organization=NAR`
 
-`race`と`latest`は`format=compact`に対応します。`day`は通信量を抑えるためcompactが既定で、`format=full`を明示した場合だけ完全Schemaを返します。`day`は指定日・指定競馬場の保存済み予想を最大12R、レース番号順で一括取得します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
+`race`と`latest`は`format=compact`に対応します。`day`は通信量を抑えるためcompactが既定で、`format=full`を明示した場合だけ完全Schemaを返します。`day`は指定日・指定競馬場の保存済み予想を最大12R、レース番号順で一括取得し、AIやテキスト取得環境が内容を行単位で展開できるよう改行・インデント付きJSONで返します。`organization`は`JRA`または`NAR`です。競馬場から一意に判定できる場合は省略できます。公開配下は`GET`、`HEAD`、`OPTIONS`のみ許可し、それ以外は405です。
+
+`day-ai`はChatGPT等の行指向取得環境向けです。`text/plain`で1レース1行・1頭1行を返し、保存済みの能力値と期待値からレスポンス表示用の`abilityRank`と`evRank`を算出します。予想SnapshotやD1は変更しません。アプリの「1日一括API URLをコピー」はこの経路を使用します。
 
 環境変数`ENABLE_PUBLIC_API=false`で公開経路だけ停止できます。初期値は有効です。公開可否を決める前に、D1へ個人情報や非公開情報を保存していないことを運用側でも確認してください。
 

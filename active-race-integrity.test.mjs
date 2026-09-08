@@ -69,7 +69,7 @@ test('Public API URL is generated from the confirmed active race',async()=>{
 
 test('day API URL is generated from the confirmed active date track and organization',async()=>{
   const {c}=await loadCore();c.setState({race:jraRace,predictionSnapshot:prediction(jraRace)});const url=new URL(c.currentPublicDayApiUrl());
-  assert.equal(url.pathname,'/api/chass/v1/public/day');assert.equal(url.searchParams.get('date'),'2026-09-07');assert.equal(url.searchParams.get('track'),'札幌');assert.equal(url.searchParams.get('organization'),'JRA');assert.equal(url.searchParams.get('format'),'compact');
+  assert.equal(url.pathname,'/api/chass/v1/public/day-ai');assert.equal(url.searchParams.get('date'),'2026-09-07');assert.equal(url.searchParams.get('track'),'札幌');assert.equal(url.searchParams.get('organization'),'JRA');
 });
 
 test('active layer invariant checks both organization and race id',async()=>{
