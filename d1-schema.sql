@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_races_updated_at ON races(updated_at);
+CREATE INDEX IF NOT EXISTS idx_races_status_updated_at ON races(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_results_race_id ON results(race_id);
 
 CREATE TABLE IF NOT EXISTS meeting_calendar (
