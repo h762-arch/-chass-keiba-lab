@@ -73,3 +73,11 @@ test('active layer invariant checks both organization and race id',async()=>{
   assert.equal(c.layerMatchesActive(record,{raceId:'2026-09-07|札幌|1',organization:'NAR'}),false);
   assert.equal(c.layerMatchesActive(record,{raceId:'2026-09-07|札幌|2',organization:'JRA'}),false);
 });
+
+test('empty validation fields do not display race-specific sample results',async()=>{
+  const html=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(html,/id="actualWeather"[^>]*placeholder="未入力"/);
+  assert.match(html,/id="actualTimesInput"[^>]*placeholder="未入力"/);
+  assert.doesNotMatch(html,/placeholder="雨"/);
+  assert.doesNotMatch(html,/placeholder="5=1:59\.6/);
+});
