@@ -46,10 +46,12 @@ function cleanText(html=""){
 }
 function tableRows(html=""){
   return [...String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>{
-    const cells=[...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(x=>cleanText(x[1]));
-    return {cells,text:cells.join(" ")};
+    const blocks=[...m[1].matchAll(/<t[dh]\b([^>]*)>([\s\S]*?)<\/t[dh]>/gi)].map(x=>({attrs:x[1]||'',html:x[2],text:cleanText(x[2])})),cells=blocks.map(x=>x.text);
+    return {cells,blocks,text:cells.join(" ")};
   });
 }
+function currentStatusColumnIndex(rows=[]){for(const row of rows){const horseNo=row.cells.findIndex(x=>/^馬番$/.test(String(x).replace(/\s+/g,''))),horseName=row.cells.findIndex(x=>/^馬名$/.test(String(x).replace(/\s+/g,''))),status=row.cells.findIndex(x=>/^(?:変更情報|変更|出走状態|競走状態|状態)$/.test(String(x).replace(/\s+/g,'')));if(horseNo>=0&&horseName>=0&&status>=0)return {index:status,columnCount:row.cells.length}}return null}
+function currentStatusText(row,statusColumn=null){const attributed=(row?.blocks||[]).find(block=>/(?:class|id)\s*=\s*["'][^"']*(?:change|henkou|status|scratch|cancel|jogai|torikeshi)[^"']*["']/i.test(block.attrs||''));if(attributed)return cleanText(attributed.text||attributed.html);const index=statusColumn?.index;return Number.isInteger(index)&&row?.cells?.length===statusColumn.columnCount&&index<row.cells.length?cleanText(row.cells[index]):''}
 async function fetchText(url,{timeoutMs=15000}={}){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);try{const r=await fetch(url,{headers:{
     "user-agent":`Mozilla/5.0 (compatible; ChassKeibaLab/${VERSION})`,
@@ -85,8 +87,8 @@ function parseRaceMeta(html){
   return {raceName,distance,weather,trackCondition,postTime,surface:/芝\s*\d{3,4}\s*m/.test(text)?"芝":"ダート"};
 }
 function parseRaceCard(html){
-  const out=[];
-  for(const row of tableRows(html)){
+  const rows=tableRows(html),statusIndex=currentStatusColumnIndex(rows),out=[];
+  for(const row of rows){
     const c=row.cells;if(c.length<3)continue;
     let no=null,name="",start=0;
     if(/^\d{1,2}$/.test(String(c[1]||""))&&Number(c[1])>=1&&Number(c[1])<=18){no=String(Number(c[1]));name=String(c[2]||"");start=3;}
@@ -101,7 +103,7 @@ function parseRaceCard(html){
     const texts=c.slice(start).filter(x=>x&&!/^\d+(?:\.\d+)?$/.test(String(x)));
     if(texts.length)jockey=String(texts[0]||"").trim();
     if(texts.length>1)trainer=String(texts[texts.length-1]||"").trim();
-    const horseStatus=horseStatusFromText(row.text);out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer,horseStatus,statusText:horseStatus==='active'?'':row.text,eligible:horseStatus==='active'});
+    const currentText=currentStatusText(row,statusIndex),horseStatus=horseStatusFromText(currentText);out.push({horseNo:no,horseName:name.trim(),weight,sexAge,jockey,trainer,horseStatus,statusText:horseStatus==='active'?'':currentText,eligible:horseStatus==='active'});
   }
   const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
   return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));
