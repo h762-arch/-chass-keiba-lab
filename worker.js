@@ -459,7 +459,7 @@ function publicOrganization(race){const explicit=String(race?.organization||'').
 function publicError(code,message,status,headers,head=false){return new Response(head?null:JSON.stringify({ok:false,error:{code,message}}),{status,headers:{'content-type':'application/json; charset=utf-8',...headers}})}
 function publicCorsHeaders(cacheControl='public, max-age=30, s-maxage=30'){return {'access-control-allow-origin':'*','access-control-allow-methods':'GET, HEAD, OPTIONS','access-control-allow-headers':'Content-Type, Accept','cache-control':cacheControl,'content-type':'application/json; charset=utf-8','x-content-type-options':'nosniff'}}
 function publicRateAllowed(request){const key=request.headers.get('cf-connecting-ip')||'unknown',now=Date.now(),bucket=publicRateBuckets.get(key);if(!bucket||now-bucket.startedAt>=CHASS_PUBLIC_WINDOW_MS){publicRateBuckets.set(key,{startedAt:now,count:1});return true}bucket.count++;return bucket.count<=CHASS_PUBLIC_RATE_LIMIT}
-function publicJson(payload,{status=200,cache='public, max-age=30, s-maxage=30',head=false,extra={},pretty=false}={}){const text=JSON.stringify(payload,null,pretty?2:0),bytes=new TextEncoder().encode(text).length;if(bytes>100_000)return publicError('RESPONSE_TOO_LARGE','Use format=compact or reduce the requested limit.',413,publicCorsHeaders('no-store'),head);return new Response(head?null:text,{status,headers:{...publicCorsHeaders(cache),...extra}})}
+function publicJson(payload,{status=200,cache='public, max-age=30, s-maxage=30',head=false,extra={},pretty=false}={}){const text=JSON.stringify(payload,null,pretty?2:0),bytes=new TextEncoder().encode(text).length;if(bytes>100_000)return publicError('RESPONSE_TOO_LARGE','Use format=compact or format=tabular.',413,publicCorsHeaders('no-store'),head);return new Response(head?null:text,{status,headers:{...publicCorsHeaders(cache),'X-CHASS-Response-Bytes':String(bytes),...extra}})}
 function publicText(text,{status=200,cache='public, max-age=30, s-maxage=30',head=false,contentType='text/plain; charset=utf-8'}={}){const bytes=new TextEncoder().encode(text).length;if(bytes>100_000)return publicError('RESPONSE_TOO_LARGE','Use the single-race endpoint for this large response.',413,publicCorsHeaders('no-store'),head);return new Response(head?null:text,{status,headers:{...publicCorsHeaders(cache),'content-type':contentType,'X-CHASS-Response-Bytes':String(bytes)}})}
 function publicMarkLevel(mark,symbol){return (String(mark||'').match(new RegExp(symbol,'gu'))||[]).length}
 function publicFiniteNumber(value){if(value==null||value==='')return null;const n=Number(value);return Number.isFinite(n)?n:null}
@@ -478,6 +478,18 @@ function publicDayAiLight(day){
   races:day.races.map(race=>({...pick(race,['raceNumber','raceName','raceVolatility','raceValueScore','favoriteReliability']),
    horses:race.horses.map(horse=>horseColumns.map(key=>horse[key]??null))
   }))};
+}
+function publicDayAiCompact(day){
+ const round=(value,digits)=>value==null?null:Number(Number(value).toFixed(digits));
+ return {date:day.date,track:day.track,organization:day.organization,raceCount:day.raceCount,
+  totalHorseCount:day.meta.totalHorseCount,marketDataAvailable:day.meta.marketDataAvailable,oddsCoverage:day.meta.oddsCoverage,
+  generatedAt:day.generatedAt,apiVersion:day.apiVersion,format:'compact',
+  races:day.races.map(race=>({raceNumber:race.raceNumber,raceName:race.raceName,horseCount:race.horseCount,
+   raceVolatility:race.raceVolatility,raceValueScore:race.raceValueScore,favoriteReliability:race.favoriteReliability,
+   horses:race.horses.map(horse=>({horseNumber:horse.horseNumber,horseName:horse.horseName,abilityRank:horse.abilityRank,
+    score:round(horse.score,2),winProb:round(horse.winProb,4),top3Prob:round(horse.top3Prob,4),odds:round(horse.odds,1),
+    popularity:horse.popularity,expectedValue:round(horse.expectedValue,2),evRank:horse.evRank,
+    abilityPopularityGap:horse.abilityPopularityGap,diamond:horse.diamond,warning:horse.warning}))}))};
 }
 function publicReasons(value){if(Array.isArray(value))return value.map(String).filter(Boolean);return value?[String(value)]:[]}
 // Saved live odds older than five minutes (or without a trustworthy timestamp) are stale. Final odds do not expire.
@@ -515,11 +527,9 @@ export async function handlePublicApi(request,env){
    const cache='public, max-age=30, s-maxage=30',output=u.searchParams.get('format');
    if(output==='text')return publicText(publicDayAiText(races,{date,track}),{cache,head});
    const day=publicDayAi(races,{date,track});
-   if(output==='full')return publicJson(day,{cache,head,pretty:true});
-   const light=publicDayAiLight(day);
-   // One horse per line: valid JSON, readable without pretty-print's size overhead.
-   const text=JSON.stringify(light);
-   return publicText(text,{cache,head,contentType:'application/json; charset=utf-8'});
+   if(output==='compact')return publicJson(publicDayAiCompact(day),{cache,head});
+   if(output==='tabular')return publicJson(publicDayAiLight(day),{cache,head});
+   return publicJson(day,{cache,head,pretty:true});
   }
   if(u.pathname.endsWith('/day')){const races=mapped.filter(r=>r.date===date&&r.track===track&&(!filterOrg||publicOrganization(r)===filterOrg)&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested day were not found.',404,publicCorsHeaders('no-store'),head);const compact=u.searchParams.get('format')!=='full',allFinal=races.every(r=>!!r.result);return publicJson(publicDay(races,{date,track,compact}),{cache:allFinal?'public, max-age=3600, s-maxage=3600':'public, max-age=30, s-maxage=30',head,pretty:true})}
   const raceNo=Number(u.searchParams.get('race'));if(!Number.isInteger(raceNo)||raceNo<1||raceNo>12)return publicError('INVALID_PARAMETER','race is required as an integer from 1 to 12.',400,publicCorsHeaders('no-store'),head);

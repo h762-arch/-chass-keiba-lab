@@ -3,7 +3,7 @@
 ## 確認と変更
 
 - 現行コードの publicJson/publicText は100,000バイト超で413を返す。実運用の413本文は取得環境の制限で未確認。
-- day-ai既定出力を day-ai-tabular-1 に変更。horseColumnsを一度だけ返し、各馬は同じ順序の配列にする。数値計算は既存 publicDayAi と共通。
+- 既存day-ai既定出力は維持。`format=compact`を外部AI向け軽量オブジェクトJSON、`format=tabular`を超軽量な列＋行JSONとして追加。数値計算は既存 publicDayAi と共通。
 - 過去走/rawデータを公開しない。全馬・指定13項目を保持し、容量削減目的の切捨てはしない。
 - 旧詳細形式は format=full、既存テキスト形式は format=text で利用可能。旧既定スキーマに依存する利用者は format=full に移行が必要。
 - race-ai は既存の公開 race handlerを共有する詳細取得用エイリアス。day-ai各レースのdetailUrlから取得可能。
@@ -12,7 +12,13 @@
 
 ## スキーマ
 
-日単位: ok, apiVersion, mode, date, track, organization, raceCount, generatedAt, schemaVersion, format, meta, races。
+compact日単位: date, track, organization, raceCount, totalHorseCount, marketDataAvailable, oddsCoverage, generatedAt, apiVersion, format, races。
+
+compactレース: raceNumber, raceName, horseCount, raceVolatility, raceValueScore, favoriteReliability, horses。
+
+compact馬: horseNumber, horseName, abilityRank, score, winProb, top3Prob, odds, popularity, expectedValue, evRank, abilityPopularityGap, diamond, warning。確率は4桁、オッズは1桁、期待値は2桁に丸める。
+
+tabular日単位: ok, apiVersion, mode, date, track, organization, raceCount, generatedAt, schemaVersion, format, horseColumns, races。
 
 レース: raceNumber, raceName, raceVolatility, raceValueScore, favoriteReliability, horseCount, market, validation, detailUrl, horses。
 
@@ -24,7 +30,7 @@ horsesの各要素はhorseColumnsと同じ順番の配列。例: `[1,"馬名",1,
 
 ## テスト
 
-- 12R×18頭=216頭の合成fixture: 旧詳細形式413、軽量版200・17,322バイト。
+- 12R×18頭=216頭の合成fixture: 旧詳細形式413、compact版200・51,146バイト、tabular版200・17,322バイト。
 - 全12R・216頭保持、raw情報非公開、各馬の出力値と旧詳細形式が一致。
 - race-ai詳細取得、404、POST/PUT/PATCH/DELETEの405、HEAD本文なしを確認。
 - npm run check: 301/301成功、失敗0。
@@ -32,7 +38,7 @@ horsesの各要素はhorseColumnsと同じ順番の配列。例: `[1,"馬名",1,
 
 ## 変更ファイル
 
-worker.js（publicDayAiLight追加、publicTextとhandlePublicApi変更）、tests/public-read-only-api.test.mjs、本報告。
+worker.js（compact/tabular serializer、公開handler）、app.js（コピーURLへformat=compact）、tests/public-read-only-api.test.mjs、tests/active-race-integrity.test.mjs、本報告。
 予想モデル・UI・D1スキーマ・MCP・認証Bridgeは変更なし。
 
 ## 適用

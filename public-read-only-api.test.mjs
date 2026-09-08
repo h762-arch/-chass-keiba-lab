@@ -9,7 +9,7 @@ test('light day keeps 12 races and 216 horses under 50KB without raw details',as
   p.horses=Array.from({length:18},(_,j)=>({...p.horses[j%2],horseNo:j+1,horseName:'テストホース'+(j+1),rawHtml:'DO_NOT_EXPOSE'.repeat(1000)}));
   r.prediction_json=JSON.stringify(p);r.market_json=JSON.stringify({acquiredAt:'2026-09-01T09:05:00Z',horses:p.horses});return r;
  });
- const url='/api/chass/v1/public/day-ai?date=2026-09-01&track=大井&organization=NAR',db=new PublicD1(rows);
+ const url='/api/chass/v1/public/day-ai?date=2026-09-01&track=大井&organization=NAR&format=tabular',db=new PublicD1(rows);
  const response=await handlePublicApi(request(url),{DB:db}),text=await response.text(),data=JSON.parse(text),bytes=Buffer.byteLength(text);
  assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/^application\/json/);
  assert.equal(data.raceCount,12);assert.equal(data.races.reduce((n,r)=>n+r.horses.length,0),216);
@@ -18,20 +18,23 @@ test('light day keeps 12 races and 216 horses under 50KB without raw details',as
  const horseKeys=['horseNumber','horseName','abilityRank','score','winProb','top3Prob','odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'];
  assert.deepEqual(data.horseColumns,horseKeys);assert.equal(data.schemaVersion,'day-ai-tabular-1');
  for(const r of data.races){assert.deepEqual(Object.keys(r),['raceNumber','raceName','raceVolatility','raceValueScore','favoriteReliability','horses']);for(const h of r.horses)assert.equal(h.length,horseKeys.length)}
- const old=await handlePublicApi(request(url+'&format=full'),{DB:new PublicD1(rows)});
+ const old=await handlePublicApi(request(url.replace('format=tabular','format=full')),{DB:new PublicD1(rows)});
  assert.equal(old.status,413);
+ const compactResponse=await handlePublicApi(request(url.replace('format=tabular','format=compact')),{DB:new PublicD1(rows)}),compactText=await compactResponse.text(),compact=JSON.parse(compactText);
+ assert.equal(compactResponse.status,200);assert.equal(compact.raceCount,12);assert.equal(compact.races.reduce((n,r)=>n+r.horses.length,0),216);assert.ok(Buffer.byteLength(compactText)<100000);assert.ok(!compactText.includes('DO_NOT_EXPOSE'));
  const detail=await handlePublicApi(request('/api/chass/v1/public/race-ai?date=2026-09-01&track=大井&organization=NAR&race=1'),{DB:new PublicD1(rows)});
  assert.equal(detail.status,200);assert.equal((await detail.json()).horses.length,18);assert.equal(db.writes,0);
- console.log('LIGHT_DAY_216_HORSES_BYTES='+bytes);
+ console.log('TABULAR_DAY_216_HORSES_BYTES='+bytes);console.log('COMPACT_DAY_216_HORSES_BYTES='+Buffer.byteLength(compactText));
 });
 
-test('light market values equal full values; detail alias and HEAD remain read-only',async()=>{
- const base='/api/chass/v1/public/day-ai?date=2026-09-01&track=大井&organization=NAR';
+test('compact market values equal rounded full values; detail alias and HEAD remain read-only',async()=>{
+ const base='/api/chass/v1/public/day-ai?date=2026-09-01&track=大井&organization=NAR&format=compact';
  const fetch=async(path,method='GET')=>handlePublicApi(request(path,method),{DB:new PublicD1([row('大井','2026-09-01',1)])});
- const light=await (await fetch(base)).json(),full=await (await fetch(base+'&format=full')).json();
- for(const row of light.races[0].horses){
-  const h=Object.fromEntries(light.horseColumns.map((key,index)=>[key,row[index]])),f=full.races[0].horses.find(x=>x.horseNumber===h.horseNumber);
-  for(const key of light.horseColumns)assert.deepEqual(h[key],f[key],key);
+ const lightResponse=await fetch(base),light=await lightResponse.json(),full=await (await fetch(base.replace('format=compact','format=full'))).json();
+ assert.equal(light.format,'compact');assert.ok(Number(lightResponse.headers.get('X-CHASS-Response-Bytes'))<100000);
+ for(const h of light.races[0].horses){
+  const f=full.races[0].horses.find(x=>x.horseNumber===h.horseNumber);
+  assert.equal(h.horseNumber,f.horseNumber);assert.equal(h.winProb,Number(f.winProb.toFixed(4)));assert.equal(h.expectedValue,Number(f.expectedValue.toFixed(2)));
  }
  assert.equal(await (await fetch(base,'HEAD')).text(),'');
  const detail='/api/chass/v1/public/race-ai?date=2026-09-01&track=大井&organization=NAR&race=1';
