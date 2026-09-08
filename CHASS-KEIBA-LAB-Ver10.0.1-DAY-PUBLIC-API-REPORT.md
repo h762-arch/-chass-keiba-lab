@@ -32,6 +32,20 @@ Example:
 - With saved odds, `day-ai` derives popularity, `expectedValue = winProb × odds`, `expectedValuePercent`, `evRank`, and `abilityPopularityGap` for the response only.
 - Race summaries include ability/EV Top3, saved diamond/warning horses, saved volatility, response-only race value score, and favorite reliability.
 - Public API remains D1 snapshot-only: it performs no external odds fetch, prediction recalculation, signal invention, or D1 write.
+
+## Market data-flow repair
+
+- Root source: NAR official `OddsTanFuku` through `/api/nar/odds`.
+- Root causes addressed: nullable values becoming zero, EV ranks accepting missing values, optional popularity column shifting fixed parser indexes, and Market Snapshot diagnostics being lost during snapshot regeneration.
+- `/api/nar/odds` now reports `marketStatus`, `oddsHorseCount`, `oddsFetchedAt`, parser version, header mapping, response size, parsed rows, and a stable failure reason without exposing raw HTML.
+- Live Market Snapshot now preserves `marketDataSource=OddsTanFuku`, `oddsSnapshotType=live`, coverage, counts, and complete/partial/unavailable EV-rank status.
+- Partial snapshots clear missing active-runner market fields instead of retaining an old odds value.
+- `day-ai` exposes per-race and whole-day coverage diagnostics. Complete equal EV values do not receive meaningless forced ranks.
+- Ability, win probability, TOP3 probability, Prediction Snapshot, NAR transport identity, AI Data Bridge, MCP, and Public API read-only behavior are unchanged.
+
+Production limitation: this package cannot prove the live 2026-09-08 Kawasaki values until it is deployed and the app runs an NAR odds refresh. The Public endpoint intentionally never performs external fetch or D1 write.
+
+Latest full regression: 297 / 297 PASS, 0 failures.
 - Reads saved D1 data only.
 - Performs no external race fetch, prediction calculation, or D1 write.
 - Returns 400 for a missing/invalid date or track.

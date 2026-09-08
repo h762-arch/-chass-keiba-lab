@@ -24,6 +24,15 @@ test('race card and odds parsers map horses without mixing market into ability',
   assert.equal(odds.find(x=>x.horseNo==='12').odds,4.8);
 });
 
+test('odds parser follows headers when NAR adds a popularity column',()=>{
+  const html='<table><tr><th>人気</th><th>枠</th><th>馬番</th><th>馬名</th><th>単勝オッズ</th></tr><tr><td>1</td><td>2</td><td>3</td><td>チャスホース</td><td>2.4</td></tr><tr><td>2</td><td>8</td><td>12</td><td>テストランナー</td><td>4.8</td></tr></table>';
+  const odds=parseTanFuku(html);
+  assert.equal(odds[0].horseNo,'3');
+  assert.equal(odds[0].odds,2.4);
+  assert.equal(odds[0].popularity,1);
+  assert.equal(odds[1].horseNo,'12');
+});
+
 test('past-run parser and compact TIME conversion remain stable',async()=>{
   const runs=parseRuns(await fixture('runs.txt'),1500,'船橋');
   assert.equal(compactTimeToSec('1403'),100.3);

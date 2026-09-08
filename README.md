@@ -19,6 +19,8 @@ Cloudflare D1へ保存済みのSnapshotだけを公開参照します。Bearer�
 
 市場値は保存済みMarket Snapshotだけを使用します。`0`や空値は未取得として`null`を返し、全出走馬の保存済み単勝オッズが揃う場合だけ人気順位を安定計算します。期待値はAPIレスポンス上で`winProb × odds`（1.00=100%）として統一します。Public APIから外部オッズ取得、Prediction再計算、D1書き込みは行いません。💎・⚠️は保存済みCHASS判定だけを返し、API独自の推測生成はしません。
 
+NARの現在オッズ取得元は地方競馬全国協会の`OddsTanFuku`です。取得レスポンスにはParser診断と取得頭数を含め、Market Snapshotには`marketDataSource`、`oddsCoverage`、`oddsHorseCount`、`totalHorseCount`、`evRankStatus`を保存します。公式表が「枠・馬番・馬名・単勝」形式でも「人気・枠・馬番・馬名・単勝」形式でも、見出し名から列を特定します。
+
 環境変数`ENABLE_PUBLIC_API=false`で公開経路だけ停止できます。初期値は有効です。公開可否を決める前に、D1へ個人情報や非公開情報を保存していないことを運用側でも確認してください。
 
 Cloudflareへ通常どおりWorkerをデプロイ後、`/api/chass/v1/public/health`で接続を確認します。ローカル`server.mjs`にはD1 bindingがないため、公開データAPIは`DATABASE_UNAVAILABLE`を返します。

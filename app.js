@@ -590,7 +590,7 @@ function makeSnapshot(){
    state.predictionSnapshot={schemaVersion:3,featureSchemaVersion:2,raceId:identity.raceId,organization:identity.organization,modelVersion,generatedAt:now,createdAt:now,raceType:raceTypeOf(state),race:snapshotRace(),horses:state.horses.map(predictionHorse),axisModel:axes,volatility,longshotScenario,jraPrediction:state.jraPrediction?cloneData(state.jraPrediction):null,locked:true};
  }
  state.snapshotSchemaVersion=state.predictionSnapshot?.schemaVersion||2;
- if(!state.marketSnapshot||!state.validationCompleted){state.marketSnapshot={schemaVersion:2,raceId:identity.raceId,organization:identity.organization,modelVersion,acquiredAt:state.race.oddsUpdatedAt||now,createdAt:state.race.oddsUpdatedAt||now,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)}}
+ if(!state.marketSnapshot||!state.validationCompleted){state.marketSnapshot={schemaVersion:2,raceId:identity.raceId,organization:identity.organization,modelVersion,acquiredAt:state.race.oddsUpdatedAt||now,createdAt:state.race.oddsUpdatedAt||now,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',marketDataSource:state.race.marketDataSource||null,marketDataAvailable:state.race.marketDataAvailable??null,oddsHorseCount:state.race.oddsHorseCount??null,totalHorseCount:state.race.totalHorseCount??null,oddsCoverage:state.race.oddsCoverage??null,evRankStatus:state.race.evRankStatus||null,horses:state.horses.map(marketHorse)}}
  sealSnapshotIntegrity(state,true);
 }
 function sealSnapshotIntegrity(record=state,force=false){
@@ -835,15 +835,17 @@ function applyMarketOdds(items, acquiredAt){
  if(!Array.isArray(items)||!items.length)return 0;
  const valid=items.map(x=>({horseNo:String(x.horseNo),odds:num(x.odds),popularity:num(x.popularity)})).filter(x=>x.horseNo&&x.odds!=null);
  const pop=[...valid].sort((a,b)=>a.odds-b.odds),popMap=new Map(pop.map((x,i)=>[x.horseNo,x.popularity??i+1])),map=new Map(valid.map(x=>[x.horseNo,x.odds]));
+ const eligible=state.horses.filter(isEligibleHorse),totalHorseCount=eligible.length,oddsHorseCount=valid.filter(x=>eligible.some(h=>String(h.horseNo)===x.horseNo)).length,oddsCoverage=totalHorseCount?Number((oddsHorseCount/totalHorseCount).toFixed(4)):0,evRankStatus=oddsHorseCount===0?'unavailable':oddsHorseCount===totalHorseCount?'complete':'partial';
  const normalized=valid.map(x=>({horseNo:Number(x.horseNo),odds:x.odds,popularity:popMap.get(x.horseNo)||null})),signature=list=>JSON.stringify((list||[]).map(x=>[Number(x.horseNo),num(x.odds),num(x.popularity)]).sort((a,b)=>a[0]-b[0])),previous=state.validationCompleted?state.resultMarketSnapshot?.horses:state.marketSnapshot?.horses;
- state.oddsLastCheckedAt=acquiredAt||new Date().toISOString();state.lastOddsApplyChanged=signature(previous)!==signature(normalized);
+ state.oddsLastCheckedAt=acquiredAt||new Date().toISOString();state.lastOddsApplyChanged=signature(previous)!==signature(normalized)||(!state.validationCompleted&&!state.marketSnapshot?.marketDataSource);
  if(!state.lastOddsApplyChanged){storageDiagnostic('cacheHit');return valid.length}
- if(state.validationCompleted){state.resultMarketSnapshot={schemaVersion:2,createdAt:state.oddsLastCheckedAt,oddsSnapshotType:'unknown',horses:normalized};persist(true);return valid.length}
- state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;h.ev=o*h.win;h.fair=h.win>0?100/h.win:null;}});
- abilityMarks(state.horses); applyValueFlags(state.horses,state.race); state.race.oddsType='実オッズ'; state.race.oddsUpdatedAt=state.oddsLastCheckedAt;state.race.oddsChangedAt=state.oddsLastCheckedAt;
- if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:state.race.oddsSnapshotType||'unknown',horses:state.horses.map(marketHorse)};
+ if(state.validationCompleted){state.resultMarketSnapshot={schemaVersion:2,createdAt:state.oddsLastCheckedAt,oddsSnapshotType:'unknown',marketDataSource:'OddsTanFuku',marketDataAvailable:oddsHorseCount>0,oddsHorseCount,totalHorseCount,oddsCoverage,evRankStatus,horses:normalized};persist(true);return valid.length}
+ state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;h.ev=o*h.win;h.fair=h.win>0?100/h.win:null;}else if(isEligibleHorse(h)){h.odds=null;h.popularity=null;h.ev=null;h.fair=null;h.valueMark='';h.warningMark='';}});
+ abilityMarks(state.horses); applyValueFlags(state.horses,state.race); state.race.oddsType='実オッズ';state.race.oddsSnapshotType='live'; state.race.oddsUpdatedAt=state.oddsLastCheckedAt;state.race.oddsChangedAt=state.oddsLastCheckedAt;
+ state.race.marketDataSource='OddsTanFuku';state.race.marketDataAvailable=oddsHorseCount>0;state.race.oddsHorseCount=oddsHorseCount;state.race.totalHorseCount=totalHorseCount;state.race.oddsCoverage=oddsCoverage;state.race.evRankStatus=evRankStatus;
+ if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:'live',marketDataSource:'OddsTanFuku',marketDataAvailable:oddsHorseCount>0,oddsHorseCount,totalHorseCount,oddsCoverage,evRankStatus,horses:state.horses.map(marketHorse)};
  makeSnapshot();
- const rid=raceId(raceFromForm());
+ const rid=raceId(state.race);
  if(rid){
    const history=[...(store.get(ODDS_HISTORY,{})[rid]||[])],previousHistory=history.at(-1);
    if(history.length<24&&(!previousHistory||signature(previousHistory.odds)!==signature(normalized)))history.push({at:state.race.oddsUpdatedAt,odds:normalized});
