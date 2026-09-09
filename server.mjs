@@ -1,6 +1,7 @@
 import {parseTanFuku} from './worker.js';
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
 import {handleJraRaceRequest} from './jra-race-fetch.mjs';
+import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -209,6 +210,7 @@ http.createServer(async(req,res)=>{
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
   if(u.pathname==='/api/jra/meeting'){const response=await handleJraMeetingRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}
   if(u.pathname==='/api/jra/race'){const response=await handleJraRaceRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}
+  if(u.pathname==='/api/jra/odds'){const response=await handleJraOddsRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}
   if(u.pathname.startsWith('/api/chass/v1/public/'))return localPublicApi(req,res,u);
   if(u.pathname==="/api/chass/context"||u.pathname.startsWith('/api/chass/v1/'))return localChassBridge(req,res,u);
   if(u.pathname==='/api/db/meetings')return sendJson(res,503,{ok:false,error:'d1_binding_unavailable',message:'ローカル環境ではNAR Meeting Discoveryへフォールバックします。'});
