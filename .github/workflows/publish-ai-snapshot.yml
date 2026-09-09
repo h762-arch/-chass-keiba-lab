@@ -1,0 +1,56 @@
+name: Publish CHASS AI snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Snapshot date (YYYY-MM-DD)
+        required: true
+        type: string
+      track_slug:
+        description: ASCII track slug (for example kawasaki)
+        required: true
+        default: kawasaki
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-ai-snapshot-${{ inputs.date }}-${{ inputs.track_slug }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch and validate snapshot
+        env:
+          SNAPSHOT_DATE: ${{ inputs.date }}
+          TRACK_SLUG: ${{ inputs.track_slug }}
+        run: |
+          test -f publish-ai-snapshot.mjs
+          node publish-ai-snapshot.mjs
+          touch docs/.nojekyll
+
+      - name: Commit changed snapshot
+        env:
+          SNAPSHOT_DATE: ${{ inputs.date }}
+          TRACK_SLUG: ${{ inputs.track_slug }}
+        run: |
+          git add "docs/ai-snapshot/${SNAPSHOT_DATE}/${TRACK_SLUG}.json" docs/.nojekyll
+          if git diff --cached --quiet; then
+            echo "Snapshot is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "snapshot: ${SNAPSHOT_DATE} ${TRACK_SLUG}"
+          git push
