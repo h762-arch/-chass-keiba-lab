@@ -25,7 +25,7 @@ function parsePast(cell){
 export function parseJraRaceCard(html,expected={}){
   html=String(html||'');if(!/<\/html\s*>/i.test(html)||/このレースの出馬表の掲載は終了/.test(strip(html)))throw Error('JRA_PARSER_STRUCTURE_CHANGED');
   const header=html.match(/<div\b[^>]*class=["'][^"']*\brace_header\b[^"']*["'][^>]*>([\s\S]*?)<table\b/i)?.[1]||html;
-  const dateText=strip(pick(header,'date')),date=jpDate(dateText),track=JRA_TRACKS.find(x=>dateText.includes(x))||'',raceNo=number(strip(pick(header,'race_number')))||altNumber(pick(header,'race_number')),course=strip(pick(header,'course')),raceName=strip(pick(header,'race_name'));
+  const dateText=strip(pick(header,'date')),date=jpDate(dateText),track=JRA_TRACKS.find(x=>dateText.includes(x))||'',raceNo=number(strip(pick(header,'race_number')))||altNumber(pick(header,'race_number')),course=strip(pick(header,'course')),raceName=strip(pick(header,'race_name')),timeMatch=strip(pick(header,'time')).match(/(\d{1,2})時(\d{2})分/),postTime=timeMatch?`${timeMatch[1].padStart(2,'0')}:${timeMatch[2]}`:'';
   const surface=/ダ/.test(course)?'ダート':/芝/.test(course)?'芝':'',distance=number(course),direction=/左/.test(course)?'左':/右/.test(course)?'右':'',courseType=/外/.test(course)?'外回り':/内/.test(course)?'内回り':'';
   if(!date||!track||!raceNo||!surface||!distance||!raceName)throw Error('JRA_PARSER_INCOMPLETE');
   if((expected.date&&date!==expected.date)||(expected.track&&track!==expected.track)||(expected.race&&raceNo!==Number(expected.race)))throw Error('JRA_RACE_MISMATCH');
@@ -48,7 +48,7 @@ export function parseJraRaceCard(html,expected={}){
   if(active.length<2)throw Error('JRA_PARSER_INCOMPLETE');
   const rate=key=>horses.filter(x=>x[key]!=null&&x[key]!=='').length/horses.length;
   const quality={raceParsed:true,horseCount:horses.length,activeHorseCount:active.length,horseNameRate:rate('horseName'),weightRate:rate('weightCarried'),jockeyRate:rate('jockey'),pastRunRate:horses.filter(x=>x.pastRuns.length).length/horses.length};
-  return {race:{date,racecourse:track,raceNo,raceName,surface,distance,direction,courseType,raceClass:strip(pick(header,'class')),trackCondition:'不明',weather:'',pace:'標準'},horses,quality,source:'JRA_OFFICIAL',parserVersion:JRA_RACE_PARSER_VERSION,dataConfidence:quality.horseNameRate===1&&quality.weightRate===1&&quality.jockeyRate===1?'high':'low'};
+  return {race:{date,racecourse:track,raceNo,raceName,postTime,surface,distance,direction,courseType,raceClass:strip(pick(header,'class')),trackCondition:'不明',weather:'',pace:'標準'},horses,quality,source:'JRA_OFFICIAL',parserVersion:JRA_RACE_PARSER_VERSION,dataConfidence:quality.horseNameRate===1&&quality.weightRate===1&&quality.jockeyRate===1?'high':'low'};
 }
 async function readText(response,max=2097152){if(!response.ok)throw Error(response.status===404?'JRA_RACE_NOT_FOUND':'JRA_HTTP_ERROR');const reader=response.body.getReader(),parts=[];let size=0;while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>max){reader.cancel();throw Error('JRA_PARSER_STRUCTURE_CHANGED');}parts.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const p of parts){bytes.set(p,offset);offset+=p.length;}const hint=new TextDecoder().decode(bytes.slice(0,4096));return new TextDecoder(/shift[_-]?jis|sjis/i.test(response.headers.get('content-type')+' '+hint)?'shift-jis':'utf-8').decode(bytes);}
 export function createJraRaceService({fetchImpl=globalThis.fetch,now=Date.now,timeoutMs=10000}={}){

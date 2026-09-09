@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test regression.test.mjs tests/*.test.mjs jra-j1.test.mjs jra-j2.test.mjs jra-j3.test.mjs",
-    "check": "node --check jra-odds-fetch.mjs && node --check jra-odds-client.js && node --check jra-race-fetch.mjs && node --check jra-race-client.js && node --check jra-meeting-discovery.mjs && node --check jra-meeting-selector.js && node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --check jra-normalizer.js && node --check jra-model.js && node --check jra-adapter.js && node --check longshot-scenario.js && node --check calibration-research.js && node --check similarity-intelligence.mjs && node --check meeting-discovery.mjs && node --check research-storage-sync.mjs && node --check mcp/bridge-client.mjs && node --check mcp/chass-tools.mjs && node --check mcp/server.mjs && node --test regression.test.mjs tests/*.test.mjs jra-j1.test.mjs jra-j2.test.mjs jra-j3.test.mjs",
+    "test": "node --test regression.test.mjs tests/*.test.mjs jra-j1.test.mjs jra-j2.test.mjs jra-j3.test.mjs jra-j4.test.mjs",
+    "check": "node --check jra-result-fetch.mjs && node --check jra-result-client.js && node --check jra-odds-fetch.mjs && node --check jra-odds-client.js && node --check jra-race-fetch.mjs && node --check jra-race-client.js && node --check jra-meeting-discovery.mjs && node --check jra-meeting-selector.js && node --check app.js && node --check chass-latest.js && node --check worker.js && node --check server.mjs && node --check jra-normalizer.js && node --check jra-model.js && node --check jra-adapter.js && node --check longshot-scenario.js && node --check calibration-research.js && node --check similarity-intelligence.mjs && node --check meeting-discovery.mjs && node --check research-storage-sync.mjs && node --check mcp/bridge-client.mjs && node --check mcp/chass-tools.mjs && node --check mcp/server.mjs && node --test regression.test.mjs tests/*.test.mjs jra-j1.test.mjs jra-j2.test.mjs jra-j3.test.mjs jra-j4.test.mjs",
     "test:jra-j1": "node --test jra-j1.test.mjs",
     "test:jra-j2": "node --test jra-j2.test.mjs",
-    "test:jra-j3": "node --test jra-j3.test.mjs"
+    "test:jra-j3": "node --test jra-j3.test.mjs",
+    "test:jra-j4": "node --test jra-j4.test.mjs"
   },
   "engines": {
     "node": ">=20"
