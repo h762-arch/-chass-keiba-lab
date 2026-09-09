@@ -7,7 +7,8 @@
     "ENABLE_JRA_MEETING_DISCOVERY": "true",
     "ENABLE_JRA_AUTO_FETCH": "false",
     "ENABLE_JRA_ODDS_FETCH": "true",
-    "ENABLE_JRA_RESULT_FETCH": "true"
+    "ENABLE_JRA_RESULT_FETCH": "true",
+    "ENABLE_JRA_BACKGROUND_REFRESH": "true"
   },
   "assets": {
     "directory": "./",
