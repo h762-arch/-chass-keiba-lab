@@ -1,4 +1,5 @@
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
+import {handleJraRaceRequest} from './jra-race-fetch.mjs';
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
 import {parseNarRaceList} from './meeting-discovery.mjs';
 import {enqueueResearchSync,runResearchSyncQueue} from './research-storage-sync.mjs';
@@ -640,6 +641,7 @@ export default{
  async fetch(request,env){
  const u=new URL(request.url);
   if(u.pathname==='/api/jra/meeting')return handleJraMeetingRequest(request,env);
+  if(u.pathname==='/api/jra/race')return handleJraRaceRequest(request,env);
   if(u.pathname.startsWith('/api/chass/v1/public/'))return handlePublicApi(request,env);
   if(u.pathname==='/api/chass/context'||u.pathname.startsWith('/api/chass/v1/'))return handleChassBridge(request,env);
   if(u.pathname==='/api/db/historical-job'||u.pathname.startsWith('/api/db/historical-job/'))return handleHistoricalJobApi(request,env);
