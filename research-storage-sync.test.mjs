@@ -10,8 +10,8 @@ test('research identity strictly separates JRA and NAR',()=>{
 });
 
 test('feature flags default off and hashes are stable',()=>{
-  assert.deepEqual(researchSyncEnabled({}),{drive:false,airtable:false});
-  assert.deepEqual(researchSyncEnabled({ENABLE_DRIVE_SYNC:'true',ENABLE_AIRTABLE_INDEX:'1'}),{drive:true,airtable:true});
+  assert.deepEqual(researchSyncEnabled({}),{airtable:false});
+  assert.deepEqual(researchSyncEnabled({ENABLE_DRIVE_SYNC:'true',ENABLE_AIRTABLE_INDEX:'1'}),{airtable:true});
   assert.equal(researchHash({b:2,a:1}),researchHash({a:1,b:2}));
 });
 
@@ -26,16 +26,16 @@ test('disabled external sync performs no D1 or network work',async()=>{
   assert.deepEqual(result,{processed:0,skipped:true,reason:'disabled'});
 });
 
-test('scheduled priority is Auto Result then Historical then Research Sync',async()=>{
+test('scheduled priority retains D1/JRA work before optional Airtable indexing',async()=>{
   const calls=[];
-  const result=await runScheduledTasks({}, {env:{ENABLE_DRIVE_SYNC:'true'},resultRunner:async()=>{calls.push('auto');return {processed:0}},historicalRunner:async()=>{calls.push('historical');return {processed:0}},researchRunner:async()=>{calls.push('research');return {processed:1}}});
+  const result=await runScheduledTasks({}, {env:{ENABLE_AIRTABLE_INDEX:'true'},resultRunner:async()=>{calls.push('auto');return {processed:0}},historicalRunner:async()=>{calls.push('historical');return {processed:0}},researchRunner:async()=>{calls.push('research');return {processed:1}}});
   assert.deepEqual(calls,['auto','historical','research']);
   assert.equal(result.research.processed,1);
 });
 
-test('migration is additive and source keeps secrets server-side',async()=>{
+test('migration is additive and remaining Airtable secret stays server-side',async()=>{
   const [migration,source,gitignore]=await Promise.all([readFile(new URL('../migrations/0004_research_storage_sync.sql',import.meta.url),'utf8'),readFile(new URL('../research-storage-sync.mjs',import.meta.url),'utf8'),readFile(new URL('../.gitignore',import.meta.url),'utf8')]);
   assert.match(migration,/research_sync_queue/);assert.match(migration,/research_archive_manifest/);assert.match(migration,/research_airtable_manifest/);assert.doesNotMatch(migration,/DROP\s+(?:TABLE|COLUMN)/i);
-  assert.match(source,/GOOGLE_DRIVE_REFRESH_TOKEN/);assert.match(source,/AIRTABLE_TOKEN/);assert.doesNotMatch(source,/console\.(?:log|info|warn|error)\([^\n]*(?:TOKEN|SECRET|PASSWORD)/i);
+  assert.doesNotMatch(source,/GOOGLE_DRIVE|ENABLE_DRIVE|oauth2\.googleapis|googleapis\.com\/drive/i);assert.match(source,/AIRTABLE_TOKEN/);assert.doesNotMatch(source,/console\.(?:log|info|warn|error)\([^\n]*(?:TOKEN|SECRET|PASSWORD)/i);
   assert.match(gitignore,/\.env/);
 });
