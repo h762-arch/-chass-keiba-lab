@@ -50,6 +50,33 @@ test('lookup failure stays unknown and enables explicit manual fallback only',as
   assert.equal(core.getMeetingSelectorState().entries.大井.status,'unknown');
 });
 
+test('confirmed meeting stays in normal mode when other tracks are unknown',async()=>{
+  const core=await loadCore(),entries={川崎:{status:'meeting',raceNumbers:[1,2,3]},大井:{status:'non_meeting',raceNumbers:[]},船橋:{status:'unknown',raceNumbers:[]},浦和:{status:'unknown',raceNumbers:[]}};
+  const resolution=core.meetingSelectorResolution(entries);
+  assert.deepEqual({...resolution},{status:'partial',fallback:false,meeting:1,unknown:12});
+  core.setMeetingSelectorState({date:'2026-09-01',...resolution,entries});
+  assert.equal(core.meetingSelectionValid('2026-09-01','川崎',1),true);
+  assert.equal(core.meetingSelectionValid('2026-09-01','川崎',4),false);
+  assert.equal(core.meetingSelectionValid('2026-09-01','大井',1),false);
+  assert.equal(core.meetingSelectionValid('2026-09-01','船橋',1),true);
+  assert.deepEqual(Array.from(core.selectorRaceNumbers('川崎')),[1,2,3]);
+});
+
+test('only all-unknown state enters global manual fallback and unknown never becomes non-meeting',async()=>{
+  const core=await loadCore(),entries={川崎:{status:'unknown',raceNumbers:[]},大井:{status:'unknown',raceNumbers:[]},船橋:{status:'non_meeting',raceNumbers:[]}};
+  const resolution=core.meetingSelectorResolution(entries);
+  assert.equal(resolution.status,'fallback');assert.equal(resolution.fallback,true);
+  assert.equal(entries.川崎.status,'unknown');assert.equal(entries.船橋.status,'non_meeting');
+});
+
+test('all confirmed entries resolve ready or empty without manual fallback',async()=>{
+  const core=await loadCore();
+  const allConfirmed=Object.fromEntries(['盛岡','水沢','浦和','船橋','大井','川崎','笠松','金沢','名古屋','園田','姫路','高知','佐賀','門別'].map(track=>[track,{status:track==='川崎'?'meeting':'non_meeting'}]));
+  assert.deepEqual({...core.meetingSelectorResolution(allConfirmed)},{status:'ready',fallback:false,meeting:1,unknown:0});
+  const allNonMeeting=Object.fromEntries(['盛岡','水沢','浦和','船橋','大井','川崎','笠松','金沢','名古屋','園田','姫路','高知','佐賀','門別'].map(track=>[track,{status:'non_meeting'}]));
+  assert.deepEqual({...core.meetingSelectorResolution(allNonMeeting)},{status:'empty',fallback:false,meeting:0,unknown:0});
+});
+
 test('past cache is long-lived while current cache uses a finite TTL',async()=>{
   const core=await loadCore(),now=Date.parse('2026-09-01T12:00:00.000Z');
   assert.equal(core.meetingEntryFresh({status:'non_meeting',checkedAt:'2020-01-01T00:00:00.000Z'},'2026-08-31',now),true);
