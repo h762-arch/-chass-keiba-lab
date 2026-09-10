@@ -1,0 +1,143 @@
+name: Repair CHASS repository layout
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Find recovered ZIP
+        id: zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find . -maxdepth 1 -type f -name '*REPOSITORY-RECOVERED-392PASS.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            echo "Recovered ZIP not found in repository root."
+            exit 1
+          fi
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Using $ZIP"
+
+      - name: Restore repository tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.zip.outputs.zip }}"
+
+          unzip -oq "$ZIP" -d .
+
+          # Remove flattened migration duplicates from root.
+          rm -f             0001_research_cloud.sql             0002_background_historical_collector.sql             0003_race_fingerprints.sql             0004_research_storage_sync.sql             0005_d1_rows_read_optimization.sql             0006_jra_background_refresh.sql
+
+          # Keep only regression.test.mjs at repository root.
+          find . -maxdepth 1 -type f -name '*.test.mjs' ! -name 'regression.test.mjs' -delete
+
+          # Remove flattened MCP duplicates from root.
+          rm -f bridge-client.mjs chass-tools.mjs
+
+          # Remove flattened fixture duplicates from root.
+          rm -f odds.html race-card.html result.html runs.txt
+
+          # The ZIP is only a transport artifact; do not keep it in source.
+          rm -f "$ZIP"
+
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f migrations/0001_research_cloud.sql
+          test -f migrations/0002_background_historical_collector.sql
+          test -f migrations/0003_race_fingerprints.sql
+          test -f migrations/0004_research_storage_sync.sql
+          test -f migrations/0005_d1_rows_read_optimization.sql
+          test -f migrations/0006_jra_background_refresh.sql
+
+          test -f tests/jra-j1.test.mjs
+          test -f tests/jra-j2.test.mjs
+          test -f tests/jra-j3.test.mjs
+          test -f tests/jra-j4.test.mjs
+          test -f tests/jra-j5.test.mjs
+          test -f tests/repository-layout.test.mjs
+
+          test -f tests/fixtures/odds.html
+          test -f tests/fixtures/race-card.html
+          test -f tests/fixtures/result.html
+          test -f tests/fixtures/runs.txt
+
+          test -f mcp/server.mjs
+          test -f mcp/bridge-client.mjs
+          test -f mcp/chass-tools.mjs
+          test -f mcp/package.json
+          test -f mcp/package-lock.json
+          test -f .gitignore
+
+          ROOT_NAME="$(node -p "require('./package.json').name")"
+          ROOT_VERSION="$(node -p "require('./package.json').version")"
+          MCP_NAME="$(node -p "require('./mcp/package.json').name")"
+
+          test "$ROOT_NAME" = "chass-keiba-lab"
+          test "$ROOT_VERSION" = "10.0.1"
+          test "$MCP_NAME" = "chass-keiba-lab-mcp"
+
+          if [ -f 0006_jra_background_refresh.sql ]; then
+            echo "Flattened 0006 still exists at root."
+            exit 1
+          fi
+
+          if [ -f bridge-client.mjs ] || [ -f chass-tools.mjs ]; then
+            echo "Flattened MCP file still exists at root."
+            exit 1
+          fi
+
+          echo "Repository structure OK"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run JRA J1-J5 regression tests
+        run: |
+          npm run test:jra-j1
+          npm run test:jra-j2
+          npm run test:jra-j3
+          npm run test:jra-j4
+          npm run test:jra-j5
+
+      - name: Run full check
+        run: npm run check
+
+      - name: Commit repaired tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No repository changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Restore CHASS repository structure"
+          git push origin HEAD:main
