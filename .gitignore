@@ -1,0 +1,10 @@
+.env
+.env.local
+.env.*
+!.env.example
+node_modules/
+mcp/node_modules/
+mcp/.env
+mcp/.env.local
+npm-debug.log*
+*.log

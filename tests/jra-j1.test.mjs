@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {createJraMeetingService,parseJraProgram,sourceUrl,FEATURE_DEFAULTS,JRA_TRACKS} from './jra-meeting-discovery.mjs';
-import worker from './worker.js';
-const html=fs.readFileSync(new URL('./jra-program-fixture.html',import.meta.url),'utf8');
+import {createJraMeetingService,parseJraProgram,sourceUrl,FEATURE_DEFAULTS,JRA_TRACKS} from '../jra-meeting-discovery.mjs';
+import worker from '../worker.js';
+const html=fs.readFileSync(new URL('../jra-program-fixture.html',import.meta.url),'utf8');
 const date='2026-09-12',request=()=>new Request('https://app.test/api/jra/meeting?date='+date);
 const payload=()=>({ok:true,organization:'JRA',date,meetings:parseJraProgram(html,date)});
 test('official DOM excerpt: two meetings, twelve races each, other eight planned non-meetings',()=>{const entries=parseJraProgram(html,date);assert.deepEqual(entries.filter(x=>x.status==='meeting').map(x=>[x.track,x.raceNumbers.length]),[['中山',12],['阪神',12]]);assert.equal(entries.filter(x=>x.status==='non_meeting').length,8);assert.ok(entries.every(x=>x.organization==='JRA'));});
@@ -24,7 +24,7 @@ function ui(fetchImpl,features={}){
   class Option{constructor(text,value){this.textContent=text;this.value=value;this.disabled=false;}}
   class Element{constructor(value=''){this._value=value;this.options=[];this.events={};this.textContent='';}get value(){return this._value;}set value(v){this._value=String(v);}get selectedOptions(){return this.options.filter(x=>x.value===this.value);}replaceChildren(...children){this.options=children;this.value=children[0]?.value||'';}addEventListener(name,fn){(this.events[name]??=[]).push(fn);}emit(name){for(const fn of this.events[name]||[])fn();}}
   const ids=['jraDate','jraCourse','jraRaceNo','jraMeetingStatus','jraMeetingRefresh','jraManualFallback','jraDataFile'];const elements=Object.fromEntries(ids.map(id=>[id,new Element()]));elements.jraDate.value=date;elements.jraCourse.options=JRA_TRACKS.map(x=>new Option(x,x));elements.jraCourse.value='札幌';elements.jraRaceNo.value='1';let active=true,changes=0,appGeneration=0;
-  const context={window:{CHASS_FEATURES:features},document:{getElementById:id=>elements[id]},Option,fetch:fetchImpl,AbortController,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(new URL('./jra-meeting-selector.js',import.meta.url),'utf8'),context);
+  const context={window:{CHASS_FEATURES:features},document:{getElementById:id=>elements[id]},Option,fetch:fetchImpl,AbortController,setTimeout,clearTimeout};vm.runInNewContext(fs.readFileSync(new URL('../jra-meeting-selector.js',import.meta.url),'utf8'),context);
   const selector=context.window.CHASS_JRA_MEETING.create({isActive:()=>active,getGeneration:()=>appGeneration,onSelection:()=>changes++});return {elements,selector,setInactive(){active=false;selector.setActive(false);},changeGeneration(){appGeneration++;},get changes(){return changes;}};
 }
 const settle=()=>new Promise(r=>setTimeout(r,20));

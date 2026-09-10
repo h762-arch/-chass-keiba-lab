@@ -1,0 +1,94 @@
+CHASS KEIBA LAB Ver.9.9.35
+
+Active Meeting-Aware Race Selector
+- 日付に応じて開催会場だけを有効化
+- meeting_calendar / 端末cacheをHistorical Collectorと共有
+- 実在raceNumbersだけを表示（11R/12R対応）
+- 同日Meeting Discoveryをsingle-flight化
+- 判定失敗はnon_meetingにせず、明示付き手動選択へfallback
+- NAR通常通信、Background Collector、Similarity、AI Bridge、MCP、予想ロジックは維持
+
+旧版記録: Ver.9.9.34
+
+Cloud Background Historical Collector
+- D1有限Jobと既存5分CronでSafari終了後も少量ずつ継続
+- Meeting Discovery → Race Discovery → Collectionを維持
+- Auto Result優先、最大3件、18秒deadline、2分lock
+- pause/resume、D1進捗表示、45秒Read-Only polling
+- NAR通常API、予想ロジック、Similarity、AI Bridge、MCPは維持
+
+旧版記録: Ver.9.9.29
+
+Scratch Horse Snapshot Preservation & Live Adjustment
+- Original Snapshotを固定したまま取消・除外を別レイヤーで反映
+- Live側で確率、展開、波乱指数、Race Confidence、印、期待値、穴馬を再評価
+- Original / Live切替と取消馬の評価対象外表示
+- D1既存race_jsonへ非破壊保存
+Result Recovery Normalization & Auto Retry
+
+- 通常経路失敗後に復旧経路で着順3頭以上を取得できた場合は最終成功
+- 結果未公開は結果待ち、一時通信失敗は再取得待ちとして低頻度で自動再試行
+- TIMEと市場の部分欠損は通信成功を維持し、欠損件数と理由を個別表示
+- 最大6回後は自動通信を止め、次回起動時または手動操作で再開
+- 既存結果、予想Snapshot、AI・穴馬・波乱指数、D1 schemaを維持
+
+旧版記録: Ver.9.9.27
+Prediction Axis Reinforcement
+
+- 勝ち切り能力と複勝安定性を分離した8補助軸を追加
+- 距離変更・転入・叩きを、確認可能な根拠がある場合だけ評価
+- 相手穴専用 place_longshot_score と候補印 ◎○▲△☆ をshadow計算
+- Race Confidenceを波乱指数とは別指標として追加
+- 予想Snapshotへ補助軸・候補確率・候補印を固定保存
+- ダッシュボードへ現行/候補モデル比較、各軸80以上の実TOP3率を追加
+- walk-forward改善確認前は現行AI確率・FINAL・穴馬印を置換しない
+- NAR通信、自動結果取得、D1 schema、波乱指数式は変更なし
+
+旧版記録: Ver.9.9.26
+Race Volatility Intelligence
+
+- 過去の検証済み類似レースを類似度加重して波乱率・順当率を算出
+- Upset ScoreとStability Scoreを分離し、少標本時は50%方向へ縮小
+- predictionSnapshotへ波乱指数と説明情報を固定保存
+
+旧版記録: Ver.9.9.25
+Automatic Post-Race Result Queue
+
+- 予想保存時にraceId単位の結果待ちキューへ登録
+- 発走予定+10分から5/5/10/15分間隔で再確認
+- ブラウザ60秒scheduler（due時のみ通信）
+- Cloudflare Cron 5分間隔、最大5Rを完全逐次処理
+- 手動予想・手動結果・現在オッズを自動回収より優先
+- Historical Collectorより自動結果回収を優先
+- D1既存race_json/statusを利用（DROP/DELETE/new tableなし）
+- predictionSnapshot・AI・TIME・穴馬ロジック変更なし
+
+旧版記録: Ver.9.9.22
+Stable Transport Rebase
+
+・通常結果取得を /api/nar/sync へ統一
+・Ver.9.9.8型の単純通信構造へ部分的に復帰
+・sync-minimal / result-diagnostic は通常失敗時のみ使用
+・同時実行防止を単純な処理中ロックへ整理
+・D1、検証、UI、Snapshot、予想・穴馬ロジックは維持
+
+旧版履歴：
+CHASS KEIBA LAB Ver.9.9.21
+
+Result Fetch Single-Flight / Safari Abort Isolation
+
+主な変更
+1. 同一raceIdの結果取得を1本のPromiseへ統合。
+2. 手動連打・auto重複は既存flightへjoin。
+3. auto中の手動要求は新規fetchを増やさずmanualへ昇格。
+4. 新規sync開始時の無条件AbortController.abort()を廃止。
+5. requestIdを通常・復旧経路とWorkerレスポンスヘッダーで共有。
+6. Safari TypeError名・メッセージ、visibility、online状態、段階時刻を保存。
+7. 予想取得後のautoを800ms遅延し、autoに45秒cooldownを追加。
+8. 別レースの古い応答はstaleとしてUIへ反映しない。
+9. 保存済み結果、パーサー、競馬ロジック、D1構造は変更なし。
+
+確認
+- node --check app.js / worker.js / chass-latest.js / server.mjs: PASS
+- npm test: 115/115 PASS
+- npm run check: 115/115 PASS
