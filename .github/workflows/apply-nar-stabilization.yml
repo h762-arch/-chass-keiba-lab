@@ -1,0 +1,182 @@
+name: Apply NAR stabilization patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-nar-stabilization
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Locate patch ZIP
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find . -maxdepth 1 -type f -name '*NAR-STABILIZATION-PATCH-ONLY.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            echo "::error::NAR stabilization patch ZIP not found in repository root."
+            exit 1
+          fi
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Using patch: $ZIP"
+
+      - name: Validate patch contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.patch.outputs.zip }}"
+          unzip -Z1 "$ZIP" | sed '/\/$/d' | sort > /tmp/actual-files.txt
+
+          cat > /tmp/expected-files.txt <<'EOF'
+          app.js
+          tests/meeting-aware-selector.test.mjs
+          tests/result-normalization.test.mjs
+          EOF
+          sort -o /tmp/expected-files.txt /tmp/expected-files.txt
+
+          echo "Patch contents:"
+          cat /tmp/actual-files.txt
+          diff -u /tmp/expected-files.txt /tmp/actual-files.txt
+          echo "Patch content whitelist OK"
+
+      - name: Verify patch SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.patch.outputs.zip }}"
+          EXPECTED="89533c8315c1cd858c401fdb73ff4072443d81a8c71d1b76dd34b21f63b9ab3e"
+          ACTUAL="$(sha256sum "$ZIP" | awk '{print $1}')"
+          echo "Patch SHA-256: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.patch.outputs.zip }}"
+          rm -rf /tmp/chass-patch
+          mkdir -p /tmp/chass-patch
+          unzip -oq "$ZIP" -d /tmp/chass-patch
+
+          cp /tmp/chass-patch/app.js app.js
+          cp /tmp/chass-patch/tests/meeting-aware-selector.test.mjs tests/meeting-aware-selector.test.mjs
+          cp /tmp/chass-patch/tests/result-normalization.test.mjs tests/result-normalization.test.mjs
+
+      - name: Verify repository structure remains intact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f migrations/0006_jra_background_refresh.sql
+          test -f tests/jra-j5.test.mjs
+          test -f mcp/server.mjs
+          test -f .gitignore
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test "$(node -p "require('./mcp/package.json').name")" = "chass-keiba-lab-mcp"
+          echo "Repository structure OK"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run targeted NAR stabilization tests
+        run: |
+          node --check app.js
+          node --test tests/meeting-aware-selector.test.mjs tests/result-normalization.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Remove transport ZIP
+        shell: bash
+        run: rm -f "${{ steps.patch.outputs.zip }}"
+
+      - name: Commit tested patch to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app.js \
+                  tests/meeting-aware-selector.test.mjs \
+                  tests/result-normalization.test.mjs
+          git add -u
+
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit -m "Apply NAR production stabilization hotfix"
+            git push origin HEAD:main
+          fi
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Deploy CHASS Worker
+        run: npx -y wrangler@4 deploy
+
+      - name: Production health smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEALTH_URL="https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/health"
+
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$HEALTH_URL" -o /tmp/health.json; then
+              break
+            fi
+            sleep 3
+          done
+
+          cat /tmp/health.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (body.ok !== true) throw new Error('Production health did not return ok=true');
+          console.log('Production health OK');
+          NODE
+
+      - name: Final summary
+        run: |
+          echo "✅ Patch SHA-256 verified"
+          echo "✅ Only 3 approved files applied"
+          echo "✅ Targeted NAR stabilization tests passed"
+          echo "✅ Full regression check passed"
+          echo "✅ Tested patch committed to main"
+          echo "✅ Cloudflare Worker deployed"
+          echo "✅ Production health check passed"
