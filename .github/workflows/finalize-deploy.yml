@@ -1,0 +1,171 @@
+name: Finalize CHASS D1 and deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Remove obsolete root artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f repair-layout.yml
+          rm -f '#U66f4#U65b0#U5185#U5bb9.txt'
+          rm -f *REPOSITORY-RECOVERED-392PASS.zip 2>/dev/null || true
+
+      - name: Verify repository layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f migrations/0006_jra_background_refresh.sql
+          test -f tests/jra-j5.test.mjs
+          test -f tests/repository-layout.test.mjs
+          test -f mcp/server.mjs
+          test -f mcp/package.json
+          test -f .gitignore
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test "$(node -p "require('./mcp/package.json').name")" = "chass-keiba-lab-mcp"
+
+          test ! -f 0006_jra_background_refresh.sql
+          test ! -f bridge-client.mjs
+          test ! -f chass-tools.mjs
+
+          echo "Repository layout OK"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::GitHub Actions secret CLOUDFLARE_API_TOKEN is not configured."
+            echo "Add it in Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Show pending D1 migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 migrations list chass-keiba-research-db --remote | tee /tmp/d1-before.txt
+
+      - name: Apply pending D1 migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 migrations apply chass-keiba-research-db --remote
+
+      - name: Verify migration 0006 and JRA table
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db \
+            --remote \
+            --command "SELECT name FROM d1_migrations WHERE name='0006_jra_background_refresh.sql';" \
+            | tee /tmp/migration-check.txt
+
+          grep -F "0006_jra_background_refresh.sql" /tmp/migration-check.txt
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db \
+            --remote \
+            --command "SELECT name FROM sqlite_schema WHERE type='table' AND name='jra_meeting_calendar';" \
+            | tee /tmp/table-check.txt
+
+          grep -F "jra_meeting_calendar" /tmp/table-check.txt
+
+          echo "D1 migration 0006 verified"
+
+      - name: Deploy CHASS Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HEALTH_URL="https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/health"
+
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$HEALTH_URL" -o /tmp/health.json; then
+              break
+            fi
+            sleep 3
+          done
+
+          cat /tmp/health.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (body.ok !== true) throw new Error('Production health did not return ok=true');
+          if (body.version && body.version !== '10.0.1') {
+            throw new Error(`Unexpected deployed version: ${body.version}`);
+          }
+          console.log('Production health OK');
+          NODE
+
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No cleanup changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Finalize repository cleanup after production deploy"
+          git push origin HEAD:main
+
+      - name: Final summary
+        run: |
+          echo "✅ Full regression check passed"
+          echo "✅ D1 migration 0006 applied/verified"
+          echo "✅ jra_meeting_calendar verified"
+          echo "✅ Cloudflare Worker deployed"
+          echo "✅ Production health check passed"
+          echo "✅ Obsolete root artifacts cleaned"
