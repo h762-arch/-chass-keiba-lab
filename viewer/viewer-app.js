@@ -1,9 +1,11 @@
 import {
   VIEWER_TRACKS,
   buildViewerDayUrl,
+  buildViewerDateRacesUrl,
   buildViewerMarketDayUrl,
   buildViewerRaceUrl,
   buildViewerRacesUrl,
+  buildViewerRecentUrl,
   formatViewerNumber,
   formatViewerPercent,
   normalizeViewerOrganization,
@@ -53,6 +55,12 @@ const globalLegend = document.createElement('div');
 globalLegend.className = 'viewer-global-legend-shell';
 globalLegend.hidden = true;
 raceNav.insertAdjacentElement('afterend', globalLegend);
+
+
+const availabilityHint = document.createElement('div');
+availabilityHint.className = 'viewer-availability-hint';
+availabilityHint.hidden = true;
+trackQuick.insertAdjacentElement('afterend', availabilityHint);
 
 function tokyoDateString() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -648,36 +656,111 @@ async function fetchMarketDay(context, signal) {
   }
 }
 
-async function checkTrackAvailable({ date, organization, track }) {
-  const response = await fetch(buildViewerRacesUrl({ date, organization, track }), {
+async function fetchDateRaceSummaries({ date, organization }, signal = undefined) {
+  const response = await fetch(buildViewerDateRacesUrl({ date, organization }), {
+    method: 'GET',
     headers: { Accept: 'application/json' },
+    signal,
   });
-  if (!response.ok) return false;
+  if (!response.ok) return null;
   const payload = await response.json().catch(() => null);
-  return Number(payload?.count || 0) > 0;
+  if (!payload) return null;
+  try {
+    return sanitizeViewerRacesPayload(payload);
+  } catch {
+    return null;
+  }
 }
 
-async function discoverAvailableTracks({ date, organization }) {
+async function discoverAvailableTracks({ date, organization }, signal = undefined) {
   if (!validViewerDate(date) || !normalizeViewerOrganization(organization)) return [];
   const cacheKey = `${date}|${organization}`;
   if (trackDiscoveryCache.has(cacheKey)) return trackDiscoveryCache.get(cacheKey);
 
-  const tracks = [...VIEWER_TRACKS[organization]];
-  const queue = [...tracks];
-  const found = new Set();
+  const summaries = await fetchDateRaceSummaries({ date, organization }, signal).catch(() => null);
+  const found = new Set(
+    (summaries?.races || [])
+      .filter((race) => race.predictionAvailable !== false)
+      .map((race) => race.track)
+      .filter(Boolean),
+  );
 
-  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
-    while (queue.length) {
-      const track = queue.shift();
-      if (await checkTrackAvailable({ date, organization, track }).catch(() => false)) found.add(track);
-    }
-  });
-
-  await Promise.all(workers);
-  const available = tracks.filter((track) => found.has(track));
+  const available = VIEWER_TRACKS[organization].filter((track) => found.has(track));
   trackDiscoveryCache.set(cacheKey, available);
   return available;
 }
+
+async function fetchLatestSavedContext(organization, signal = undefined) {
+  const response = await fetch(buildViewerRecentUrl({ organization, limit: 20 }), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  if (!payload) return null;
+
+  let recent;
+  try {
+    recent = sanitizeViewerRacesPayload(payload);
+  } catch {
+    return null;
+  }
+
+  const found = recent.races.find((race) =>
+    race.predictionAvailable !== false
+    && validViewerDate(race.date)
+    && normalizeViewerTrack(race.track, organization));
+
+  return found
+    ? { date: found.date, organization, track: found.track, raceNo: found.raceNo }
+    : null;
+}
+
+function hideAvailabilityHint() {
+  availabilityHint.hidden = true;
+  availabilityHint.replaceChildren();
+}
+
+async function showNoSavedDate({ date, organization }, signal = undefined) {
+  elements.races.replaceChildren();
+  elements.summary.hidden = true;
+  raceNav.hidden = true;
+  globalLegend.hidden = true;
+
+  setStatus(`${date} の保存済み予想はまだありません。`, 'empty');
+
+  const latest = await fetchLatestSavedContext(organization, signal).catch(() => null);
+
+  availabilityHint.replaceChildren();
+
+  const text = document.createElement('span');
+  text.className = 'viewer-availability-text';
+  text.textContent = latest
+    ? '選択した日付には公開済み予想がありません。'
+    : '公開済み予想が保存されると、ここから閲覧できます。';
+  availabilityHint.append(text);
+
+  if (latest) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'viewer-availability-button';
+    button.textContent = `最新保存日 ${latest.date} ${latest.track} を開く`;
+    button.addEventListener('click', async () => {
+      elements.date.value = latest.date;
+      elements.organization.value = latest.organization;
+      fillTracks(latest.track);
+      elements.track.value = latest.track;
+      hideAvailabilityHint();
+      await refreshTrackChips({ preferFirst: false });
+      await loadViewerDay();
+    });
+    availabilityHint.append(button);
+  }
+
+  availabilityHint.hidden = false;
+}
+
 
 function renderTrackChips(tracks) {
   trackChipBox.replaceChildren();
@@ -705,25 +788,36 @@ function renderTrackChips(tracks) {
   controls?.classList.add('has-track-chips');
 }
 
-async function refreshTrackChips({ preferFirst = false } = {}) {
+async function refreshTrackChips({ preferFirst = false, showFallback = false, signal = undefined } = {}) {
   const date = elements.date.value;
   const organization = normalizeViewerOrganization(elements.organization.value);
-  if (!validViewerDate(date) || !organization) return renderTrackChips([]);
-
-  const tracks = await discoverAvailableTracks({ date, organization });
-  if (preferFirst && tracks.length && !tracks.includes(elements.track.value)) {
-    elements.track.value = tracks[0];
+  if (!validViewerDate(date) || !organization) {
+    renderTrackChips([]);
+    return [];
   }
-  renderTrackChips(tracks);
+
+  const tracks = await discoverAvailableTracks({ date, organization }, signal);
+
+  if (tracks.length) {
+    hideAvailabilityHint();
+    if (preferFirst && !tracks.includes(elements.track.value)) {
+      elements.track.value = tracks[0];
+    }
+    renderTrackChips(tracks);
+    return tracks;
+  }
+
+  renderTrackChips([]);
+  if (showFallback) await showNoSavedDate({ date, organization }, signal);
+  return [];
 }
 
 async function loadViewerDay() {
   const date = elements.date.value;
   const organization = normalizeViewerOrganization(elements.organization.value);
-  const track = normalizeViewerTrack(elements.track.value, organization);
 
-  if (!validViewerDate(date) || !organization || !track) {
-    setStatus('開催日・主催・競馬場を確認してください。', 'error');
+  if (!validViewerDate(date) || !organization) {
+    setStatus('開催日・主催を確認してください。', 'error');
     return;
   }
 
@@ -735,6 +829,22 @@ async function loadViewerDay() {
   elements.summary.hidden = true;
 
   try {
+    const availableTracks = await refreshTrackChips({
+      preferFirst: true,
+      showFallback: true,
+      signal,
+    });
+
+    if (!availableTracks.length) return;
+
+    let track = normalizeViewerTrack(elements.track.value, organization);
+    if (!track || !availableTracks.includes(track)) {
+      track = availableTracks[0];
+      elements.track.value = track;
+      renderTrackChips(availableTracks);
+    }
+
+    hideAvailabilityHint();
     const context = { date, organization, track };
     const dayResponse = await fetch(buildViewerDayUrl(context), {
       method: 'GET',
@@ -767,10 +877,11 @@ async function loadViewerDay() {
     elements.summary.hidden = true;
     raceNav.hidden = true;
     const code = String(error?.message || 'VIEWER_LOAD_FAILED');
-    const message = code === 'RACE_NOT_FOUND'
-      ? 'この条件の保存済み予想はありません。'
-      : '予想データを読み込めませんでした。';
-    setStatus(`${message} (${code})`, 'error');
+    if (code === 'RACE_NOT_FOUND') {
+      await showNoSavedDate({ date, organization }, signal).catch(() => {});
+    } else {
+      setStatus(`予想データを読み込めませんでした。 (${code})`, 'error');
+    }
   } finally {
     elements.submit.disabled = false;
   }
@@ -788,11 +899,11 @@ function initialize() {
 
   elements.organization.addEventListener('change', async () => {
     fillTracks();
-    await refreshTrackChips({ preferFirst: true });
+    await refreshTrackChips({ preferFirst: true, showFallback: true });
   });
 
   elements.date.addEventListener('change', async () => {
-    await refreshTrackChips({ preferFirst: true });
+    await refreshTrackChips({ preferFirst: true, showFallback: true });
   });
 
   elements.track.addEventListener('change', () => {
@@ -805,7 +916,7 @@ function initialize() {
     loadViewerDay();
   });
 
-  refreshTrackChips({ preferFirst: !requestedTrack }).catch(() => {});
+  refreshTrackChips({ preferFirst: !requestedTrack, showFallback: true }).catch(() => {});
   if (normalizeViewerTrack(requestedTrack, organization)) loadViewerDay();
   else setStatus('');
 }

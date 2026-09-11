@@ -817,3 +817,56 @@ button,input,select { font: inherit; }
     font-size: 8px;
   }
 }
+
+
+/* CHASS Viewer v3.4: date availability guard */
+#viewer-status[data-state="empty"] {
+  color: var(--viewer-gold);
+}
+
+.viewer-availability-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--viewer-gold) 18%, var(--viewer-line));
+  border-radius: 10px;
+  background: var(--viewer-gold-soft);
+}
+
+.viewer-availability-text {
+  min-width: 0;
+  color: var(--viewer-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.viewer-availability-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 9px;
+  padding: 5px 9px;
+  background: var(--viewer-panel);
+  color: var(--viewer-text);
+  font-size: 10px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .viewer-availability-hint {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .viewer-availability-button {
+    width: 100%;
+    min-height: 34px;
+  }
+}

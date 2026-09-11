@@ -110,6 +110,29 @@ export function buildViewerRacesUrl({ date, track, organization, origin = '' } =
   return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/races?${params.toString()}`;
 }
 
+
+export function buildViewerDateRacesUrl({ date, organization, origin = '' } = {}) {
+  if (!validViewerDate(date)) throw new Error('viewer_invalid_date');
+  const org = normalizeViewerOrganization(organization);
+  if (!org) throw new Error('viewer_invalid_organization');
+  const params = new URLSearchParams({
+    date,
+    organization: org,
+  });
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/races?${params.toString()}`;
+}
+
+export function buildViewerRecentUrl({ organization, limit = 20, origin = '' } = {}) {
+  const org = normalizeViewerOrganization(organization);
+  if (!org) throw new Error('viewer_invalid_organization');
+  const safeLimit = Math.max(1, Math.min(20, Number(limit) || 20));
+  const params = new URLSearchParams({
+    organization: org,
+    limit: String(safeLimit),
+  });
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/recent?${params.toString()}`;
+}
+
 function sanitizeHorse(raw = {}) {
   const probability = raw.probability || {};
   const predictedTime = raw.predictedTime && typeof raw.predictedTime === 'object'
@@ -194,6 +217,10 @@ export function sanitizeViewerRacesPayload(payload = {}) {
 
   const races = payload.races
     .map((raw = {}) => Object.freeze({
+      organization: normalizeViewerOrganization(raw.organization) || textOrNull(raw.organization),
+      raceId: textOrNull(raw.raceId),
+      date: textOrNull(raw.date ?? raw.raceDate),
+      track: textOrNull(raw.track),
       raceNo: finiteOrNull(raw.raceNo ?? raw.raceNumber),
       raceName: textOrNull(raw.raceName),
       startTime: textOrNull(raw.startTime ?? raw.postTime ?? raw.raceTime),
@@ -201,6 +228,8 @@ export function sanitizeViewerRacesPayload(payload = {}) {
       distance: finiteOrNull(raw.distance),
       going: textOrNull(raw.going ?? raw.trackCondition),
       fieldSize: finiteOrNull(raw.fieldSize),
+      predictionAvailable: raw.predictionAvailable == null ? null : Boolean(raw.predictionAvailable),
+      updatedAt: textOrNull(raw.updatedAt),
     }))
     .filter((race) => Number.isInteger(race.raceNo))
     .sort((a, b) => Number(a.raceNo) - Number(b.raceNo));

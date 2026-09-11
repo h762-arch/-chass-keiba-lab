@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   VIEWER_ROLE,
   buildViewerDayUrl,
+  buildViewerDateRacesUrl,
   buildViewerMarketDayUrl,
   buildViewerRaceUrl,
   buildViewerRacesUrl,
+  buildViewerRecentUrl,
   isViewerSafeEndpoint,
   sanitizeViewerDayPayload,
   sanitizeViewerMarketPayload,
@@ -31,6 +33,8 @@ test('viewer builds only public read-only endpoints', () => {
     buildViewerMarketDayUrl(context),
     buildViewerRaceUrl({ ...context, race: 11 }),
     buildViewerRacesUrl(context),
+    buildViewerDateRacesUrl({ date: context.date, organization: context.organization }),
+    buildViewerRecentUrl({ organization: context.organization, limit: 20 }),
   ];
 
   for (const url of urls) {
@@ -45,6 +49,10 @@ test('viewer builds only public read-only endpoints', () => {
   assert.match(urls[2], /\/race\?/);
   assert.match(urls[2], /race=11/);
   assert.match(urls[3], /\/races\?/);
+  assert.match(urls[4], /\/races\?/);
+  assert.doesNotMatch(urls[4], /track=/);
+  assert.match(urls[5], /\/recent\?/);
+  assert.match(urls[5], /limit=20/);
   assert.equal(isViewerSafeEndpoint('/api/db/meetings'), false);
   assert.equal(isViewerSafeEndpoint('/api/chass/context'), false);
 });
