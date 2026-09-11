@@ -946,3 +946,13 @@ button,input,select { font: inherit; }
     min-height: 40px;
   }
 }
+
+/* CHASS Viewer v3.5.1: hard hidden-state guard */
+.viewer-availability-hint[hidden],
+.viewer-track-quick[hidden],
+.viewer-race-nav[hidden],
+.viewer-global-legend-shell[hidden],
+#viewer-status[hidden],
+#viewer-summary[hidden] {
+  display: none !important;
+}
