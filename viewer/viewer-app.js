@@ -35,6 +35,7 @@ trackField?.classList.add('viewer-track-field');
 let requestController = null;
 let activeDay = null;
 let activeContext = null;
+let noDataState = false;
 const trackDiscoveryCache = new Map();
 const expandedRaces = new Set();
 
@@ -92,6 +93,46 @@ function fillTracks(preferredTrack = '') {
   }
 
   if (normalizeViewerTrack(preferredTrack, organization)) elements.track.value = preferredTrack;
+}
+
+
+function setNoDataControls(date) {
+  noDataState = true;
+
+  const option = document.createElement('option');
+  option.value = '';
+  option.textContent = '保存データなし';
+  option.selected = true;
+
+  elements.track.replaceChildren(option);
+  elements.track.disabled = true;
+  elements.submit.disabled = true;
+  elements.submit.textContent = '予想なし';
+
+  controls?.classList.add('viewer-no-data');
+  trackQuick.hidden = true;
+  trackChipBox.replaceChildren();
+
+  if (date) elements.track.setAttribute('aria-label', `${date} は保存データなし`);
+}
+
+function restoreDataControls(preferredTrack = '') {
+  noDataState = false;
+  elements.track.disabled = false;
+  elements.submit.disabled = false;
+  elements.submit.textContent = '予想を表示';
+  controls?.classList.remove('viewer-no-data');
+  elements.track.removeAttribute('aria-label');
+
+  const organization = normalizeViewerOrganization(elements.organization.value) || 'JRA';
+  const current = normalizeViewerTrack(elements.track.value, organization);
+  if (!current || elements.track.options.length <= 1) {
+    fillTracks(preferredTrack);
+  }
+
+  if (normalizeViewerTrack(preferredTrack, organization)) {
+    elements.track.value = preferredTrack;
+  }
 }
 
 function markValues(horse) {
@@ -727,35 +768,48 @@ async function showNoSavedDate({ date, organization }, signal = undefined) {
   elements.summary.hidden = true;
   raceNav.hidden = true;
   globalLegend.hidden = true;
-
-  setStatus(`${date} の保存済み予想はまだありません。`, 'empty');
+  renderTrackChips([]);
+  setStatus('');
+  setNoDataControls(date);
 
   const latest = await fetchLatestSavedContext(organization, signal).catch(() => null);
 
   availabilityHint.replaceChildren();
 
-  const text = document.createElement('span');
-  text.className = 'viewer-availability-text';
-  text.textContent = latest
-    ? '選択した日付には公開済み予想がありません。'
-    : '公開済み予想が保存されると、ここから閲覧できます。';
-  availabilityHint.append(text);
+  const copy = document.createElement('div');
+  copy.className = 'viewer-availability-copy';
+
+  const title = document.createElement('strong');
+  title.className = 'viewer-availability-title';
+  title.textContent = 'この日の保存済み予想はありません';
+
+  const sub = document.createElement('span');
+  sub.className = 'viewer-availability-sub';
+  sub.textContent = `${date} · ${organization}`;
+
+  copy.append(title, sub);
+  availabilityHint.append(copy);
 
   if (latest) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'viewer-availability-button';
-    button.textContent = `最新保存日 ${latest.date} ${latest.track} を開く`;
+    button.className = 'viewer-availability-button is-primary';
+    button.textContent = `最新 ${latest.date} ${latest.track} を見る`;
     button.addEventListener('click', async () => {
       elements.date.value = latest.date;
       elements.organization.value = latest.organization;
-      fillTracks(latest.track);
+      restoreDataControls(latest.track);
       elements.track.value = latest.track;
       hideAvailabilityHint();
       await refreshTrackChips({ preferFirst: false });
       await loadViewerDay();
     });
     availabilityHint.append(button);
+  } else {
+    const note = document.createElement('span');
+    note.className = 'viewer-availability-note';
+    note.textContent = '予想が保存されると自動で表示対象になります。';
+    availabilityHint.append(note);
   }
 
   availabilityHint.hidden = false;
@@ -799,6 +853,10 @@ async function refreshTrackChips({ preferFirst = false, showFallback = false, si
   const tracks = await discoverAvailableTracks({ date, organization }, signal);
 
   if (tracks.length) {
+    const preferred = tracks.includes(elements.track.value)
+      ? elements.track.value
+      : tracks[0];
+    restoreDataControls(preferred);
     hideAvailabilityHint();
     if (preferFirst && !tracks.includes(elements.track.value)) {
       elements.track.value = tracks[0];
@@ -825,6 +883,7 @@ async function loadViewerDay() {
   requestController = new AbortController();
   const { signal } = requestController;
   elements.submit.disabled = true;
+  elements.submit.textContent = '読み込み中…';
   setStatus('予想を読み込んでいます…', 'loading');
   elements.summary.hidden = true;
 
@@ -844,6 +903,7 @@ async function loadViewerDay() {
       renderTrackChips(availableTracks);
     }
 
+    restoreDataControls(track);
     hideAvailabilityHint();
     const context = { date, organization, track };
     const dayResponse = await fetch(buildViewerDayUrl(context), {
@@ -883,7 +943,8 @@ async function loadViewerDay() {
       setStatus(`予想データを読み込めませんでした。 (${code})`, 'error');
     }
   } finally {
-    elements.submit.disabled = false;
+    elements.submit.disabled = noDataState;
+    elements.submit.textContent = noDataState ? '予想なし' : '予想を表示';
   }
 }
 
@@ -898,11 +959,15 @@ function initialize() {
   fillTracks(requestedTrack);
 
   elements.organization.addEventListener('change', async () => {
+    restoreDataControls();
     fillTracks();
+    hideAvailabilityHint();
     await refreshTrackChips({ preferFirst: true, showFallback: true });
   });
 
   elements.date.addEventListener('change', async () => {
+    restoreDataControls();
+    hideAvailabilityHint();
     await refreshTrackChips({ preferFirst: true, showFallback: true });
   });
 

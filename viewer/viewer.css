@@ -870,3 +870,79 @@ button,input,select { font: inherit; }
     min-height: 34px;
   }
 }
+
+
+/* CHASS Viewer v3.5: polished empty-date state */
+.viewer-no-data .viewer-track-field select {
+  color: var(--viewer-muted);
+  opacity: .72;
+}
+
+.viewer-no-data .viewer-submit {
+  border-color: var(--viewer-line);
+  background: var(--viewer-soft);
+  color: var(--viewer-muted);
+  cursor: default;
+}
+
+.viewer-availability-hint {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 12px;
+  background: var(--viewer-panel-2);
+}
+
+.viewer-availability-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.viewer-availability-title {
+  color: var(--viewer-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.viewer-availability-sub,
+.viewer-availability-note {
+  color: var(--viewer-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.viewer-availability-button {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: var(--viewer-panel);
+  color: var(--viewer-text);
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.viewer-availability-button.is-primary {
+  border-color: var(--viewer-accent);
+  background: var(--viewer-accent);
+  color: var(--viewer-accent-text);
+}
+
+@media (max-width: 720px) {
+  .viewer-availability-hint {
+    margin-top: 8px;
+    padding: 10px;
+  }
+
+  .viewer-availability-title {
+    font-size: 11px;
+  }
+
+  .viewer-availability-button {
+    min-height: 40px;
+  }
+}
