@@ -36,7 +36,7 @@ test('v3.6.1 mobile UI has left marks, right ability and collapsible secondary m
 
   assert.match(app, /SECONDARY_MARKS = new Set\(\['○', '▲', '△'\]\)/);
   assert.match(app, /○▲△を見る/);
-  assert.match(app, /viewer-ability-badge/);
+  assert.match(app, /viewer-ability-(?:badge|panel)/);
   assert.match(app, /公開用総合能力指数/);
   assert.match(app, /viewer-short-comment/);
   assert.match(css, /\.viewer-horse-card-top-v36/);

@@ -1082,3 +1082,65 @@ button,input,select { font: inherit; }
     font-size: 9px;
   }
 }
+
+/* CHASS Viewer v3.6.3: split ability + rank / canonical secondary order */
+.viewer-ability-panel {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.viewer-ability-stat {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 49px;
+  min-height: 46px;
+  padding: 5px 7px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 9px;
+  background: var(--viewer-panel-2);
+  text-align: center;
+}
+
+.viewer-ability-stat span {
+  color: var(--viewer-muted);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.viewer-ability-stat strong {
+  color: var(--viewer-text);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+.viewer-ability-score { min-width: 58px; }
+.viewer-ability-rank { min-width: 48px; }
+
+@media (max-width: 720px) {
+  .viewer-horse-card-top-v36 {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 5px;
+  }
+
+  .viewer-ability-panel { gap: 3px; }
+
+  .viewer-ability-stat {
+    min-width: 43px;
+    min-height: 42px;
+    padding: 4px 5px;
+    border-radius: 8px;
+  }
+
+  .viewer-ability-score { min-width: 53px; }
+  .viewer-ability-rank { min-width: 43px; }
+
+  .viewer-ability-stat span { font-size: 7px; }
+  .viewer-ability-stat strong { font-size: 11px; }
+}

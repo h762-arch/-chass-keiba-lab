@@ -300,10 +300,30 @@ function primaryHorses(race) {
 
 function secondaryHorses(race, primary) {
   const primaryNos = new Set(primary.map((horse) => Number(horse.horseNo)));
-  return race.horses.filter((horse) =>
-    !primaryNos.has(Number(horse.horseNo))
-    && horseHasSecondarySignal(horse)
-  );
+  const markPriority = new Map([
+    ['○', 0],
+    ['▲', 1],
+    ['△', 2],
+  ]);
+
+  return race.horses
+    .filter((horse) =>
+      !primaryNos.has(Number(horse.horseNo))
+      && horseHasSecondarySignal(horse)
+    )
+    .sort((a, b) => {
+      const markDiff = (markPriority.get(String(a.mark || '')) ?? 99)
+        - (markPriority.get(String(b.mark || '')) ?? 99);
+      if (markDiff) return markDiff;
+
+      const abilityDiff = Number(a.abilityRank ?? 999) - Number(b.abilityRank ?? 999);
+      if (abilityDiff) return abilityDiff;
+
+      const winDiff = Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1);
+      if (winDiff) return winDiff;
+
+      return Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999);
+    });
 }
 
 function legendChip(symbol, label, className) {
@@ -328,23 +348,37 @@ function viewerLegend() {
 }
 
 function abilityBadge(horse) {
-  const badge = document.createElement('div');
-  badge.className = 'viewer-ability-badge';
-  badge.title = '公開用総合能力指数';
+  const panel = document.createElement('div');
+  panel.className = 'viewer-ability-panel';
+  panel.title = '公開用総合能力指数と能力順位';
 
-  const label = document.createElement('span');
-  label.textContent = '能力';
+  const scoreBox = document.createElement('div');
+  scoreBox.className = 'viewer-ability-stat viewer-ability-score';
+
+  const scoreLabel = document.createElement('span');
+  scoreLabel.textContent = '能力';
 
   const score = document.createElement('strong');
   score.textContent = horse.abilityScore == null
     ? '—'
     : formatViewerNumber(horse.abilityScore, 1);
 
-  const rank = document.createElement('em');
-  rank.textContent = horse.abilityRank == null ? '' : `${horse.abilityRank}位`;
+  scoreBox.append(scoreLabel, score);
 
-  badge.append(label, score, rank);
-  return badge;
+  const rankBox = document.createElement('div');
+  rankBox.className = 'viewer-ability-stat viewer-ability-rank';
+
+  const rankLabel = document.createElement('span');
+  rankLabel.textContent = '順位';
+
+  const rank = document.createElement('strong');
+  rank.textContent = horse.abilityRank == null
+    ? '—'
+    : `${horse.abilityRank}位`;
+
+  rankBox.append(rankLabel, rank);
+  panel.append(scoreBox, rankBox);
+  return panel;
 }
 
 function shortComment(horse, ranks) {
