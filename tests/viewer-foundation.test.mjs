@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {
   VIEWER_ROLE,
   buildViewerDayUrl,
+  buildViewerMarketDayUrl,
   buildViewerRaceUrl,
   buildViewerRacesUrl,
   isViewerSafeEndpoint,
   sanitizeViewerDayPayload,
+  sanitizeViewerMarketPayload,
   sanitizeViewerRacePayload,
 } from '../viewer/viewer-core.js';
 
@@ -23,22 +25,57 @@ test('VIEWER role is read-only and cannot access internal capabilities', () => {
 
 test('viewer builds only public read-only endpoints', () => {
   const context = { date: '2026-09-12', organization: 'JRA', track: '中山' };
-  const day = buildViewerDayUrl(context);
-  const race = buildViewerRaceUrl({ ...context, race: 11 });
-  const races = buildViewerRacesUrl(context);
+  const urls = [
+    buildViewerDayUrl(context),
+    buildViewerMarketDayUrl(context),
+    buildViewerRaceUrl({ ...context, race: 11 }),
+    buildViewerRacesUrl(context),
+  ];
 
-  for (const url of [day, race, races]) {
+  for (const url of urls) {
     assert.equal(isViewerSafeEndpoint(url), true);
     assert.match(url, /^\/api\/chass\/v1\/public\//);
   }
 
-  assert.match(day, /\/day\?/);
-  assert.match(day, /format=compact/);
-  assert.match(race, /\/race\?/);
-  assert.match(race, /race=11/);
-  assert.match(races, /\/races\?/);
+  assert.match(urls[0], /\/day\?/);
+  assert.match(urls[0], /format=compact/);
+  assert.match(urls[1], /\/day-ai\?/);
+  assert.match(urls[1], /format=tabular/);
+  assert.match(urls[2], /\/race\?/);
+  assert.match(urls[2], /race=11/);
+  assert.match(urls[3], /\/races\?/);
   assert.equal(isViewerSafeEndpoint('/api/db/meetings'), false);
   assert.equal(isViewerSafeEndpoint('/api/chass/context'), false);
+});
+
+test('market tabular sanitizer maps saved odds, popularity, EV, diamond and warning', () => {
+  const market = sanitizeViewerMarketPayload({
+    ok: true,
+    date: '2026-09-12',
+    track: '中山',
+    organization: 'JRA',
+    horseColumns: [
+      'horseNumber', 'horseName', 'abilityRank', 'score', 'winProb', 'top3Prob',
+      'odds', 'popularity', 'expectedValue', 'evRank', 'abilityPopularityGap',
+      'diamond', 'warning',
+    ],
+    races: [{
+      raceNumber: 11,
+      raceName: 'テスト競走',
+      horses: [[
+        7, 'テストホース', 1, 88, .21, .48,
+        6.2, 4, 1.30, 2, 3, '💎', '⚠️',
+      ]],
+    }],
+  });
+
+  const horse = market.races[0].horses[0];
+  assert.equal(horse.horseNo, 7);
+  assert.equal(horse.odds, 6.2);
+  assert.equal(horse.popularity, 4);
+  assert.equal(horse.expectedValue, 1.30);
+  assert.equal(horse.longshotMark, '💎');
+  assert.equal(horse.dangerMark, '⚠️');
 });
 
 test('viewer sanitizer accepts compact aliases and full public details', () => {
@@ -108,6 +145,7 @@ test('viewer sanitizer accepts compact aliases and full public details', () => {
 
 test('viewer sanitizer rejects non-public-shaped payloads and invalid selectors', () => {
   assert.throws(() => sanitizeViewerDayPayload({ ok: false }), /viewer_invalid_payload/);
+  assert.throws(() => sanitizeViewerMarketPayload({ ok: true }), /viewer_invalid_market_payload/);
   assert.throws(() => sanitizeViewerRacePayload({ ok: true }), /viewer_invalid_race_payload/);
   assert.throws(() => buildViewerDayUrl({ date: '2026-02-30', organization: 'JRA', track: '東京' }), /viewer_invalid_date/);
   assert.throws(() => buildViewerDayUrl({ date: '2026-09-12', organization: 'JRA', track: '大井' }), /viewer_invalid_track/);

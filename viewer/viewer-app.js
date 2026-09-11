@@ -1,6 +1,7 @@
 import {
   VIEWER_TRACKS,
   buildViewerDayUrl,
+  buildViewerMarketDayUrl,
   buildViewerRaceUrl,
   buildViewerRacesUrl,
   formatViewerNumber,
@@ -8,6 +9,7 @@ import {
   normalizeViewerOrganization,
   normalizeViewerTrack,
   sanitizeViewerDayPayload,
+  sanitizeViewerMarketPayload,
   sanitizeViewerRacePayload,
   validViewerDate,
 } from './viewer-core.js';
@@ -79,7 +81,7 @@ function markValues(horse) {
 function markClass(value) {
   const text = String(value || '');
   if (text.includes('💎')) return 'is-longshot';
-  if (text.includes('⚠️')) return 'is-danger';
+  if (text.includes('⚠')) return 'is-danger';
   if (text === '◎') return 'is-main';
   if (['○', '▲'].includes(text)) return 'is-sub';
   return 'is-mark';
@@ -103,6 +105,15 @@ function timeText(horse) {
   const minutes = Math.floor(horse.predictedTimeSec / 60);
   const seconds = horse.predictedTimeSec - minutes * 60;
   return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
+}
+
+function evText(horse) {
+  const ev = horse.expectedValue ?? (
+    horse.aiWinRate != null && horse.odds != null
+      ? Number((horse.aiWinRate * horse.odds).toFixed(2))
+      : null
+  );
+  return ev == null ? '—' : `${formatViewerNumber(ev, 2)}×`;
 }
 
 function metric(label, value, emphasis = '') {
@@ -144,6 +155,26 @@ function featuredHorses(race) {
     .slice(0, Math.min(3, race.horses.length));
 }
 
+function legendChip(symbol, label, className) {
+  const chip = document.createElement('span');
+  chip.className = `viewer-legend-chip ${className}`;
+  chip.textContent = `${symbol} ${label}`;
+  return chip;
+}
+
+function viewerLegend() {
+  const legend = document.createElement('div');
+  legend.className = 'viewer-focus-legend';
+  legend.append(
+    legendChip('◎', '本命', 'is-main'),
+    legendChip('○', '対抗', 'is-sub'),
+    legendChip('▲', '単穴', 'is-sub'),
+    legendChip('💎', '穴', 'is-longshot'),
+    legendChip('⚠', '危険', 'is-danger'),
+  );
+  return legend;
+}
+
 function mobileHorseCard(horse, featured = false) {
   const card = document.createElement('article');
   card.className = 'viewer-horse-card';
@@ -175,9 +206,9 @@ function mobileHorseCard(horse, featured = false) {
   metrics.append(
     metric('AI勝率', formatViewerPercent(horse.aiWinRate), 'is-primary'),
     metric('複勝率', formatViewerPercent(horse.aiTop3Rate), 'is-primary'),
-    metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1)),
-    metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`),
-    metric('EV', horse.expectedValue == null ? '—' : formatViewerNumber(horse.expectedValue, 2), 'is-ev'),
+    metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1), horse.odds != null ? 'has-market' : ''),
+    metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`, horse.popularity != null ? 'has-market' : ''),
+    metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),
     metric('TIME', timeText(horse)),
   );
 
@@ -204,7 +235,7 @@ function horseRow(horse) {
     formatViewerPercent(horse.aiTop3Rate),
     horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1),
     horse.popularity == null ? '—' : `${horse.popularity}人気`,
-    horse.expectedValue == null ? '—' : formatViewerNumber(horse.expectedValue, 2),
+    evText(horse),
     timeText(horse),
   ];
   values.forEach((value, index) => {
@@ -219,6 +250,14 @@ function horseRow(horse) {
 
 function raceKey(race) {
   return `${race.track || activeContext?.track || ''}:${race.raceNo || ''}`;
+}
+
+function marketStatus(race) {
+  const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+  const withOdds = active.filter((horse) => horse.odds != null).length;
+  if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+  if (withOdds < active.length) return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+  return { text: '市場データ 反映済み', state: 'ready' };
 }
 
 function mobileRaceBody(race) {
@@ -237,15 +276,19 @@ function mobileRaceBody(race) {
   const focusTitle = document.createElement('strong');
   focusTitle.textContent = hasExplicit ? '注目馬' : 'AI注目馬';
 
-  const focusLegend = document.createElement('span');
-  focusLegend.textContent = hasExplicit ? '◎○▲ / 💎 / ⚠️' : 'AI勝率 上位';
+  const status = marketStatus(race);
+  const marketBadge = document.createElement('span');
+  marketBadge.className = `viewer-market-badge is-${status.state}`;
+  marketBadge.textContent = status.text;
 
-  focusHead.append(focusTitle, focusLegend);
+  focusHead.append(focusTitle, marketBadge);
+
+  const legend = viewerLegend();
 
   const focusList = document.createElement('div');
   focusList.className = 'viewer-focus-list';
   focus.forEach((horse) => focusList.append(mobileHorseCard(horse, true)));
-  focusWrap.append(focusHead, focusList);
+  focusWrap.append(focusHead, legend, focusList);
 
   const allWrap = document.createElement('div');
   allWrap.className = 'viewer-all-horses';
@@ -346,13 +389,50 @@ function mutableDay(day) {
   };
 }
 
+function mergeMarket(day, marketDay) {
+  const racesByNo = new Map(marketDay.races.map((race) => [Number(race.raceNo), race]));
+  for (const race of day.races) {
+    const marketRace = racesByNo.get(Number(race.raceNo));
+    if (!marketRace) continue;
+    const byNo = new Map(marketRace.horses.map((horse) => [Number(horse.horseNo), horse]));
+
+    race.horses = race.horses.map((horse) => {
+      const market = byNo.get(Number(horse.horseNo));
+      if (!market) return horse;
+      const expectedValue = market.expectedValue ?? (
+        horse.aiWinRate != null && market.odds != null
+          ? Number((horse.aiWinRate * market.odds).toFixed(2))
+          : null
+      );
+      return {
+        ...horse,
+        odds: market.odds ?? horse.odds,
+        popularity: market.popularity ?? horse.popularity,
+        expectedValue: expectedValue ?? horse.expectedValue,
+        longshotMark: market.longshotMark ?? horse.longshotMark,
+        dangerMark: market.dangerMark ?? horse.dangerMark,
+      };
+    });
+    race.marketAvailable = race.horses.some((horse) => horse.odds != null);
+  }
+}
+
 function mergeRaceDetail(day, detail) {
   const target = day.races.find((race) => Number(race.raceNo) === Number(detail.raceNo));
   if (!target) return;
   const byNo = new Map(detail.horses.map((horse) => [Number(horse.horseNo), horse]));
   target.horses = target.horses.map((horse) => {
     const full = byNo.get(Number(horse.horseNo));
-    return full ? { ...horse, ...full } : horse;
+    if (!full) return horse;
+    return {
+      ...horse,
+      ...full,
+      odds: full.odds ?? horse.odds,
+      popularity: full.popularity ?? horse.popularity,
+      expectedValue: full.expectedValue ?? horse.expectedValue,
+      longshotMark: full.longshotMark ?? horse.longshotMark,
+      dangerMark: full.dangerMark ?? horse.dangerMark,
+    };
   });
   for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
     if (detail[key] != null) target[key] = detail[key];
@@ -375,9 +455,13 @@ async function fetchRaceDetail(context, raceNo, signal) {
   }
 }
 
-async function enrichDay(day, context, signal) {
-  const queue = [...day.races];
-  const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+async function enrichReasons(day, context, signal) {
+  const interesting = day.races.filter((race) =>
+    race.horses.some((horse) => horse.longshotMark || horse.dangerMark));
+  if (!interesting.length) return;
+
+  const queue = [...interesting];
+  const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
     while (queue.length) {
       if (signal.aborted) return;
       const race = queue.shift();
@@ -385,8 +469,25 @@ async function enrichDay(day, context, signal) {
       if (detail) mergeRaceDetail(day, detail);
     }
   });
+
   await Promise.all(workers);
   if (!signal.aborted && activeDay === day) renderDay(day);
+}
+
+async function fetchMarketDay(context, signal) {
+  const response = await fetch(buildViewerMarketDayUrl(context), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  if (!payload) return null;
+  try {
+    return sanitizeViewerMarketPayload(payload);
+  } catch {
+    return null;
+  }
 }
 
 async function checkTrackAvailable({ date, organization, track }) {
@@ -476,23 +577,28 @@ async function loadViewerDay() {
   elements.summary.hidden = true;
 
   try {
-    const response = await fetch(buildViewerDayUrl({ date, organization, track }), {
+    const context = { date, organization, track };
+    const dayResponse = await fetch(buildViewerDayUrl(context), {
       method: 'GET',
       headers: { Accept: 'application/json' },
       signal,
     });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(payload?.error?.code || `HTTP_${response.status}`);
+    const payload = await dayResponse.json().catch(() => null);
+    if (!dayResponse.ok) throw new Error(payload?.error?.code || `HTTP_${dayResponse.status}`);
 
     const day = mutableDay(sanitizeViewerDayPayload(payload));
-    activeContext = { date, organization, track };
+    activeContext = context;
+
+    const marketDay = await fetchMarketDay(context, signal).catch(() => null);
+    if (marketDay) mergeMarket(day, marketDay);
+
     renderDay(day);
     updateAddressBar(activeContext);
     setStatus('', 'success');
 
     const cached = trackDiscoveryCache.get(`${date}|${organization}`) || [];
     renderTrackChips(cached);
-    enrichDay(day, activeContext, signal).catch(() => {});
+    enrichReasons(day, activeContext, signal).catch(() => {});
   } catch (error) {
     if (error?.name === 'AbortError') return;
     elements.races.replaceChildren();

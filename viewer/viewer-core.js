@@ -76,6 +76,17 @@ export function buildViewerDayUrl({ date, track, organization, origin = '' } = {
   return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day?${params.toString()}`;
 }
 
+export function buildViewerMarketDayUrl({ date, track, organization, origin = '' } = {}) {
+  const context = validatedContext({ date, track, organization });
+  const params = new URLSearchParams({
+    date: context.date,
+    track: context.track,
+    organization: context.organization,
+    format: 'tabular',
+  });
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day-ai?${params.toString()}`;
+}
+
 export function buildViewerRaceUrl({ date, track, organization, race, origin = '' } = {}) {
   const context = validatedContext({ date, track, organization });
   const raceNo = finiteOrNull(race);
@@ -131,6 +142,7 @@ function sanitizeHorse(raw = {}) {
 function sanitizeRace(raw = {}) {
   const identity = raw.race || raw;
   const horses = Array.isArray(raw.horses) ? raw.horses.map(sanitizeHorse) : [];
+
   return Object.freeze({
     organization: normalizeViewerOrganization(identity.organization) || textOrNull(identity.organization),
     raceId: textOrNull(identity.raceId),
@@ -143,6 +155,7 @@ function sanitizeRace(raw = {}) {
     going: textOrNull(identity.going ?? identity.trackCondition),
     startTime: textOrNull(identity.startTime ?? identity.postTime),
     fieldSize: finiteOrNull(identity.fieldSize) ?? horses.length,
+    marketAvailable: Boolean(identity.marketAvailable ?? horses.some((horse) => horse.odds != null)),
     horses: Object.freeze(horses),
   });
 }
@@ -151,6 +164,7 @@ export function sanitizeViewerDayPayload(payload = {}) {
   if (payload?.ok !== true || !Array.isArray(payload?.races)) {
     throw new Error('viewer_invalid_payload');
   }
+
   const races = payload.races
     .map(sanitizeRace)
     .sort((a, b) => Number(a.raceNo || 0) - Number(b.raceNo || 0));
@@ -170,6 +184,48 @@ export function sanitizeViewerRacePayload(payload = {}) {
     throw new Error('viewer_invalid_race_payload');
   }
   return sanitizeRace(payload);
+}
+
+export function sanitizeViewerMarketPayload(payload = {}) {
+  if (payload?.ok !== true || !Array.isArray(payload?.races) || !Array.isArray(payload?.horseColumns)) {
+    throw new Error('viewer_invalid_market_payload');
+  }
+
+  const columns = payload.horseColumns.map(String);
+  const toObject = (row) => {
+    if (!Array.isArray(row)) return {};
+    return Object.fromEntries(columns.map((key, index) => [key, row[index] ?? null]));
+  };
+
+  const races = payload.races.map((race) => ({
+    raceNo: finiteOrNull(race?.raceNumber),
+    raceName: textOrNull(race?.raceName),
+    horses: Array.isArray(race?.horses)
+      ? race.horses.map((row) => {
+          const horse = toObject(row);
+          return {
+            horseNo: finiteOrNull(horse.horseNumber),
+            horseName: textOrNull(horse.horseName) || '',
+            odds: finiteOrNull(horse.odds),
+            popularity: finiteOrNull(horse.popularity),
+            expectedValue: finiteOrNull(horse.expectedValue),
+            longshotMark: textOrNull(horse.diamond),
+            dangerMark: textOrNull(horse.warning),
+          };
+        })
+      : [],
+  }));
+
+  return Object.freeze({
+    ok: true,
+    date: textOrNull(payload.date),
+    track: textOrNull(payload.track),
+    organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
+    races: Object.freeze(races.map((race) => Object.freeze({
+      ...race,
+      horses: Object.freeze(race.horses.map((horse) => Object.freeze(horse))),
+    }))),
+  });
 }
 
 export function formatViewerPercent(value) {

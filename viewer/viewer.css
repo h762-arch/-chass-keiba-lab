@@ -77,11 +77,7 @@ button,input,select { font: inherit; }
   letter-spacing: -.04em;
 }
 
-.viewer-brand p {
-  margin: 7px 0 0;
-  color: var(--viewer-muted);
-  font-size: 13px;
-}
+.viewer-brand p { margin: 7px 0 0; color: var(--viewer-muted); font-size: 13px; }
 
 .viewer-badge {
   flex: 0 0 auto;
@@ -101,11 +97,7 @@ button,input,select { font: inherit; }
   box-shadow: 0 10px 30px var(--viewer-glow);
 }
 
-.viewer-controls {
-  padding: 15px;
-  margin-bottom: 18px;
-  border-radius: 18px;
-}
+.viewer-controls { padding: 15px; margin-bottom: 18px; border-radius: 18px; }
 
 .viewer-form {
   display: grid;
@@ -144,18 +136,8 @@ button,input,select { font: inherit; }
 
 .viewer-submit:disabled { opacity: .55; cursor: wait; }
 
-.viewer-track-quick {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.viewer-track-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
+.viewer-track-quick { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.viewer-track-chips { display: flex; flex-wrap: wrap; gap: 7px; }
 
 .viewer-track-chip {
   appearance: none;
@@ -192,10 +174,7 @@ button,input,select { font: inherit; }
 
 .viewer-races { display: grid; gap: 16px; }
 
-.viewer-race-card {
-  overflow: hidden;
-  border-radius: 18px;
-}
+.viewer-race-card { overflow: hidden; border-radius: 18px; }
 
 .viewer-race-header {
   display: flex;
@@ -206,18 +185,8 @@ button,input,select { font: inherit; }
   border-bottom: 1px solid var(--viewer-line);
 }
 
-.viewer-race-title {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  min-width: 0;
-}
-
-.viewer-race-title strong {
-  flex: 0 0 auto;
-  font-size: 22px;
-  letter-spacing: -.04em;
-}
+.viewer-race-title { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.viewer-race-title strong { flex: 0 0 auto; font-size: 22px; letter-spacing: -.04em; }
 
 .viewer-race-title span {
   overflow: hidden;
@@ -226,12 +195,7 @@ button,input,select { font: inherit; }
   white-space: nowrap;
 }
 
-.viewer-race-meta {
-  flex: 0 0 auto;
-  text-align: right;
-  color: var(--viewer-muted);
-  font-size: 12px;
-}
+.viewer-race-meta { flex: 0 0 auto; text-align: right; color: var(--viewer-muted); font-size: 12px; }
 
 .viewer-mobile-race-body { display: none; }
 .viewer-table-scroll { overflow-x: auto; }
@@ -269,7 +233,7 @@ button,input,select { font: inherit; }
   min-width: 0;
 }
 
-.viewer-marks span {
+.viewer-marks span,.viewer-legend-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -281,10 +245,10 @@ button,input,select { font: inherit; }
   font-weight: 900;
 }
 
-.viewer-marks .is-main { background: var(--viewer-gold-soft); color: var(--viewer-gold); }
-.viewer-marks .is-sub { background: var(--viewer-blue-soft); color: var(--viewer-blue); }
-.viewer-marks .is-longshot { background: var(--viewer-positive-soft); color: var(--viewer-positive); }
-.viewer-marks .is-danger { background: var(--viewer-danger-soft); color: var(--viewer-danger); }
+.viewer-marks .is-main,.viewer-legend-chip.is-main { background: var(--viewer-gold-soft); color: var(--viewer-gold); }
+.viewer-marks .is-sub,.viewer-legend-chip.is-sub { background: var(--viewer-blue-soft); color: var(--viewer-blue); }
+.viewer-marks .is-longshot,.viewer-legend-chip.is-longshot { background: var(--viewer-positive-soft); color: var(--viewer-positive); }
+.viewer-marks .is-danger,.viewer-legend-chip.is-danger { background: var(--viewer-danger-soft); color: var(--viewer-danger); }
 
 .viewer-runner-inactive { opacity: .46; filter: saturate(.55); }
 
@@ -296,45 +260,23 @@ button,input,select { font: inherit; }
 }
 
 @media (max-width: 720px) {
-  .viewer-shell {
-    width: min(100% - 20px,1180px);
-    padding-top: 18px;
-    padding-bottom: 40px;
-  }
-
+  .viewer-shell { width: min(100% - 20px,1180px); padding-top: 18px; padding-bottom: 40px; }
   .viewer-topbar { margin-bottom: 15px; padding: 0 2px; }
   .viewer-brand h1 { font-size: 23px; }
   .viewer-brand p { margin-top: 5px; font-size: 11px; }
   .viewer-badge { padding: 5px 8px; font-size: 9px; opacity: .8; }
 
-  .viewer-controls {
-    padding: 13px;
-    margin-bottom: 14px;
-    border-radius: 16px;
-    box-shadow: none;
-  }
+  .viewer-controls { padding: 13px; margin-bottom: 14px; border-radius: 16px; box-shadow: none; }
 
-  .viewer-form {
-    grid-template-columns: 1fr 1fr;
-    gap: 9px;
-  }
-
+  .viewer-form { grid-template-columns: 1fr 1fr; gap: 9px; }
   .viewer-field:first-child { grid-column: 1 / -1; }
-
   .viewer-controls.has-track-chips .viewer-track-field { display: none; }
   .viewer-controls.has-track-chips .viewer-form { grid-template-columns: 1fr auto; }
   .viewer-controls.has-track-chips .viewer-field:first-child { grid-column: 1 / -1; }
 
-  .viewer-field input,.viewer-field select,.viewer-submit {
-    min-height: 43px;
-    border-radius: 10px;
-  }
+  .viewer-field input,.viewer-field select,.viewer-submit { min-height: 43px; border-radius: 10px; }
 
-  .viewer-submit {
-    width: 100%;
-    min-height: 43px;
-    padding-inline: 18px;
-  }
+  .viewer-submit { width: 100%; min-height: 43px; padding-inline: 18px; }
 
   .viewer-track-quick {
     align-items: flex-start;
@@ -347,34 +289,17 @@ button,input,select { font: inherit; }
   .viewer-track-chips { gap: 6px; }
   .viewer-track-chip { min-height: 33px; padding: 6px 12px; font-size: 12px; }
 
-  .viewer-status-row {
-    min-height: 0;
-    margin-top: 9px;
-    justify-content: flex-end;
-    font-size: 11px;
-  }
+  .viewer-status-row { min-height: 0; margin-top: 9px; justify-content: flex-end; font-size: 11px; }
 
   .viewer-races { gap: 14px; }
+  .viewer-race-card { border-radius: 17px; box-shadow: none; }
 
-  .viewer-race-card {
-    border-radius: 17px;
-    box-shadow: none;
-  }
-
-  .viewer-race-header {
-    display: block;
-    padding: 15px 15px 12px;
-  }
-
+  .viewer-race-header { display: block; padding: 15px 15px 12px; }
   .viewer-race-title { gap: 8px; }
   .viewer-race-title strong { font-size: 21px; }
   .viewer-race-title span { font-size: 16px; }
 
-  .viewer-race-meta {
-    margin-top: 6px;
-    text-align: left;
-    font-size: 11px;
-  }
+  .viewer-race-meta { margin-top: 6px; text-align: left; font-size: 11px; }
 
   .viewer-table-scroll { display: none; }
   .viewer-mobile-race-body { display: block; }
@@ -386,11 +311,45 @@ button,input,select { font: inherit; }
     gap: 10px;
     padding: 10px 14px 8px;
     background: var(--viewer-panel-2);
-    border-bottom: 1px solid var(--viewer-line);
   }
 
   .viewer-focus-head strong { font-size: 12px; letter-spacing: .02em; }
-  .viewer-focus-head span { color: var(--viewer-muted); font-size: 9px; font-weight: 750; }
+
+  .viewer-market-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 850;
+    white-space: nowrap;
+  }
+
+  .viewer-market-badge.is-ready { background: var(--viewer-positive-soft); color: var(--viewer-positive); }
+  .viewer-market-badge.is-partial { background: var(--viewer-gold-soft); color: var(--viewer-gold); }
+  .viewer-market-badge.is-missing { background: var(--viewer-soft); color: var(--viewer-muted); }
+
+  .viewer-focus-legend {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    padding: 8px 10px;
+    border-top: 1px solid var(--viewer-line);
+    border-bottom: 1px solid var(--viewer-line);
+    background: var(--viewer-panel-2);
+    scrollbar-width: none;
+  }
+
+  .viewer-focus-legend::-webkit-scrollbar { display: none; }
+
+  .viewer-legend-chip {
+    flex: 0 0 auto;
+    min-height: 24px;
+    padding: 3px 7px;
+    border-radius: 7px;
+    font-size: 9px;
+  }
 
   .viewer-focus-list,.viewer-all-horses { background: var(--viewer-panel); }
 
@@ -414,12 +373,7 @@ button,input,select { font: inherit; }
     min-width: 0;
   }
 
-  .viewer-horse-identity {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    min-width: 0;
-  }
+  .viewer-horse-identity { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 
   .viewer-horse-no {
     flex: 0 0 auto;
@@ -460,6 +414,11 @@ button,input,select { font: inherit; }
     padding: 8px 8px 7px;
     border-radius: 10px;
     background: var(--viewer-panel-2);
+    transition: background .2s ease;
+  }
+
+  .viewer-horse-metric.has-market {
+    background: color-mix(in srgb,var(--viewer-positive-soft) 55%,var(--viewer-panel-2));
   }
 
   .viewer-horse-metric-label {
@@ -513,11 +472,7 @@ button,input,select { font: inherit; }
 
   .viewer-expand-button[aria-expanded="true"] { color: var(--viewer-text); }
 
-  .viewer-footer {
-    margin-top: 18px;
-    padding: 0 4px;
-    font-size: 10px;
-  }
+  .viewer-footer { margin-top: 18px; padding: 0 4px; font-size: 10px; }
 }
 
 @media (max-width: 390px) {
