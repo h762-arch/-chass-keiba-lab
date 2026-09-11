@@ -1,0 +1,193 @@
+name: Fix CHASS Viewer Compact API v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-compact-fix-v2
+  cancel-in-progress: false
+
+jobs:
+  fix-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify current Viewer foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer-core.js
+          test -f viewer/viewer-app.js
+          test -f viewer/index.html
+          test -f tests/viewer-foundation.test.mjs
+          test -f mcp/package.json
+          test -f mcp/package-lock.json
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "Viewer foundation and CHASS Ver.10.0.1 baseline OK"
+
+      - name: Switch Viewer day API to compact response
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          core = Path('viewer/viewer-core.js')
+          text = core.read_text(encoding='utf-8')
+          old = "format: 'full',"
+          new = "format: 'compact',"
+          if old in text:
+              text = text.replace(old, new, 1)
+              core.write_text(text, encoding='utf-8')
+          elif new not in text:
+              raise SystemExit('Expected Viewer format setting was not found')
+
+          test = Path('tests/viewer-foundation.test.mjs')
+          text = test.read_text(encoding='utf-8')
+          if "assert.match(url, /format=full/);" in text:
+              text = text.replace(
+                  "assert.match(url, /format=full/);",
+                  "assert.match(url, /format=compact/);",
+                  1
+              )
+              test.write_text(text, encoding='utf-8')
+          elif "assert.match(url, /format=compact/);" not in text:
+              raise SystemExit('Expected Viewer URL assertion was not found')
+          PY
+
+          grep -F "format: 'compact'" viewer/viewer-core.js
+          if grep -F "format: 'full'" viewer/viewer-core.js; then
+            echo "::error::Viewer still requests full day payload."
+            exit 1
+          fi
+          grep -F "format=compact" tests/viewer-foundation.test.mjs
+
+      - name: Verify Viewer source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references a protected/internal surface."
+            exit 1
+          fi
+          grep -RIn "/api/chass/v1/public" viewer
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install MCP dependencies required by full regression
+        run: npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/viewer-foundation.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::GitHub Actions secret CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Commit compact Viewer fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add viewer/viewer-core.js tests/viewer-foundation.test.mjs
+          if git diff --cached --quiet; then
+            echo "Compact Viewer fix is already applied; no commit required."
+          else
+            git commit -m "Fix viewer day API payload size"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker and Viewer assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke test with propagation retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          HEALTH_URL="$BASE_URL/api/chass/v1/public/health"
+          VIEWER_URL="$BASE_URL/viewer/"
+
+          health_ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL --max-time 15 "$HEALTH_URL" -o /tmp/health.json; then
+              health_ok=1
+              break
+            fi
+            echo "Waiting for health propagation ($i/10)..."
+            sleep 3
+          done
+          test "$health_ok" = "1"
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (!body.ok || body.version !== '10.0.1') {
+            throw new Error(`Unexpected deployed health: ${JSON.stringify(body)}`);
+          }
+          console.log('Production health OK');
+          NODE
+
+          viewer_ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL --max-time 15 "$VIEWER_URL" -o /tmp/viewer.html && grep -Fq "Prediction Viewer" /tmp/viewer.html; then
+              viewer_ok=1
+              break
+            fi
+            echo "Waiting for Viewer asset propagation ($i/10)..."
+            sleep 3
+          done
+          test "$viewer_ok" = "1"
+          echo "Viewer production URL OK: $VIEWER_URL"
+
+      - name: Final summary
+        shell: bash
+        run: |
+          echo "✅ Viewer day API now uses format=compact"
+          echo "✅ RESPONSE_TOO_LARGE path avoided for normal day viewing"
+          echo "✅ Viewer-specific tests passed"
+          echo "✅ MCP dependencies installed before full regression"
+          echo "✅ Full regression check passed"
+          echo "✅ Cloudflare deploy completed"
+          echo "✅ Production smoke test passed"
+          echo "Viewer: https://chass-keiba-lab7.h7625421.workers.dev/viewer/"
