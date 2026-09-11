@@ -64,7 +64,7 @@ export function buildViewerDayUrl({ date, track, organization, origin = '' } = {
     date,
     track: normalizedTrack,
     organization: org,
-    format: 'full',
+    format: 'compact',
   });
   return `${base}${VIEWER_PUBLIC_API_PREFIX}/day?${params.toString()}`;
 }

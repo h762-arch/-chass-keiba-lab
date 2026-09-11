@@ -28,7 +28,7 @@ test('viewer builds only the public read-only day endpoint', () => {
   assert.match(url, /^\/api\/chass\/v1\/public\/day\?/);
   assert.match(url, /organization=JRA/);
   assert.match(url, /track=%E4%B8%AD%E5%B1%B1/);
-  assert.match(url, /format=full/);
+  assert.match(url, /format=compact/);
   assert.equal(isViewerSafeEndpoint('/api/db/meetings'), false);
   assert.equal(isViewerSafeEndpoint('/api/chass/context'), false);
 });
