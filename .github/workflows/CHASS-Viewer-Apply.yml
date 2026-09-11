@@ -1,0 +1,878 @@
+name: Apply CHASS Viewer Foundation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-foundation
+  cancel-in-progress: false
+
+jobs:
+  apply-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify CHASS Ver.10.0.1 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f worker.js
+          test -f app.js
+          test -f index.html
+          test -f wrangler.jsonc
+          test -f package.json
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "CHASS Ver.10.0.1 baseline OK"
+
+      - name: Create Viewer foundation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p viewer tests
+          cat > viewer/index.html <<'__CHASS_VIEWER_FILE_1__'
+          <!doctype html>
+          <html lang="ja">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+            <meta name="robots" content="noindex,nofollow">
+            <meta name="theme-color" content="#111827">
+            <title>CHASS KEIBA LAB Viewer</title>
+            <link rel="stylesheet" href="./viewer.css">
+          </head>
+          <body>
+            <main class="viewer-shell">
+              <header class="viewer-topbar">
+                <div class="viewer-brand">
+                  <h1>CHASS KEIBA LAB</h1>
+                  <p>Prediction Viewer</p>
+                </div>
+                <div class="viewer-badge" aria-label="閲覧専用">VIEW ONLY</div>
+              </header>
+          
+              <section class="viewer-controls" aria-label="予想検索">
+                <form id="viewer-form" class="viewer-form">
+                  <div class="viewer-field">
+                    <label for="viewer-date">開催日</label>
+                    <input id="viewer-date" name="date" type="date" required>
+                  </div>
+                  <div class="viewer-field">
+                    <label for="viewer-organization">主催</label>
+                    <select id="viewer-organization" name="organization">
+                      <option value="JRA">JRA</option>
+                      <option value="NAR">NAR</option>
+                    </select>
+                  </div>
+                  <div class="viewer-field">
+                    <label for="viewer-track">競馬場</label>
+                    <select id="viewer-track" name="track"></select>
+                  </div>
+                  <button id="viewer-submit" class="viewer-submit" type="submit">予想を表示</button>
+                </form>
+                <div class="viewer-status-row" aria-live="polite">
+                  <span id="viewer-status">開催日・主催・競馬場を選択してください。</span>
+                  <span id="viewer-summary" hidden></span>
+                </div>
+              </section>
+          
+              <section id="viewer-races" class="viewer-races" aria-label="予想一覧"></section>
+          
+              <footer class="viewer-footer">
+                <div>閲覧専用ページです。予想・設定・研究データの編集機能はありません。</div>
+                <div>表示内容はCHASS KEIBA LABに保存済みの公開用予想データのみを使用します。</div>
+              </footer>
+            </main>
+          
+            <script type="module" src="./viewer-app.js"></script>
+          </body>
+          </html>
+          __CHASS_VIEWER_FILE_1__
+
+          cat > viewer/viewer-app.js <<'__CHASS_VIEWER_FILE_2__'
+          import {
+            VIEWER_TRACKS,
+            buildViewerDayUrl,
+            formatViewerNumber,
+            formatViewerPercent,
+            normalizeViewerOrganization,
+            normalizeViewerTrack,
+            sanitizeViewerDayPayload,
+            validViewerDate,
+          } from './viewer-core.js';
+          
+          const elements = {
+            form: document.querySelector('#viewer-form'),
+            date: document.querySelector('#viewer-date'),
+            organization: document.querySelector('#viewer-organization'),
+            track: document.querySelector('#viewer-track'),
+            submit: document.querySelector('#viewer-submit'),
+            status: document.querySelector('#viewer-status'),
+            summary: document.querySelector('#viewer-summary'),
+            races: document.querySelector('#viewer-races'),
+          };
+          
+          let requestController = null;
+          
+          function tokyoDateString() {
+            const parts = new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Tokyo',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(new Date());
+            const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+            return `${values.year}-${values.month}-${values.day}`;
+          }
+          
+          function setStatus(message, state = 'idle') {
+            elements.status.textContent = message;
+            elements.status.dataset.state = state;
+          }
+          
+          function fillTracks(preferredTrack = '') {
+            const organization = normalizeViewerOrganization(elements.organization.value) || 'JRA';
+            const tracks = VIEWER_TRACKS[organization];
+            elements.track.replaceChildren();
+          
+            for (const track of tracks) {
+              const option = document.createElement('option');
+              option.value = track;
+              option.textContent = track;
+              elements.track.append(option);
+            }
+          
+            if (normalizeViewerTrack(preferredTrack, organization)) {
+              elements.track.value = preferredTrack;
+            }
+          }
+          
+          function markCell(horse) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'viewer-marks';
+            for (const value of [horse.mark, horse.longshotMark, horse.dangerMark]) {
+              if (!value) continue;
+              const span = document.createElement('span');
+              span.textContent = value;
+              wrapper.append(span);
+            }
+            return wrapper;
+          }
+          
+          function timeText(horse) {
+            if (horse.predictedTimeText) return horse.predictedTimeText;
+            if (horse.predictedTimeSec == null) return '—';
+            const minutes = Math.floor(horse.predictedTimeSec / 60);
+            const seconds = horse.predictedTimeSec - minutes * 60;
+            return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
+          }
+          
+          function horseRow(horse) {
+            const row = document.createElement('tr');
+            if (horse.runnerStatus !== 'active') row.classList.add('viewer-runner-inactive');
+          
+            const values = [
+              markCell(horse),
+              horse.horseNo ?? '—',
+              horse.horseName || '—',
+              formatViewerPercent(horse.aiWinRate),
+              formatViewerPercent(horse.aiTop3Rate),
+              horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1),
+              horse.popularity == null ? '—' : `${horse.popularity}人気`,
+              horse.expectedValue == null ? '—' : formatViewerNumber(horse.expectedValue, 2),
+              timeText(horse),
+            ];
+          
+            values.forEach((value, index) => {
+              const cell = document.createElement(index === 2 ? 'th' : 'td');
+              if (index === 2) cell.scope = 'row';
+              if (value instanceof Node) cell.append(value);
+              else cell.textContent = String(value);
+              row.append(cell);
+            });
+          
+            const notes = [horse.longshotReason, horse.dangerReason].filter(Boolean);
+            if (notes.length) row.title = notes.join(' / ');
+            return row;
+          }
+          
+          function raceCard(race) {
+            const article = document.createElement('article');
+            article.className = 'viewer-race-card';
+          
+            const header = document.createElement('header');
+            header.className = 'viewer-race-header';
+          
+            const title = document.createElement('div');
+            title.className = 'viewer-race-title';
+            const raceNo = document.createElement('strong');
+            raceNo.textContent = `${race.raceNo ?? '—'}R`;
+            const raceName = document.createElement('span');
+            raceName.textContent = race.raceName || 'レース名未登録';
+            title.append(raceNo, raceName);
+          
+            const meta = document.createElement('div');
+            meta.className = 'viewer-race-meta';
+            meta.textContent = [
+              race.startTime,
+              race.surface && race.distance ? `${race.surface}${race.distance}m` : null,
+              race.going ? `馬場 ${race.going}` : null,
+              race.fieldSize ? `${race.fieldSize}頭` : null,
+            ].filter(Boolean).join(' · ');
+          
+            header.append(title, meta);
+          
+            const scroll = document.createElement('div');
+            scroll.className = 'viewer-table-scroll';
+            const table = document.createElement('table');
+            table.className = 'viewer-table';
+            table.innerHTML = `
+              <thead>
+                <tr>
+                  <th>印</th>
+                  <th>馬番</th>
+                  <th>馬名</th>
+                  <th>AI勝率</th>
+                  <th>AI複勝率</th>
+                  <th>単勝</th>
+                  <th>人気</th>
+                  <th>期待値</th>
+                  <th>予想TIME</th>
+                </tr>
+              </thead>
+            `;
+            const body = document.createElement('tbody');
+            race.horses.forEach((horse) => body.append(horseRow(horse)));
+            table.append(body);
+            scroll.append(table);
+            article.append(header, scroll);
+            return article;
+          }
+          
+          function renderDay(day) {
+            elements.races.replaceChildren();
+            for (const race of day.races) elements.races.append(raceCard(race));
+            elements.summary.textContent = `${day.date || ''} ${day.track || ''} · ${day.races.length}レース`;
+            elements.summary.hidden = false;
+          }
+          
+          function updateAddressBar({ date, organization, track }) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('date', date);
+            url.searchParams.set('organization', organization);
+            url.searchParams.set('track', track);
+            history.replaceState(null, '', url);
+          }
+          
+          async function loadViewerDay() {
+            const date = elements.date.value;
+            const organization = normalizeViewerOrganization(elements.organization.value);
+            const track = normalizeViewerTrack(elements.track.value, organization);
+          
+            if (!validViewerDate(date) || !organization || !track) {
+              setStatus('開催日・主催・競馬場を確認してください。', 'error');
+              return;
+            }
+          
+            requestController?.abort();
+            requestController = new AbortController();
+            elements.submit.disabled = true;
+            setStatus('保存済み予想を読み込んでいます…', 'loading');
+            elements.summary.hidden = true;
+          
+            try {
+              const endpoint = buildViewerDayUrl({ date, organization, track });
+              const response = await fetch(endpoint, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+                signal: requestController.signal,
+              });
+              const payload = await response.json().catch(() => null);
+              if (!response.ok) {
+                const code = payload?.error?.code || `HTTP_${response.status}`;
+                throw new Error(code);
+              }
+              const day = sanitizeViewerDayPayload(payload);
+              renderDay(day);
+              updateAddressBar({ date, organization, track });
+              setStatus('閲覧専用 · 保存済み予想', 'success');
+            } catch (error) {
+              if (error?.name === 'AbortError') return;
+              elements.races.replaceChildren();
+              const code = String(error?.message || 'VIEWER_LOAD_FAILED');
+              const message = code === 'RACE_NOT_FOUND'
+                ? 'この条件の保存済み予想はありません。'
+                : '予想データを読み込めませんでした。';
+              setStatus(`${message} (${code})`, 'error');
+            } finally {
+              elements.submit.disabled = false;
+            }
+          }
+          
+          function initialize() {
+            const params = new URLSearchParams(window.location.search);
+            const organization = normalizeViewerOrganization(params.get('organization')) || 'JRA';
+            const date = validViewerDate(params.get('date')) ? params.get('date') : tokyoDateString();
+            const requestedTrack = params.get('track') || '';
+          
+            elements.date.value = date;
+            elements.organization.value = organization;
+            fillTracks(requestedTrack);
+          
+            elements.organization.addEventListener('change', () => fillTracks());
+            elements.form.addEventListener('submit', (event) => {
+              event.preventDefault();
+              loadViewerDay();
+            });
+          
+            if (normalizeViewerTrack(requestedTrack, organization)) loadViewerDay();
+            else setStatus('開催日・主催・競馬場を選択してください。');
+          }
+          
+          initialize();
+          __CHASS_VIEWER_FILE_2__
+
+          cat > viewer/viewer-core.js <<'__CHASS_VIEWER_FILE_3__'
+          export const VIEWER_ROLE = Object.freeze({
+            name: 'VIEWER',
+            permissions: Object.freeze({
+              readPublicPredictions: true,
+              writePredictions: false,
+              readResearchData: false,
+              readInternalIndices: false,
+              readModelWeights: false,
+              readValidationDb: false,
+              changeSettings: false,
+            }),
+          });
+          
+          export const VIEWER_PUBLIC_API_PREFIX = '/api/chass/v1/public';
+          
+          const ALLOWED_ORGANIZATIONS = new Set(['JRA', 'NAR']);
+          
+          export const VIEWER_TRACKS = Object.freeze({
+            JRA: Object.freeze(['札幌', '函館', '福島', '新潟', '東京', '中山', '中京', '京都', '阪神', '小倉']),
+            NAR: Object.freeze(['帯広', '盛岡', '水沢', '浦和', '船橋', '大井', '川崎', '笠松', '金沢', '名古屋', '園田', '姫路', '高知', '佐賀', '門別']),
+          });
+          
+          function finiteOrNull(value) {
+            if (value == null || value === '') return null;
+            const number = Number(value);
+            return Number.isFinite(number) ? number : null;
+          }
+          
+          function textOrNull(value) {
+            const text = String(value ?? '').trim();
+            return text || null;
+          }
+          
+          export function normalizeViewerOrganization(value) {
+            const organization = String(value || '').trim().toUpperCase();
+            return ALLOWED_ORGANIZATIONS.has(organization) ? organization : null;
+          }
+          
+          export function normalizeViewerTrack(value, organization) {
+            const org = normalizeViewerOrganization(organization);
+            const track = String(value || '').trim();
+            if (!org || !VIEWER_TRACKS[org].includes(track)) return null;
+            return track;
+          }
+          
+          export function validViewerDate(value) {
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+            if (!match) return false;
+            const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+            return date.getUTCFullYear() === Number(match[1])
+              && date.getUTCMonth() === Number(match[2]) - 1
+              && date.getUTCDate() === Number(match[3]);
+          }
+          
+          export function buildViewerDayUrl({ date, track, organization, origin = '' } = {}) {
+            if (!validViewerDate(date)) throw new Error('viewer_invalid_date');
+            const org = normalizeViewerOrganization(organization);
+            if (!org) throw new Error('viewer_invalid_organization');
+            const normalizedTrack = normalizeViewerTrack(track, org);
+            if (!normalizedTrack) throw new Error('viewer_invalid_track');
+          
+            const base = String(origin || '').replace(/\/$/, '');
+            const params = new URLSearchParams({
+              date,
+              track: normalizedTrack,
+              organization: org,
+              format: 'full',
+            });
+            return `${base}${VIEWER_PUBLIC_API_PREFIX}/day?${params.toString()}`;
+          }
+          
+          function sanitizeHorse(raw = {}) {
+            const probability = raw.probability || {};
+            const predictedTime = raw.predictedTime || {};
+            const market = raw.market || {};
+            const longshot = raw.longshot || null;
+            const danger = raw.danger || null;
+          
+            return Object.freeze({
+              horseNo: finiteOrNull(raw.horseNo ?? raw.no),
+              horseName: textOrNull(raw.horseName ?? raw.name) || '',
+              mark: textOrNull(raw.mark),
+              aiWinRate: finiteOrNull(probability.win ?? raw.win),
+              aiTop3Rate: finiteOrNull(probability.top3 ?? raw.top3),
+              predictedTimeSec: finiteOrNull(predictedTime.standard ?? raw.time),
+              predictedTimeText: textOrNull(predictedTime.text),
+              odds: finiteOrNull(market.odds ?? raw.odds),
+              popularity: finiteOrNull(market.popularity ?? raw.pop),
+              expectedValue: finiteOrNull(market.expectedValue ?? raw.ev),
+              longshotMark: textOrNull(longshot?.mark ?? raw.longshot),
+              longshotReason: textOrNull(longshot?.reason),
+              dangerMark: textOrNull(danger?.mark ?? raw.danger),
+              dangerReason: textOrNull(danger?.reason),
+              runnerStatus: textOrNull(raw.runnerStatus) || 'active',
+            });
+          }
+          
+          function sanitizeRace(raw = {}) {
+            const identity = raw.race || raw;
+            const horses = Array.isArray(raw.horses) ? raw.horses.map(sanitizeHorse) : [];
+          
+            return Object.freeze({
+              organization: normalizeViewerOrganization(identity.organization) || textOrNull(identity.organization),
+              raceId: textOrNull(identity.raceId),
+              date: textOrNull(identity.date),
+              track: textOrNull(identity.track),
+              raceNo: finiteOrNull(identity.raceNo),
+              raceName: textOrNull(identity.raceName),
+              surface: textOrNull(identity.surface),
+              distance: finiteOrNull(identity.distance),
+              going: textOrNull(identity.going),
+              startTime: textOrNull(identity.startTime),
+              fieldSize: finiteOrNull(identity.fieldSize) ?? horses.length,
+              horses: Object.freeze(horses),
+            });
+          }
+          
+          export function sanitizeViewerDayPayload(payload = {}) {
+            if (payload?.ok !== true || !Array.isArray(payload?.races)) {
+              throw new Error('viewer_invalid_payload');
+            }
+          
+            const races = payload.races
+              .map(sanitizeRace)
+              .sort((a, b) => Number(a.raceNo || 0) - Number(b.raceNo || 0));
+          
+            return Object.freeze({
+              ok: true,
+              date: textOrNull(payload.date),
+              track: textOrNull(payload.track),
+              organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
+              generatedAt: textOrNull(payload.generatedAt),
+              races: Object.freeze(races),
+            });
+          }
+          
+          export function formatViewerPercent(value) {
+            const number = finiteOrNull(value);
+            return number == null ? '—' : `${(number * 100).toFixed(1)}%`;
+          }
+          
+          export function formatViewerNumber(value, digits = 2) {
+            const number = finiteOrNull(value);
+            return number == null ? '—' : number.toFixed(digits);
+          }
+          
+          export function isViewerSafeEndpoint(urlLike) {
+            try {
+              const url = new URL(urlLike, 'https://viewer.invalid');
+              return url.pathname.startsWith(`${VIEWER_PUBLIC_API_PREFIX}/`);
+            } catch {
+              return false;
+            }
+          }
+          __CHASS_VIEWER_FILE_3__
+
+          cat > viewer/viewer.css <<'__CHASS_VIEWER_FILE_4__'
+          :root {
+            color-scheme: light dark;
+            --viewer-bg: #f5f6f8;
+            --viewer-panel: #ffffff;
+            --viewer-text: #181b20;
+            --viewer-muted: #68707c;
+            --viewer-line: #dfe3e8;
+            --viewer-accent: #111827;
+            --viewer-soft: #eef1f5;
+          }
+          
+          @media (prefers-color-scheme: dark) {
+            :root {
+              --viewer-bg: #0f1115;
+              --viewer-panel: #171a20;
+              --viewer-text: #f3f4f6;
+              --viewer-muted: #a2a9b3;
+              --viewer-line: #303640;
+              --viewer-accent: #f3f4f6;
+              --viewer-soft: #222730;
+            }
+          }
+          
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            background: var(--viewer-bg);
+            color: var(--viewer-text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+          }
+          button, input, select { font: inherit; }
+          
+          .viewer-shell {
+            width: min(1180px, calc(100% - 24px));
+            margin: 0 auto;
+            padding: 24px 0 56px;
+          }
+          
+          .viewer-topbar {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 18px;
+          }
+          .viewer-brand h1 { margin: 0; font-size: clamp(22px, 5vw, 34px); }
+          .viewer-brand p { margin: 6px 0 0; color: var(--viewer-muted); }
+          .viewer-badge {
+            flex: 0 0 auto;
+            padding: 7px 10px;
+            border: 1px solid var(--viewer-line);
+            border-radius: 999px;
+            background: var(--viewer-panel);
+            font-size: 12px;
+            font-weight: 700;
+          }
+          
+          .viewer-controls,
+          .viewer-race-card {
+            border: 1px solid var(--viewer-line);
+            border-radius: 16px;
+            background: var(--viewer-panel);
+          }
+          .viewer-controls { padding: 14px; margin-bottom: 16px; }
+          .viewer-form {
+            display: grid;
+            grid-template-columns: 1.2fr .8fr 1fr auto;
+            gap: 10px;
+            align-items: end;
+          }
+          .viewer-field { display: grid; gap: 6px; }
+          .viewer-field label { color: var(--viewer-muted); font-size: 12px; font-weight: 700; }
+          .viewer-field input,
+          .viewer-field select,
+          .viewer-submit {
+            min-height: 44px;
+            border: 1px solid var(--viewer-line);
+            border-radius: 10px;
+            padding: 0 11px;
+            background: var(--viewer-panel);
+            color: var(--viewer-text);
+          }
+          .viewer-submit {
+            padding: 0 18px;
+            background: var(--viewer-accent);
+            color: var(--viewer-bg);
+            border-color: var(--viewer-accent);
+            font-weight: 800;
+            cursor: pointer;
+          }
+          .viewer-submit:disabled { opacity: .55; cursor: wait; }
+          
+          .viewer-status-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+            justify-content: space-between;
+            margin-top: 12px;
+            color: var(--viewer-muted);
+            font-size: 13px;
+          }
+          #viewer-status[data-state="error"] { color: #c2410c; }
+          #viewer-status[data-state="success"] { color: #15803d; }
+          
+          .viewer-races { display: grid; gap: 14px; }
+          .viewer-race-card { overflow: hidden; }
+          .viewer-race-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--viewer-line);
+          }
+          .viewer-race-title { display: flex; gap: 10px; align-items: baseline; }
+          .viewer-race-title strong { font-size: 20px; }
+          .viewer-race-title span { font-weight: 700; }
+          .viewer-race-meta { text-align: right; color: var(--viewer-muted); font-size: 12px; }
+          .viewer-table-scroll { overflow-x: auto; }
+          .viewer-table {
+            width: 100%;
+            min-width: 850px;
+            border-collapse: collapse;
+            font-size: 13px;
+          }
+          .viewer-table th,
+          .viewer-table td {
+            padding: 10px 9px;
+            border-bottom: 1px solid var(--viewer-line);
+            text-align: right;
+            white-space: nowrap;
+          }
+          .viewer-table thead th {
+            color: var(--viewer-muted);
+            background: var(--viewer-soft);
+            font-size: 11px;
+            font-weight: 800;
+          }
+          .viewer-table th:nth-child(1),
+          .viewer-table td:nth-child(1),
+          .viewer-table th:nth-child(3),
+          .viewer-table td:nth-child(3) { text-align: left; }
+          .viewer-table tbody tr:last-child > * { border-bottom: 0; }
+          .viewer-marks { display: flex; gap: 4px; align-items: center; min-width: 72px; }
+          .viewer-marks span { font-weight: 900; }
+          .viewer-runner-inactive { opacity: .48; text-decoration: line-through; }
+          .viewer-footer {
+            margin-top: 20px;
+            color: var(--viewer-muted);
+            font-size: 12px;
+            line-height: 1.7;
+          }
+          
+          @media (max-width: 720px) {
+            .viewer-shell { width: min(100% - 16px, 1180px); padding-top: 16px; }
+            .viewer-topbar { align-items: center; }
+            .viewer-brand p { font-size: 12px; }
+            .viewer-form { grid-template-columns: 1fr 1fr; }
+            .viewer-field:first-child { grid-column: 1 / -1; }
+            .viewer-submit { width: 100%; }
+            .viewer-race-header { display: block; }
+            .viewer-race-meta { text-align: left; margin-top: 6px; }
+          }
+          __CHASS_VIEWER_FILE_4__
+
+          cat > tests/viewer-foundation.test.mjs <<'__CHASS_VIEWER_FILE_5__'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import {
+            VIEWER_ROLE,
+            buildViewerDayUrl,
+            isViewerSafeEndpoint,
+            sanitizeViewerDayPayload,
+          } from '../viewer/viewer-core.js';
+          
+          test('VIEWER role is read-only and cannot access internal capabilities', () => {
+            assert.equal(VIEWER_ROLE.name, 'VIEWER');
+            assert.equal(VIEWER_ROLE.permissions.readPublicPredictions, true);
+            assert.equal(VIEWER_ROLE.permissions.writePredictions, false);
+            assert.equal(VIEWER_ROLE.permissions.readResearchData, false);
+            assert.equal(VIEWER_ROLE.permissions.readInternalIndices, false);
+            assert.equal(VIEWER_ROLE.permissions.readModelWeights, false);
+            assert.equal(VIEWER_ROLE.permissions.readValidationDb, false);
+            assert.equal(VIEWER_ROLE.permissions.changeSettings, false);
+          });
+          
+          test('viewer builds only the public read-only day endpoint', () => {
+            const url = buildViewerDayUrl({
+              date: '2026-09-12',
+              organization: 'JRA',
+              track: '中山',
+            });
+            assert.equal(isViewerSafeEndpoint(url), true);
+            assert.match(url, /^\/api\/chass\/v1\/public\/day\?/);
+            assert.match(url, /organization=JRA/);
+            assert.match(url, /track=%E4%B8%AD%E5%B1%B1/);
+            assert.match(url, /format=full/);
+            assert.equal(isViewerSafeEndpoint('/api/db/meetings'), false);
+            assert.equal(isViewerSafeEndpoint('/api/chass/context'), false);
+          });
+          
+          test('viewer sanitizer whitelists public display fields and drops internal data', () => {
+            const result = sanitizeViewerDayPayload({
+              ok: true,
+              date: '2026-09-12',
+              track: '中山',
+              organization: 'JRA',
+              generatedAt: '2026-09-12T01:00:00.000Z',
+              secret: 'must-not-leak',
+              races: [{
+                race: {
+                  organization: 'JRA',
+                  raceId: '2026-09-12|中山|11',
+                  date: '2026-09-12',
+                  track: '中山',
+                  raceNo: 11,
+                  raceName: 'テスト競走',
+                  surface: '芝',
+                  distance: 1600,
+                  going: '良',
+                  startTime: '15:45',
+                  fieldSize: 1,
+                  internalRaceToken: 'hidden',
+                },
+                internalModelWeights: { ability: 28 },
+                horses: [{
+                  horseNo: 7,
+                  horseName: 'テストホース',
+                  mark: '◎',
+                  probability: { win: 0.21, top3: 0.48 },
+                  predictedTime: { standard: 93.4, text: '1:33.4' },
+                  market: { odds: 6.2, popularity: 4, expectedValue: 1.30 },
+                  longshot: { mark: '💎', reason: '展開向く', hiddenScore: 999 },
+                  danger: null,
+                  runnerStatus: 'active',
+                  rawIndices: { secret: true },
+                }],
+              }],
+            });
+          
+            assert.equal(result.races[0].horses[0].horseName, 'テストホース');
+            assert.equal(result.races[0].horses[0].expectedValue, 1.30);
+            assert.equal('rawIndices' in result.races[0].horses[0], false);
+            assert.equal('internalModelWeights' in result.races[0], false);
+            assert.equal('secret' in result, false);
+          });
+          
+          test('viewer sanitizer rejects non-public-shaped payloads', () => {
+            assert.throws(() => sanitizeViewerDayPayload({ ok: false }), /viewer_invalid_payload/);
+            assert.throws(() => buildViewerDayUrl({ date: '2026-02-30', organization: 'JRA', track: '東京' }), /viewer_invalid_date/);
+            assert.throws(() => buildViewerDayUrl({ date: '2026-09-12', organization: 'JRA', track: '大井' }), /viewer_invalid_track/);
+          });
+          __CHASS_VIEWER_FILE_5__
+
+      - name: Verify Viewer source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+
+          if grep -R -nE "/api/db/|/api/chass/context" viewer --include='*.js' --include='*.html' 2>/dev/null; then
+            echo "::error::Viewer references a protected/internal API path."
+            exit 1
+          fi
+
+          if grep -R -n "/api/chass/v1/" viewer --include='*.js' --include='*.html' 2>/dev/null | grep -v "/api/chass/v1/public"; then
+            echo "::error::Viewer references a non-public CHASS v1 API path."
+            exit 1
+          fi
+
+          grep -R -n "/api/chass/v1/public" viewer/viewer-core.js
+          echo "Viewer public API boundary OK"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          if [ -f mcp/package.json ]; then
+            npm ci --prefix mcp
+          fi
+
+      - name: Run Viewer tests
+        run: node --test tests/viewer-foundation.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::GitHub Actions secret CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Commit Viewer foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            viewer/index.html \
+            viewer/viewer-app.js \
+            viewer/viewer-core.js \
+            viewer/viewer.css \
+            tests/viewer-foundation.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Viewer foundation is already applied; no commit required."
+          else
+            git commit -m "Add read-only prediction viewer foundation"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker and static Viewer assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          HEALTH_URL="$BASE_URL/api/chass/v1/public/health"
+          VIEWER_URL="$BASE_URL/viewer/index.html"
+
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$HEALTH_URL" -o /tmp/health.json; then
+              break
+            fi
+            sleep 3
+          done
+          cat /tmp/health.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (body.ok !== true) throw new Error('Production health did not return ok=true');
+          if (body.version && body.version !== '10.0.1') {
+            throw new Error(`Unexpected deployed version: ${body.version}`);
+          }
+          console.log('Production health OK');
+          NODE
+
+          curl -fsS --max-time 15 "$VIEWER_URL" -o /tmp/viewer.html
+          grep -F "Prediction Viewer" /tmp/viewer.html
+          echo "Viewer production URL OK: $VIEWER_URL"
+
+      - name: Final summary
+        shell: bash
+        run: |
+          echo "✅ Viewer foundation files generated"
+          echo "✅ Viewer source boundary checked"
+          echo "✅ Viewer tests passed"
+          echo "✅ Full regression check passed"
+          echo "✅ Viewer foundation committed to main"
+          echo "✅ Cloudflare Worker/assets deployed"
+          echo "✅ Production health and Viewer URL verified"
+          echo "Viewer: https://chass-keiba-lab7.h7625421.workers.dev/viewer/index.html"
