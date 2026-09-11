@@ -38,6 +38,7 @@ let activeContext = null;
 let noDataState = false;
 const trackDiscoveryCache = new Map();
 const expandedRaces = new Set();
+const expandedSecondaryRaces = new Set();
 
 const trackQuick = document.createElement('div');
 trackQuick.className = 'viewer-track-quick';
@@ -144,7 +145,7 @@ function markClass(value) {
   if (text.includes('💎')) return 'is-longshot';
   if (text.includes('⚠')) return 'is-danger';
   if (text === '◎') return 'is-main';
-  if (['○', '▲'].includes(text)) return 'is-sub';
+  if (['○', '▲', '△'].includes(text)) return 'is-sub';
   return 'is-mark';
 }
 
@@ -170,11 +171,20 @@ function timeText(horse) {
 
 
 function timeSeconds(horse) {
-  if (Number.isFinite(Number(horse.predictedTimeSec))) return Number(horse.predictedTimeSec);
+  const direct = horse.predictedTimeSec;
+  if (direct != null && direct !== '' && Number.isFinite(Number(direct))) {
+    const value = Number(direct);
+    return value > 0 ? value : null;
+  }
+
   const text = String(horse.predictedTimeText || '').trim();
+  if (!text || text === '—') return null;
+
   const match = /^(\d+):(\d{2}(?:\.\d+)?)$/.exec(text);
   if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
+
+  const value = Number(match[1]) * 60 + Number(match[2]);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function raceRanks(race) {
@@ -189,8 +199,28 @@ function raceRanks(race) {
     .filter((horse) => horse.aiWinRate != null)
     .sort((a, b) => Number(b.aiWinRate) - Number(a.aiWinRate) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
 
-  const timeRank = new Map(byTime.map((item, index) => [Number(item.horse.horseNo), index + 1]));
-  const winRank = new Map(byWin.map((horse, index) => [Number(horse.horseNo), index + 1]));
+  const timeRank = new Map();
+  let previousTime = null;
+  let currentTimeRank = 0;
+  byTime.forEach((item, index) => {
+    if (previousTime == null || Math.abs(item.value - previousTime) > 1e-9) {
+      currentTimeRank = index + 1;
+    }
+    timeRank.set(Number(item.horse.horseNo), currentTimeRank);
+    previousTime = item.value;
+  });
+
+  const winRank = new Map();
+  let previousWin = null;
+  let currentWinRank = 0;
+  byWin.forEach((horse, index) => {
+    const value = Number(horse.aiWinRate);
+    if (previousWin == null || Math.abs(value - previousWin) > 1e-12) {
+      currentWinRank = index + 1;
+    }
+    winRank.set(Number(horse.horseNo), currentWinRank);
+    previousWin = value;
+  });
 
   return { timeRank, winRank };
 }
@@ -234,22 +264,30 @@ function metric(label, value, emphasis = '') {
   return item;
 }
 
-function horseIsFeatured(horse) {
-  return ['◎', '○', '▲'].includes(String(horse.mark || ''))
+const SECONDARY_MARKS = new Set(['○', '▲', '△']);
+
+function horseHasPrimarySignal(horse) {
+  return horse.mark === '◎'
     || Boolean(horse.longshotMark)
     || Boolean(horse.dangerMark);
 }
 
-function featuredHorses(race) {
-  const explicit = race.horses.filter(horseIsFeatured);
+function horseHasSecondarySignal(horse) {
+  return SECONDARY_MARKS.has(String(horse.mark || ''));
+}
+
+function horseIsMarked(horse) {
+  return horseHasPrimarySignal(horse) || horseHasSecondarySignal(horse);
+}
+
+function primaryHorses(race) {
+  const explicit = race.horses.filter(horseHasPrimarySignal);
   if (explicit.length) {
     const priority = (horse) => {
       if (horse.mark === '◎') return 0;
       if (horse.longshotMark) return 1;
-      if (horse.mark === '○') return 2;
-      if (horse.mark === '▲') return 3;
-      if (horse.dangerMark) return 4;
-      return 5;
+      if (horse.dangerMark) return 2;
+      return 3;
     };
     return [...explicit].sort((a, b) => priority(a) - priority(b));
   }
@@ -257,7 +295,15 @@ function featuredHorses(race) {
   return [...race.horses]
     .filter((horse) => horse.runnerStatus === 'active')
     .sort((a, b) => Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1))
-    .slice(0, Math.min(3, race.horses.length));
+    .slice(0, Math.min(1, race.horses.length));
+}
+
+function secondaryHorses(race, primary) {
+  const primaryNos = new Set(primary.map((horse) => Number(horse.horseNo)));
+  return race.horses.filter((horse) =>
+    !primaryNos.has(Number(horse.horseNo))
+    && horseHasSecondarySignal(horse)
+  );
 }
 
 function legendChip(symbol, label, className) {
@@ -274,10 +320,66 @@ function viewerLegend() {
     legendChip('◎', '本命', 'is-main'),
     legendChip('○', '対抗', 'is-sub'),
     legendChip('▲', '単穴', 'is-sub'),
+    legendChip('△', '連下', 'is-sub'),
     legendChip('💎', '穴', 'is-longshot'),
     legendChip('⚠', '危険', 'is-danger'),
   );
   return legend;
+}
+
+function abilityBadge(horse) {
+  const badge = document.createElement('div');
+  badge.className = 'viewer-ability-badge';
+  badge.title = '公開用総合能力指数';
+
+  const label = document.createElement('span');
+  label.textContent = '能力';
+
+  const score = document.createElement('strong');
+  score.textContent = horse.abilityScore == null
+    ? '—'
+    : formatViewerNumber(horse.abilityScore, 1);
+
+  const rank = document.createElement('em');
+  rank.textContent = horse.abilityRank == null ? '' : `${horse.abilityRank}位`;
+
+  badge.append(label, score, rank);
+  return badge;
+}
+
+function shortComment(horse, ranks) {
+  const facts = [];
+  const no = Number(horse.horseNo);
+  const aiRank = ranks?.winRank?.get(no);
+  const timeRank = ranks?.timeRank?.get(no);
+
+  if (horse.abilityRank != null && horse.abilityRank <= 3) {
+    facts.push(`能力${horse.abilityRank}位`);
+  }
+  if (aiRank != null && aiRank <= 3) {
+    facts.push(`AI勝率${aiRank}位`);
+  }
+  if (timeRank != null && timeRank <= 3) {
+    facts.push(`予想TIME${timeRank}位`);
+  }
+  if (horse.expectedValue != null && horse.expectedValue >= 1) {
+    facts.push(`EV ${formatViewerNumber(horse.expectedValue, 2)}×`);
+  }
+
+  const reasons = [];
+  if (horse.longshotReason) reasons.push(`💎 ${horse.longshotReason}`);
+  if (horse.dangerReason) reasons.push(`⚠ ${horse.dangerReason}`);
+
+  if (!reasons.length) {
+    if (horse.mark === '◎') reasons.push('◎ 本命評価');
+    else if (horse.mark === '○') reasons.push('○ 対抗評価');
+    else if (horse.mark === '▲') reasons.push('▲ 単穴評価');
+    else if (horse.mark === '△') reasons.push('△ 連下評価');
+    else if (horse.longshotMark) reasons.push('💎 穴評価');
+    else if (horse.dangerMark) reasons.push('⚠ 注意評価');
+  }
+
+  return [...facts, ...reasons].filter(Boolean).join('・');
 }
 
 function mobileHorseCard(horse, featured = false, ranks = null) {
@@ -287,7 +389,11 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
   if (horse.runnerStatus !== 'active') card.classList.add('viewer-runner-inactive');
 
   const top = document.createElement('div');
-  top.className = 'viewer-horse-card-top';
+  top.className = 'viewer-horse-card-top viewer-horse-card-top-v36';
+
+  const marks = markCell(horse);
+  marks.classList.add('viewer-horse-card-marks', 'is-leading');
+  if (!marks.childElementCount) marks.classList.add('is-empty');
 
   const identity = document.createElement('div');
   identity.className = 'viewer-horse-identity';
@@ -302,9 +408,8 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
 
   identity.append(no, name);
 
-  const marks = markCell(horse);
-  marks.classList.add('viewer-horse-card-marks');
-  top.append(identity, marks);
+  const ability = abilityBadge(horse);
+  top.append(marks, identity, ability);
 
   const marketAvailable = horse.popularity != null
     || horse.odds != null
@@ -338,6 +443,14 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
   );
   card.append(predictionMetrics);
 
+  const comment = featured ? shortComment(horse, ranks) : '';
+  if (comment) {
+    const note = document.createElement('p');
+    note.className = 'viewer-short-comment';
+    note.textContent = comment;
+    card.append(note);
+  }
+
   const gapInfo = ranks ? timeGapInfo(horse, ranks) : null;
   if (gapInfo) {
     const diagnostic = document.createElement('div');
@@ -347,13 +460,6 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
     card.append(diagnostic);
   }
 
-  const notes = [horse.longshotReason, horse.dangerReason].filter(Boolean);
-  if (notes.length) {
-    const note = document.createElement('p');
-    note.className = 'viewer-horse-note';
-    note.textContent = notes.join(' / ');
-    card.append(note);
-  }
   return card;
 }
 
@@ -397,9 +503,10 @@ function mobileRaceBody(race) {
   const shell = document.createElement('div');
   shell.className = 'viewer-mobile-race-body';
 
-  const focus = featuredHorses(race);
+  const primary = primaryHorses(race);
+  const secondary = secondaryHorses(race, primary);
   const ranks = raceRanks(race);
-  const hasExplicit = race.horses.some(horseIsFeatured);
+  const hasPrimarySignal = primary.some(horseHasPrimarySignal);
 
   const focusWrap = document.createElement('section');
   focusWrap.className = 'viewer-focus';
@@ -408,7 +515,7 @@ function mobileRaceBody(race) {
   focusHead.className = 'viewer-focus-head';
 
   const focusTitle = document.createElement('strong');
-  focusTitle.textContent = hasExplicit ? '注目馬' : 'AI注目馬';
+  focusTitle.textContent = hasPrimarySignal ? '注目馬' : 'AI注目馬';
 
   const status = marketStatus(race);
   const marketBadge = document.createElement('span');
@@ -419,34 +526,70 @@ function mobileRaceBody(race) {
 
   const focusList = document.createElement('div');
   focusList.className = 'viewer-focus-list';
-  focus.forEach((horse) => focusList.append(mobileHorseCard(horse, true, ranks)));
+  primary.forEach((horse) => focusList.append(mobileHorseCard(horse, true, ranks)));
   focusWrap.append(focusHead, focusList);
+
+  const secondaryWrap = document.createElement('div');
+  secondaryWrap.className = 'viewer-secondary-horses';
+  secondaryWrap.hidden = true;
+  secondary.forEach((horse) => secondaryWrap.append(mobileHorseCard(horse, true, ranks)));
 
   const allWrap = document.createElement('div');
   allWrap.className = 'viewer-all-horses';
   allWrap.hidden = true;
-  race.horses.forEach((horse) => allWrap.append(mobileHorseCard(horse, horseIsFeatured(horse), ranks)));
+  race.horses.forEach((horse) =>
+    allWrap.append(mobileHorseCard(horse, horseIsMarked(horse), ranks))
+  );
 
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'viewer-expand-button';
-
+  const actions = document.createElement('div');
+  actions.className = 'viewer-action-row';
   const key = raceKey(race);
-  const setExpanded = (expanded) => {
+
+  const secondaryToggle = document.createElement('button');
+  secondaryToggle.type = 'button';
+  secondaryToggle.className = 'viewer-secondary-button';
+
+  const allToggle = document.createElement('button');
+  allToggle.type = 'button';
+  allToggle.className = 'viewer-expand-button';
+
+  const setSecondary = (expanded) => {
+    secondaryWrap.hidden = !expanded;
+    secondaryToggle.hidden = secondary.length === 0;
+    secondaryToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    secondaryToggle.textContent = expanded
+      ? '○▲△を閉じる'
+      : `○▲△を見る（${secondary.length}頭）`;
+    if (expanded) expandedSecondaryRaces.add(key);
+    else expandedSecondaryRaces.delete(key);
+  };
+
+  const setAll = (expanded) => {
     allWrap.hidden = !expanded;
     focusWrap.hidden = expanded;
-    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    toggle.textContent = expanded ? '注目馬だけ表示' : `全頭を見る（${race.horses.length}頭）`;
+    secondaryWrap.hidden = expanded ? true : !expandedSecondaryRaces.has(key);
+    secondaryToggle.hidden = expanded || secondary.length === 0;
+    allToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    allToggle.textContent = expanded
+      ? '注目馬に戻す'
+      : `全頭を見る（${race.horses.length}頭）`;
     if (expanded) expandedRaces.add(key);
     else expandedRaces.delete(key);
   };
 
-  toggle.addEventListener('click', () => {
-    setExpanded(toggle.getAttribute('aria-expanded') !== 'true');
+  secondaryToggle.addEventListener('click', () => {
+    setSecondary(secondaryToggle.getAttribute('aria-expanded') !== 'true');
   });
 
-  shell.append(focusWrap, allWrap, toggle);
-  setExpanded(expandedRaces.has(key));
+  allToggle.addEventListener('click', () => {
+    setAll(allToggle.getAttribute('aria-expanded') !== 'true');
+  });
+
+  actions.append(secondaryToggle, allToggle);
+  shell.append(focusWrap, secondaryWrap, allWrap, actions);
+
+  setSecondary(expandedSecondaryRaces.has(key));
+  setAll(expandedRaces.has(key));
   return shell;
 }
 
@@ -586,6 +729,8 @@ function mergeMarket(day, marketDay) {
       );
       return {
         ...horse,
+        abilityScore: market.abilityScore ?? horse.abilityScore,
+        abilityRank: market.abilityRank ?? horse.abilityRank,
         odds: market.odds ?? horse.odds,
         popularity: market.popularity ?? horse.popularity,
         expectedValue: expectedValue ?? horse.expectedValue,

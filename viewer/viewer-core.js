@@ -138,6 +138,7 @@ function sanitizeHorse(raw = {}) {
   const predictedTime = raw.predictedTime && typeof raw.predictedTime === 'object'
     ? raw.predictedTime
     : {};
+  const ability = raw.ability && typeof raw.ability === 'object' ? raw.ability : {};
   const market = raw.market || {};
   const longshot = raw.longshot && typeof raw.longshot === 'object' ? raw.longshot : null;
   const danger = raw.danger && typeof raw.danger === 'object' ? raw.danger : null;
@@ -147,6 +148,10 @@ function sanitizeHorse(raw = {}) {
     horseNo: finiteOrNull(raw.horseNo ?? raw.horseNumber ?? raw.no),
     horseName: textOrNull(raw.horseName ?? raw.name) || '',
     mark: textOrNull(raw.mark),
+    abilityScore: finiteOrNull(
+      ability.totalScore ?? ability.score ?? raw.abilityScore ?? raw.overallScore ?? raw.score
+    ),
+    abilityRank: finiteOrNull(raw.abilityRank),
     aiWinRate: finiteOrNull(probability.win ?? raw.win ?? raw.winProb),
     aiTop3Rate: finiteOrNull(probability.top3 ?? raw.top3 ?? raw.top3Prob),
     predictedTimeSec: finiteOrNull(predictedTime.standard ?? raw.time ?? raw.predictedTimeSec),
@@ -263,6 +268,8 @@ export function sanitizeViewerMarketPayload(payload = {}) {
           return {
             horseNo: finiteOrNull(horse.horseNumber),
             horseName: textOrNull(horse.horseName) || '',
+            abilityRank: finiteOrNull(horse.abilityRank),
+            abilityScore: finiteOrNull(horse.score),
             odds: finiteOrNull(horse.odds),
             popularity: finiteOrNull(horse.popularity),
             expectedValue: finiteOrNull(horse.expectedValue),
