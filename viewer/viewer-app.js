@@ -42,6 +42,12 @@ trackQuick.innerHTML = '<span class="viewer-track-quick-label">開催場</span><
 elements.form?.insertAdjacentElement('afterend', trackQuick);
 const trackChipBox = trackQuick.querySelector('.viewer-track-chips');
 
+const raceNav = document.createElement('nav');
+raceNav.className = 'viewer-race-nav';
+raceNav.hidden = true;
+raceNav.setAttribute('aria-label', 'レース移動');
+controls?.insertAdjacentElement('afterend', raceNav);
+
 function tokyoDateString() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Tokyo',
@@ -283,12 +289,10 @@ function mobileRaceBody(race) {
 
   focusHead.append(focusTitle, marketBadge);
 
-  const legend = viewerLegend();
-
   const focusList = document.createElement('div');
   focusList.className = 'viewer-focus-list';
   focus.forEach((horse) => focusList.append(mobileHorseCard(horse, true)));
-  focusWrap.append(focusHead, legend, focusList);
+  focusWrap.append(focusHead, focusList);
 
   const allWrap = document.createElement('div');
   allWrap.className = 'viewer-all-horses';
@@ -321,6 +325,7 @@ function mobileRaceBody(race) {
 function raceCard(race) {
   const article = document.createElement('article');
   article.className = 'viewer-race-card';
+  article.id = `viewer-race-${race.raceNo ?? 'unknown'}`;
 
   const header = document.createElement('header');
   header.className = 'viewer-race-header';
@@ -336,7 +341,7 @@ function raceCard(race) {
   const meta = document.createElement('div');
   meta.className = 'viewer-race-meta';
   meta.textContent = [
-    race.startTime,
+    race.startTime ? `発走 ${race.startTime}` : '発走 --:--',
     race.surface && race.distance ? `${race.surface}${race.distance}m` : null,
     race.going ? `馬場 ${race.going}` : null,
     race.fieldSize ? `${race.fieldSize}頭` : null,
@@ -363,12 +368,54 @@ function raceCard(race) {
   return article;
 }
 
+function renderRaceNav(day) {
+  raceNav.replaceChildren();
+
+  if (!day?.races?.length) {
+    raceNav.hidden = true;
+    return;
+  }
+
+  const top = document.createElement('div');
+  top.className = 'viewer-race-nav-row';
+
+  const label = document.createElement('span');
+  label.className = 'viewer-race-nav-label';
+  label.textContent = 'レース';
+
+  const links = document.createElement('div');
+  links.className = 'viewer-race-nav-links';
+
+  for (const race of day.races) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'viewer-race-nav-link';
+    const time = race.startTime ? ` ${race.startTime}` : '';
+    button.textContent = `${race.raceNo ?? '—'}R${time}`;
+    button.setAttribute('aria-label', `${race.raceNo ?? '—'}R${race.startTime ? ` 発走 ${race.startTime}` : ''}へ移動`);
+    button.addEventListener('click', () => {
+      document.getElementById(`viewer-race-${race.raceNo ?? 'unknown'}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    links.append(button);
+  }
+
+  top.append(label, links);
+
+  const legend = viewerLegend();
+  legend.classList.add('viewer-global-legend');
+
+  raceNav.append(top, legend);
+  raceNav.hidden = false;
+}
+
 function renderDay(day) {
   activeDay = day;
   elements.races.replaceChildren();
   day.races.forEach((race) => elements.races.append(raceCard(race)));
   elements.summary.textContent = `${day.date || ''} ${day.track || ''} · ${day.races.length}レース`;
   elements.summary.hidden = false;
+  renderRaceNav(day);
 }
 
 function updateAddressBar({ date, organization, track }) {
@@ -603,6 +650,7 @@ async function loadViewerDay() {
     if (error?.name === 'AbortError') return;
     elements.races.replaceChildren();
     elements.summary.hidden = true;
+    raceNav.hidden = true;
     const code = String(error?.message || 'VIEWER_LOAD_FAILED');
     const message = code === 'RACE_NOT_FOUND'
       ? 'この条件の保存済み予想はありません。'

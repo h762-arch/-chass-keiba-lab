@@ -482,3 +482,250 @@ button,input,select { font: inherit; }
   .viewer-horse-metric { padding-inline: 6px; }
   .viewer-track-chip { padding-inline: 10px; }
 }
+
+
+/* CHASS Viewer v3.2: compact mobile + race jump navigation */
+.viewer-badge { display: none !important; }
+
+.viewer-race-nav {
+  margin: -4px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 15px;
+  background: var(--viewer-panel);
+}
+
+.viewer-race-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.viewer-race-nav-label {
+  flex: 0 0 auto;
+  color: var(--viewer-muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .05em;
+}
+
+.viewer-race-nav-links {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  min-width: 0;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.viewer-race-nav-links::-webkit-scrollbar { display: none; }
+
+.viewer-race-nav-link {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 999px;
+  background: var(--viewer-panel-2);
+  color: var(--viewer-text);
+  font-size: 10px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.viewer-race-card { scroll-margin-top: 12px; }
+
+.viewer-global-legend {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+@media (max-width: 720px) {
+  .viewer-shell {
+    width: min(100% - 14px, 1180px);
+    padding-top: 12px;
+    padding-bottom: 30px;
+  }
+
+  .viewer-topbar {
+    margin-bottom: 10px;
+    padding: 0 3px;
+  }
+
+  .viewer-brand h1 { font-size: 21px; }
+  .viewer-brand p { margin-top: 3px; font-size: 10px; }
+
+  .viewer-controls {
+    padding: 10px;
+    margin-bottom: 10px;
+    border-radius: 14px;
+  }
+
+  .viewer-form { gap: 7px; }
+
+  .viewer-field { gap: 4px; }
+
+  .viewer-field label,
+  .viewer-track-quick-label {
+    font-size: 10px;
+  }
+
+  .viewer-field input,
+  .viewer-field select,
+  .viewer-submit {
+    min-height: 38px;
+    border-radius: 9px;
+  }
+
+  .viewer-submit {
+    min-height: 38px;
+    padding-inline: 15px;
+    font-size: 13px;
+  }
+
+  .viewer-track-quick {
+    gap: 7px;
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .viewer-track-quick-label { padding-top: 6px; }
+
+  .viewer-track-chip {
+    min-height: 29px;
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  .viewer-status-row {
+    margin-top: 6px;
+    font-size: 10px;
+  }
+
+  .viewer-race-nav {
+    margin: 0 0 10px;
+    padding: 8px 9px;
+    border-radius: 13px;
+  }
+
+  .viewer-race-nav-link {
+    min-height: 28px;
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+
+  .viewer-global-legend {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    margin-top: 7px;
+  }
+
+  .viewer-global-legend .viewer-legend-chip {
+    min-height: 21px;
+    padding: 2px 6px;
+    font-size: 8px;
+  }
+
+  .viewer-races { gap: 10px; }
+
+  .viewer-race-card { border-radius: 14px; }
+
+  .viewer-race-header {
+    padding: 10px 11px 9px;
+  }
+
+  .viewer-race-title { gap: 7px; }
+  .viewer-race-title strong { font-size: 19px; }
+  .viewer-race-title span { font-size: 14px; }
+
+  .viewer-race-meta {
+    margin-top: 4px;
+    font-size: 10px;
+  }
+
+  .viewer-focus-head {
+    padding: 7px 10px 6px;
+  }
+
+  .viewer-focus-head strong { font-size: 11px; }
+
+  .viewer-market-badge {
+    min-height: 19px;
+    padding: 2px 7px;
+    font-size: 8px;
+  }
+
+  /* Per-race legend is no longer rendered; global legend above the races is used. */
+  .viewer-focus > .viewer-focus-legend { display: none; }
+
+  .viewer-horse-card {
+    padding: 9px 10px 8px;
+  }
+
+  .viewer-horse-card-top { gap: 7px; }
+
+  .viewer-horse-identity { gap: 7px; }
+
+  .viewer-horse-no {
+    min-width: 25px;
+    height: 25px;
+    padding: 0 6px;
+    border-radius: 7px;
+    font-size: 11px;
+  }
+
+  .viewer-horse-name {
+    font-size: 14px;
+  }
+
+  .viewer-marks span {
+    min-width: 24px;
+    min-height: 24px;
+    padding: 2px 6px;
+    border-radius: 7px;
+    font-size: 12px;
+  }
+
+  .viewer-horse-metrics {
+    gap: 5px;
+    margin-top: 7px;
+  }
+
+  .viewer-horse-metric {
+    padding: 6px 7px 5px;
+    border-radius: 8px;
+  }
+
+  .viewer-horse-metric-label {
+    font-size: 8px;
+  }
+
+  .viewer-horse-metric-value {
+    margin-top: 1px;
+    font-size: 12px;
+  }
+
+  .viewer-horse-metric.is-primary .viewer-horse-metric-value {
+    font-size: 13px;
+  }
+
+  .viewer-horse-note {
+    margin-top: 6px;
+    padding: 6px 7px;
+    font-size: 9px;
+  }
+
+  .viewer-expand-button {
+    min-height: 36px;
+    font-size: 10px;
+  }
+
+  .viewer-footer {
+    margin-top: 12px;
+    font-size: 9px;
+  }
+}
