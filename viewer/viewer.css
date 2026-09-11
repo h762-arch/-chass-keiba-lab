@@ -9,29 +9,37 @@
   --viewer-accent: #111827;
   --viewer-accent-text: #ffffff;
   --viewer-soft: #eef2f6;
-  --viewer-glow: rgba(17, 24, 39, .06);
+  --viewer-glow: rgba(17,24,39,.06);
   --viewer-positive: #0f9f6e;
-  --viewer-positive-soft: rgba(15, 159, 110, .10);
-  --viewer-danger: #e05252;
-  --viewer-danger-soft: rgba(224, 82, 82, .12);
+  --viewer-positive-soft: rgba(15,159,110,.10);
+  --viewer-danger: #d84c4c;
+  --viewer-danger-soft: rgba(216,76,76,.12);
+  --viewer-gold: #a66b00;
+  --viewer-gold-soft: rgba(166,107,0,.12);
+  --viewer-blue: #4065c5;
+  --viewer-blue-soft: rgba(64,101,197,.10);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --viewer-bg: #0b0d11;
-    --viewer-panel: #13171d;
+    --viewer-bg: #090b0f;
+    --viewer-panel: #12161c;
     --viewer-panel-2: #181d25;
     --viewer-text: #f7f8fa;
-    --viewer-muted: #9199a7;
-    --viewer-line: #2a313b;
+    --viewer-muted: #929aaa;
+    --viewer-line: #29303a;
     --viewer-accent: #f7f8fa;
     --viewer-accent-text: #0b0d11;
-    --viewer-soft: #1c222b;
-    --viewer-glow: rgba(0, 0, 0, .28);
-    --viewer-positive: #42c998;
-    --viewer-positive-soft: rgba(66, 201, 152, .12);
-    --viewer-danger: #ff7979;
-    --viewer-danger-soft: rgba(255, 121, 121, .13);
+    --viewer-soft: #1d232c;
+    --viewer-glow: rgba(0,0,0,.30);
+    --viewer-positive: #55d3a2;
+    --viewer-positive-soft: rgba(85,211,162,.12);
+    --viewer-danger: #ff7f7f;
+    --viewer-danger-soft: rgba(255,127,127,.12);
+    --viewer-gold: #f0c56a;
+    --viewer-gold-soft: rgba(240,197,106,.13);
+    --viewer-blue: #9eb4ff;
+    --viewer-blue-soft: rgba(158,180,255,.11);
   }
 }
 
@@ -40,16 +48,16 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: radial-gradient(circle at 50% -120px, var(--viewer-glow), transparent 360px), var(--viewer-bg);
+  background: radial-gradient(circle at 50% -120px,var(--viewer-glow),transparent 380px),var(--viewer-bg);
   color: var(--viewer-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+  font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;
   font-feature-settings: "palt";
 }
 
-button, input, select { font: inherit; }
+button,input,select { font: inherit; }
 
 .viewer-shell {
-  width: min(1180px, calc(100% - 28px));
+  width: min(1180px,calc(100% - 28px));
   margin: 0 auto;
   padding: 28px 0 56px;
 }
@@ -64,9 +72,9 @@ button, input, select { font: inherit; }
 
 .viewer-brand h1 {
   margin: 0;
-  font-size: clamp(23px, 5vw, 34px);
+  font-size: clamp(23px,5vw,34px);
   line-height: 1;
-  letter-spacing: -.035em;
+  letter-spacing: -.04em;
 }
 
 .viewer-brand p {
@@ -83,12 +91,11 @@ button, input, select { font: inherit; }
   color: var(--viewer-muted);
   background: var(--viewer-panel);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 850;
   letter-spacing: .08em;
 }
 
-.viewer-controls,
-.viewer-race-card {
+.viewer-controls,.viewer-race-card {
   border: 1px solid var(--viewer-line);
   background: var(--viewer-panel);
   box-shadow: 0 10px 30px var(--viewer-glow);
@@ -109,16 +116,14 @@ button, input, select { font: inherit; }
 
 .viewer-field { display: grid; gap: 6px; }
 
-.viewer-field label {
+.viewer-field label,.viewer-track-quick-label {
   color: var(--viewer-muted);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: .04em;
 }
 
-.viewer-field input,
-.viewer-field select,
-.viewer-submit {
+.viewer-field input,.viewer-field select,.viewer-submit {
   min-height: 44px;
   border: 1px solid var(--viewer-line);
   border-radius: 11px;
@@ -138,6 +143,37 @@ button, input, select { font: inherit; }
 }
 
 .viewer-submit:disabled { opacity: .55; cursor: wait; }
+
+.viewer-track-quick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.viewer-track-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.viewer-track-chip {
+  appearance: none;
+  border: 1px solid var(--viewer-line);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: var(--viewer-panel-2);
+  color: var(--viewer-muted);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.viewer-track-chip.is-active {
+  border-color: var(--viewer-text);
+  background: var(--viewer-text);
+  color: var(--viewer-bg);
+}
 
 .viewer-status-row {
   display: flex;
@@ -185,7 +221,7 @@ button, input, select { font: inherit; }
 
 .viewer-race-title span {
   overflow: hidden;
-  font-weight: 800;
+  font-weight: 850;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -197,7 +233,7 @@ button, input, select { font: inherit; }
   font-size: 12px;
 }
 
-.viewer-mobile-horses { display: none; }
+.viewer-mobile-race-body { display: none; }
 .viewer-table-scroll { overflow-x: auto; }
 
 .viewer-table {
@@ -207,8 +243,7 @@ button, input, select { font: inherit; }
   font-size: 13px;
 }
 
-.viewer-table th,
-.viewer-table td {
+.viewer-table th,.viewer-table td {
   padding: 10px 9px;
   border-bottom: 1px solid var(--viewer-line);
   text-align: right;
@@ -222,10 +257,8 @@ button, input, select { font: inherit; }
   font-weight: 800;
 }
 
-.viewer-table th:nth-child(1),
-.viewer-table td:nth-child(1),
-.viewer-table th:nth-child(3),
-.viewer-table td:nth-child(3) { text-align: left; }
+.viewer-table th:nth-child(1),.viewer-table td:nth-child(1),
+.viewer-table th:nth-child(3),.viewer-table td:nth-child(3) { text-align: left; }
 
 .viewer-table tbody tr:last-child > * { border-bottom: 0; }
 
@@ -233,17 +266,27 @@ button, input, select { font: inherit; }
   display: flex;
   gap: 5px;
   align-items: center;
-  min-width: 72px;
+  min-width: 0;
 }
 
-.viewer-marks span { font-weight: 900; }
-.viewer-marks .is-longshot { color: var(--viewer-positive); }
-.viewer-marks .is-danger { color: var(--viewer-danger); }
-
-.viewer-runner-inactive {
-  opacity: .46;
-  filter: saturate(.55);
+.viewer-marks span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  background: var(--viewer-soft);
+  font-weight: 900;
 }
+
+.viewer-marks .is-main { background: var(--viewer-gold-soft); color: var(--viewer-gold); }
+.viewer-marks .is-sub { background: var(--viewer-blue-soft); color: var(--viewer-blue); }
+.viewer-marks .is-longshot { background: var(--viewer-positive-soft); color: var(--viewer-positive); }
+.viewer-marks .is-danger { background: var(--viewer-danger-soft); color: var(--viewer-danger); }
+
+.viewer-runner-inactive { opacity: .46; filter: saturate(.55); }
 
 .viewer-footer {
   margin-top: 24px;
@@ -254,19 +297,15 @@ button, input, select { font: inherit; }
 
 @media (max-width: 720px) {
   .viewer-shell {
-    width: min(100% - 20px, 1180px);
+    width: min(100% - 20px,1180px);
     padding-top: 18px;
     padding-bottom: 40px;
   }
 
-  .viewer-topbar {
-    margin-bottom: 16px;
-    padding: 0 2px;
-  }
-
-  .viewer-brand h1 { font-size: 24px; }
+  .viewer-topbar { margin-bottom: 15px; padding: 0 2px; }
+  .viewer-brand h1 { font-size: 23px; }
   .viewer-brand p { margin-top: 5px; font-size: 11px; }
-  .viewer-badge { padding: 5px 8px; font-size: 9px; }
+  .viewer-badge { padding: 5px 8px; font-size: 9px; opacity: .8; }
 
   .viewer-controls {
     padding: 13px;
@@ -282,18 +321,31 @@ button, input, select { font: inherit; }
 
   .viewer-field:first-child { grid-column: 1 / -1; }
 
-  .viewer-field input,
-  .viewer-field select,
-  .viewer-submit {
+  .viewer-controls.has-track-chips .viewer-track-field { display: none; }
+  .viewer-controls.has-track-chips .viewer-form { grid-template-columns: 1fr auto; }
+  .viewer-controls.has-track-chips .viewer-field:first-child { grid-column: 1 / -1; }
+
+  .viewer-field input,.viewer-field select,.viewer-submit {
     min-height: 43px;
     border-radius: 10px;
   }
 
   .viewer-submit {
     width: 100%;
-    min-height: 46px;
-    margin-top: 2px;
+    min-height: 43px;
+    padding-inline: 18px;
   }
+
+  .viewer-track-quick {
+    align-items: flex-start;
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid var(--viewer-line);
+  }
+
+  .viewer-track-quick-label { flex: 0 0 auto; padding-top: 7px; }
+  .viewer-track-chips { gap: 6px; }
+  .viewer-track-chip { min-height: 33px; padding: 6px 12px; font-size: 12px; }
 
   .viewer-status-row {
     min-height: 0;
@@ -325,12 +377,31 @@ button, input, select { font: inherit; }
   }
 
   .viewer-table-scroll { display: none; }
-  .viewer-mobile-horses { display: grid; gap: 0; }
+  .viewer-mobile-race-body { display: block; }
+
+  .viewer-focus-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px 8px;
+    background: var(--viewer-panel-2);
+    border-bottom: 1px solid var(--viewer-line);
+  }
+
+  .viewer-focus-head strong { font-size: 12px; letter-spacing: .02em; }
+  .viewer-focus-head span { color: var(--viewer-muted); font-size: 9px; font-weight: 750; }
+
+  .viewer-focus-list,.viewer-all-horses { background: var(--viewer-panel); }
 
   .viewer-horse-card {
     padding: 13px 14px 12px;
     border-bottom: 1px solid var(--viewer-line);
     background: var(--viewer-panel);
+  }
+
+  .viewer-horse-card.is-featured {
+    background: linear-gradient(90deg,var(--viewer-positive-soft),transparent 32%),var(--viewer-panel);
   }
 
   .viewer-horse-card:last-child { border-bottom: 0; }
@@ -354,8 +425,8 @@ button, input, select { font: inherit; }
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    min-width: 27px;
-    height: 27px;
+    min-width: 28px;
+    height: 28px;
     padding: 0 7px;
     border: 1px solid var(--viewer-line);
     border-radius: 8px;
@@ -375,37 +446,11 @@ button, input, select { font: inherit; }
     white-space: nowrap;
   }
 
-  .viewer-horse-card-marks {
-    flex: 0 0 auto;
-    justify-content: flex-end;
-    min-width: 0;
-  }
-
-  .viewer-horse-card-marks span {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 26px;
-    min-height: 26px;
-    padding: 3px 6px;
-    border-radius: 8px;
-    background: var(--viewer-soft);
-    font-size: 13px;
-  }
-
-  .viewer-horse-card-marks .is-longshot {
-    background: var(--viewer-positive-soft);
-    color: var(--viewer-positive);
-  }
-
-  .viewer-horse-card-marks .is-danger {
-    background: var(--viewer-danger-soft);
-    color: var(--viewer-danger);
-  }
+  .viewer-horse-card-marks { flex: 0 0 auto; justify-content: flex-end; }
 
   .viewer-horse-metrics {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(3,minmax(0,1fr));
     gap: 7px;
     margin-top: 10px;
   }
@@ -440,24 +485,33 @@ button, input, select { font: inherit; }
     white-space: nowrap;
   }
 
-  .viewer-horse-metric.is-primary {
-    background: var(--viewer-soft);
-  }
-
-  .viewer-horse-metric.is-primary .viewer-horse-metric-value {
-    font-size: 14px;
-  }
-
-  .viewer-horse-metric.is-ev .viewer-horse-metric-value {
-    color: var(--viewer-positive);
-  }
+  .viewer-horse-metric.is-primary .viewer-horse-metric-value { font-size: 14px; }
+  .viewer-horse-metric.is-ev .viewer-horse-metric-value { color: var(--viewer-positive); }
 
   .viewer-horse-note {
     margin: 8px 0 0;
+    padding: 7px 9px;
+    border-radius: 8px;
+    background: var(--viewer-soft);
     color: var(--viewer-muted);
     font-size: 10px;
     line-height: 1.45;
   }
+
+  .viewer-expand-button {
+    width: 100%;
+    min-height: 43px;
+    border: 0;
+    border-top: 1px solid var(--viewer-line);
+    background: var(--viewer-panel-2);
+    color: var(--viewer-muted);
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: .02em;
+    cursor: pointer;
+  }
+
+  .viewer-expand-button[aria-expanded="true"] { color: var(--viewer-text); }
 
   .viewer-footer {
     margin-top: 18px;
@@ -467,8 +521,9 @@ button, input, select { font: inherit; }
 }
 
 @media (max-width: 390px) {
-  .viewer-shell { width: min(100% - 14px, 1180px); }
+  .viewer-shell { width: min(100% - 14px,1180px); }
   .viewer-horse-card { padding-inline: 11px; }
   .viewer-horse-metrics { gap: 5px; }
   .viewer-horse-metric { padding-inline: 6px; }
+  .viewer-track-chip { padding-inline: 10px; }
 }

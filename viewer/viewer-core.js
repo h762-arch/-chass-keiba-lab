@@ -52,44 +52,77 @@ export function validViewerDate(value) {
     && date.getUTCDate() === Number(match[3]);
 }
 
-export function buildViewerDayUrl({ date, track, organization, origin = '' } = {}) {
+function viewerBase(origin = '') {
+  return String(origin || '').replace(/\/$/, '');
+}
+
+function validatedContext({ date, track, organization } = {}) {
   if (!validViewerDate(date)) throw new Error('viewer_invalid_date');
   const org = normalizeViewerOrganization(organization);
   if (!org) throw new Error('viewer_invalid_organization');
   const normalizedTrack = normalizeViewerTrack(track, org);
   if (!normalizedTrack) throw new Error('viewer_invalid_track');
+  return { date, organization: org, track: normalizedTrack };
+}
 
-  const base = String(origin || '').replace(/\/$/, '');
+export function buildViewerDayUrl({ date, track, organization, origin = '' } = {}) {
+  const context = validatedContext({ date, track, organization });
   const params = new URLSearchParams({
-    date,
-    track: normalizedTrack,
-    organization: org,
+    date: context.date,
+    track: context.track,
+    organization: context.organization,
     format: 'compact',
   });
-  return `${base}${VIEWER_PUBLIC_API_PREFIX}/day?${params.toString()}`;
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day?${params.toString()}`;
+}
+
+export function buildViewerRaceUrl({ date, track, organization, race, origin = '' } = {}) {
+  const context = validatedContext({ date, track, organization });
+  const raceNo = finiteOrNull(race);
+  if (!Number.isInteger(raceNo) || raceNo < 1 || raceNo > 20) throw new Error('viewer_invalid_race');
+  const params = new URLSearchParams({
+    date: context.date,
+    track: context.track,
+    organization: context.organization,
+    race: String(raceNo),
+  });
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/race?${params.toString()}`;
+}
+
+export function buildViewerRacesUrl({ date, track, organization, origin = '' } = {}) {
+  const context = validatedContext({ date, track, organization });
+  const params = new URLSearchParams({
+    date: context.date,
+    track: context.track,
+    organization: context.organization,
+  });
+  return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/races?${params.toString()}`;
 }
 
 function sanitizeHorse(raw = {}) {
   const probability = raw.probability || {};
-  const predictedTime = raw.predictedTime || {};
+  const predictedTime = raw.predictedTime && typeof raw.predictedTime === 'object'
+    ? raw.predictedTime
+    : {};
   const market = raw.market || {};
-  const longshot = raw.longshot || null;
-  const danger = raw.danger || null;
+  const longshot = raw.longshot && typeof raw.longshot === 'object' ? raw.longshot : null;
+  const danger = raw.danger && typeof raw.danger === 'object' ? raw.danger : null;
+  const directTimeText = typeof raw.predictedTime === 'string' ? raw.predictedTime : null;
 
   return Object.freeze({
-    horseNo: finiteOrNull(raw.horseNo ?? raw.no),
+    horseNo: finiteOrNull(raw.horseNo ?? raw.horseNumber ?? raw.no),
     horseName: textOrNull(raw.horseName ?? raw.name) || '',
     mark: textOrNull(raw.mark),
-    aiWinRate: finiteOrNull(probability.win ?? raw.win),
-    aiTop3Rate: finiteOrNull(probability.top3 ?? raw.top3),
-    predictedTimeSec: finiteOrNull(predictedTime.standard ?? raw.time),
-    predictedTimeText: textOrNull(predictedTime.text),
+    aiWinRate: finiteOrNull(probability.win ?? raw.win ?? raw.winProb),
+    aiTop3Rate: finiteOrNull(probability.top3 ?? raw.top3 ?? raw.top3Prob),
+    predictedTimeSec: finiteOrNull(predictedTime.standard ?? raw.time ?? raw.predictedTimeSec),
+    predictedTimeText: textOrNull(predictedTime.text ?? directTimeText),
     odds: finiteOrNull(market.odds ?? raw.odds),
-    popularity: finiteOrNull(market.popularity ?? raw.pop),
-    expectedValue: finiteOrNull(market.expectedValue ?? raw.ev),
-    longshotMark: textOrNull(longshot?.mark ?? raw.longshot),
+    popularity: finiteOrNull(market.popularity ?? raw.popularity ?? raw.pop),
+    expectedValue: finiteOrNull(market.expectedValue ?? market.ev ?? raw.expectedValue ?? raw.ev),
+    longshotMark: textOrNull(longshot?.mark ?? (typeof raw.longshot === 'string' ? raw.longshot : null) ?? raw.diamond),
     longshotReason: textOrNull(longshot?.reason),
-    dangerMark: textOrNull(danger?.mark ?? raw.danger),
+    dangerMark: textOrNull(danger?.mark ?? (typeof raw.danger === 'string' ? raw.danger : null) ?? raw.warning),
     dangerReason: textOrNull(danger?.reason),
     runnerStatus: textOrNull(raw.runnerStatus) || 'active',
   });
@@ -98,18 +131,17 @@ function sanitizeHorse(raw = {}) {
 function sanitizeRace(raw = {}) {
   const identity = raw.race || raw;
   const horses = Array.isArray(raw.horses) ? raw.horses.map(sanitizeHorse) : [];
-
   return Object.freeze({
     organization: normalizeViewerOrganization(identity.organization) || textOrNull(identity.organization),
     raceId: textOrNull(identity.raceId),
-    date: textOrNull(identity.date),
+    date: textOrNull(identity.date ?? identity.raceDate),
     track: textOrNull(identity.track),
-    raceNo: finiteOrNull(identity.raceNo),
+    raceNo: finiteOrNull(identity.raceNo ?? identity.raceNumber),
     raceName: textOrNull(identity.raceName),
     surface: textOrNull(identity.surface),
     distance: finiteOrNull(identity.distance),
-    going: textOrNull(identity.going),
-    startTime: textOrNull(identity.startTime),
+    going: textOrNull(identity.going ?? identity.trackCondition),
+    startTime: textOrNull(identity.startTime ?? identity.postTime),
     fieldSize: finiteOrNull(identity.fieldSize) ?? horses.length,
     horses: Object.freeze(horses),
   });
@@ -119,7 +151,6 @@ export function sanitizeViewerDayPayload(payload = {}) {
   if (payload?.ok !== true || !Array.isArray(payload?.races)) {
     throw new Error('viewer_invalid_payload');
   }
-
   const races = payload.races
     .map(sanitizeRace)
     .sort((a, b) => Number(a.raceNo || 0) - Number(b.raceNo || 0));
@@ -132,6 +163,13 @@ export function sanitizeViewerDayPayload(payload = {}) {
     generatedAt: textOrNull(payload.generatedAt),
     races: Object.freeze(races),
   });
+}
+
+export function sanitizeViewerRacePayload(payload = {}) {
+  if (payload?.ok !== true || !Array.isArray(payload?.horses)) {
+    throw new Error('viewer_invalid_race_payload');
+  }
+  return sanitizeRace(payload);
 }
 
 export function formatViewerPercent(value) {
