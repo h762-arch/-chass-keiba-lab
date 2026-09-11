@@ -729,3 +729,91 @@ button,input,select { font: inherit; }
     font-size: 9px;
   }
 }
+
+
+/* CHASS Viewer v3.3: compact two-stage metrics + TIME diagnostic */
+.viewer-footer { display: none !important; }
+
+.viewer-global-legend-shell {
+  margin: -7px 0 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 12px;
+  background: var(--viewer-panel);
+}
+
+.viewer-global-legend-shell .viewer-global-legend {
+  margin: 0;
+}
+
+.viewer-market-metrics {
+  margin-top: 8px !important;
+}
+
+.viewer-prediction-metrics {
+  margin-top: 5px !important;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--viewer-line) 70%, transparent);
+}
+
+.viewer-market-missing-row {
+  margin-top: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--viewer-panel-2);
+  color: var(--viewer-muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .02em;
+}
+
+.viewer-horse-metric.is-time-top {
+  background: var(--viewer-blue-soft);
+}
+
+.viewer-horse-metric.is-time-top .viewer-horse-metric-value {
+  color: var(--viewer-blue);
+}
+
+.viewer-time-diagnostic {
+  margin-top: 6px;
+  padding: 5px 7px;
+  border: 1px solid color-mix(in srgb, var(--viewer-gold) 20%, var(--viewer-line));
+  border-radius: 8px;
+  background: var(--viewer-gold-soft);
+  color: var(--viewer-gold);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+@media (max-width: 720px) {
+  .viewer-race-nav {
+    margin-bottom: 7px;
+  }
+
+  .viewer-global-legend-shell {
+    margin: 0 0 9px;
+    padding: 6px 8px;
+  }
+
+  .viewer-market-metrics {
+    margin-top: 7px !important;
+  }
+
+  .viewer-prediction-metrics {
+    margin-top: 4px !important;
+    padding-top: 4px;
+  }
+
+  .viewer-market-missing-row {
+    margin-top: 6px;
+    padding: 4px 7px;
+    font-size: 8px;
+  }
+
+  .viewer-time-diagnostic {
+    margin-top: 5px;
+    padding: 4px 6px;
+    font-size: 8px;
+  }
+}

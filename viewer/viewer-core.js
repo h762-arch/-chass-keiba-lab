@@ -186,6 +186,34 @@ export function sanitizeViewerRacePayload(payload = {}) {
   return sanitizeRace(payload);
 }
 
+
+export function sanitizeViewerRacesPayload(payload = {}) {
+  if (payload?.ok !== true || !Array.isArray(payload?.races)) {
+    throw new Error('viewer_invalid_races_payload');
+  }
+
+  const races = payload.races
+    .map((raw = {}) => Object.freeze({
+      raceNo: finiteOrNull(raw.raceNo ?? raw.raceNumber),
+      raceName: textOrNull(raw.raceName),
+      startTime: textOrNull(raw.startTime ?? raw.postTime ?? raw.raceTime),
+      surface: textOrNull(raw.surface),
+      distance: finiteOrNull(raw.distance),
+      going: textOrNull(raw.going ?? raw.trackCondition),
+      fieldSize: finiteOrNull(raw.fieldSize),
+    }))
+    .filter((race) => Number.isInteger(race.raceNo))
+    .sort((a, b) => Number(a.raceNo) - Number(b.raceNo));
+
+  return Object.freeze({
+    ok: true,
+    date: textOrNull(payload.date),
+    track: textOrNull(payload.track),
+    organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
+    races: Object.freeze(races),
+  });
+}
+
 export function sanitizeViewerMarketPayload(payload = {}) {
   if (payload?.ok !== true || !Array.isArray(payload?.races) || !Array.isArray(payload?.horseColumns)) {
     throw new Error('viewer_invalid_market_payload');

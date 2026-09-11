@@ -10,6 +10,7 @@ import {
   sanitizeViewerDayPayload,
   sanitizeViewerMarketPayload,
   sanitizeViewerRacePayload,
+  sanitizeViewerRacesPayload,
 } from '../viewer/viewer-core.js';
 
 test('VIEWER role is read-only and cannot access internal capabilities', () => {
@@ -76,6 +77,29 @@ test('market tabular sanitizer maps saved odds, popularity, EV, diamond and warn
   assert.equal(horse.expectedValue, 1.30);
   assert.equal(horse.longshotMark, '💎');
   assert.equal(horse.dangerMark, '⚠️');
+});
+
+test('race summary sanitizer exposes saved post times without internal fields', () => {
+  const summaries = sanitizeViewerRacesPayload({
+    ok: true,
+    date: '2026-09-12',
+    track: '阪神',
+    organization: 'JRA',
+    races: [{
+      raceNumber: 2,
+      raceName: '2歳未勝利',
+      startTime: '10:25',
+      surface: '芝',
+      distance: 2000,
+      going: '良',
+      fieldSize: 7,
+      internalFoo: 'hidden',
+    }],
+  });
+
+  assert.equal(summaries.races[0].raceNo, 2);
+  assert.equal(summaries.races[0].startTime, '10:25');
+  assert.equal('internalFoo' in summaries.races[0], false);
 });
 
 test('viewer sanitizer accepts compact aliases and full public details', () => {
@@ -147,6 +171,7 @@ test('viewer sanitizer rejects non-public-shaped payloads and invalid selectors'
   assert.throws(() => sanitizeViewerDayPayload({ ok: false }), /viewer_invalid_payload/);
   assert.throws(() => sanitizeViewerMarketPayload({ ok: true }), /viewer_invalid_market_payload/);
   assert.throws(() => sanitizeViewerRacePayload({ ok: true }), /viewer_invalid_race_payload/);
+  assert.throws(() => sanitizeViewerRacesPayload({ ok: true }), /viewer_invalid_races_payload/);
   assert.throws(() => buildViewerDayUrl({ date: '2026-02-30', organization: 'JRA', track: '東京' }), /viewer_invalid_date/);
   assert.throws(() => buildViewerDayUrl({ date: '2026-09-12', organization: 'JRA', track: '大井' }), /viewer_invalid_track/);
   assert.throws(() => buildViewerRaceUrl({ date: '2026-09-12', organization: 'JRA', track: '中山', race: 0 }), /viewer_invalid_race/);

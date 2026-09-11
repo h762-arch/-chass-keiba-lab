@@ -11,6 +11,7 @@ import {
   sanitizeViewerDayPayload,
   sanitizeViewerMarketPayload,
   sanitizeViewerRacePayload,
+  sanitizeViewerRacesPayload,
   validViewerDate,
 } from './viewer-core.js';
 
@@ -47,6 +48,11 @@ raceNav.className = 'viewer-race-nav';
 raceNav.hidden = true;
 raceNav.setAttribute('aria-label', 'レース移動');
 controls?.insertAdjacentElement('afterend', raceNav);
+
+const globalLegend = document.createElement('div');
+globalLegend.className = 'viewer-global-legend-shell';
+globalLegend.hidden = true;
+raceNav.insertAdjacentElement('afterend', globalLegend);
 
 function tokyoDateString() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -111,6 +117,50 @@ function timeText(horse) {
   const minutes = Math.floor(horse.predictedTimeSec / 60);
   const seconds = horse.predictedTimeSec - minutes * 60;
   return `${minutes}:${seconds.toFixed(1).padStart(4, '0')}`;
+}
+
+
+function timeSeconds(horse) {
+  if (Number.isFinite(Number(horse.predictedTimeSec))) return Number(horse.predictedTimeSec);
+  const text = String(horse.predictedTimeText || '').trim();
+  const match = /^(\d+):(\d{2}(?:\.\d+)?)$/.exec(text);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function raceRanks(race) {
+  const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+
+  const byTime = active
+    .map((horse) => ({ horse, value: timeSeconds(horse) }))
+    .filter((item) => item.value != null)
+    .sort((a, b) => a.value - b.value || Number(a.horse.horseNo || 999) - Number(b.horse.horseNo || 999));
+
+  const byWin = active
+    .filter((horse) => horse.aiWinRate != null)
+    .sort((a, b) => Number(b.aiWinRate) - Number(a.aiWinRate) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
+
+  const timeRank = new Map(byTime.map((item, index) => [Number(item.horse.horseNo), index + 1]));
+  const winRank = new Map(byWin.map((horse, index) => [Number(horse.horseNo), index + 1]));
+
+  return { timeRank, winRank };
+}
+
+function timeGapInfo(horse, ranks) {
+  const no = Number(horse.horseNo);
+  const timeRank = ranks.timeRank.get(no);
+  const winRank = ranks.winRank.get(no);
+  if (!timeRank || !winRank) return null;
+
+  const gap = winRank - timeRank;
+  if (timeRank <= 3 && gap >= 3) {
+    return {
+      timeRank,
+      winRank,
+      text: `時計${timeRank}位 / AI${winRank}位`,
+    };
+  }
+  return null;
 }
 
 function evText(horse) {
@@ -181,7 +231,7 @@ function viewerLegend() {
   return legend;
 }
 
-function mobileHorseCard(horse, featured = false) {
+function mobileHorseCard(horse, featured = false, ranks = null) {
   const card = document.createElement('article');
   card.className = 'viewer-horse-card';
   if (featured) card.classList.add('is-featured');
@@ -207,18 +257,46 @@ function mobileHorseCard(horse, featured = false) {
   marks.classList.add('viewer-horse-card-marks');
   top.append(identity, marks);
 
-  const metrics = document.createElement('div');
-  metrics.className = 'viewer-horse-metrics';
-  metrics.append(
+  const marketAvailable = horse.popularity != null
+    || horse.odds != null
+    || horse.expectedValue != null
+    || (horse.aiWinRate != null && horse.odds != null);
+
+  if (marketAvailable) {
+    const marketMetrics = document.createElement('div');
+    marketMetrics.className = 'viewer-horse-metrics viewer-market-metrics';
+    marketMetrics.append(
+      metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`, horse.popularity != null ? 'has-market' : ''),
+      metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1), horse.odds != null ? 'has-market' : ''),
+      metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),
+    );
+    card.append(top, marketMetrics);
+  } else {
+    const marketMissing = document.createElement('div');
+    marketMissing.className = 'viewer-market-missing-row';
+    marketMissing.textContent = '市場データ未取得';
+    card.append(top, marketMissing);
+  }
+
+  const predictionMetrics = document.createElement('div');
+  predictionMetrics.className = 'viewer-horse-metrics viewer-prediction-metrics';
+
+  const timeRank = ranks?.timeRank?.get(Number(horse.horseNo));
+  predictionMetrics.append(
     metric('AI勝率', formatViewerPercent(horse.aiWinRate), 'is-primary'),
     metric('複勝率', formatViewerPercent(horse.aiTop3Rate), 'is-primary'),
-    metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1), horse.odds != null ? 'has-market' : ''),
-    metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`, horse.popularity != null ? 'has-market' : ''),
-    metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),
-    metric('TIME', timeText(horse)),
+    metric('予想TIME', timeText(horse), timeRank && timeRank <= 3 ? 'is-time-top' : ''),
   );
+  card.append(predictionMetrics);
 
-  card.append(top, metrics);
+  const gapInfo = ranks ? timeGapInfo(horse, ranks) : null;
+  if (gapInfo) {
+    const diagnostic = document.createElement('div');
+    diagnostic.className = 'viewer-time-diagnostic';
+    diagnostic.textContent = `⏱ ${gapInfo.text} — TIME評価乖離`;
+    diagnostic.title = '予想TIME順位に対してAI勝率順位が低い馬です。AI勝率自体は変更していません。';
+    card.append(diagnostic);
+  }
 
   const notes = [horse.longshotReason, horse.dangerReason].filter(Boolean);
   if (notes.length) {
@@ -237,11 +315,11 @@ function horseRow(horse) {
     markCell(horse),
     horse.horseNo ?? '—',
     horse.horseName || '—',
+    horse.popularity == null ? '—' : `${horse.popularity}人気`,
+    horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1),
+    evText(horse),
     formatViewerPercent(horse.aiWinRate),
     formatViewerPercent(horse.aiTop3Rate),
-    horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1),
-    horse.popularity == null ? '—' : `${horse.popularity}人気`,
-    evText(horse),
     timeText(horse),
   ];
   values.forEach((value, index) => {
@@ -271,6 +349,7 @@ function mobileRaceBody(race) {
   shell.className = 'viewer-mobile-race-body';
 
   const focus = featuredHorses(race);
+  const ranks = raceRanks(race);
   const hasExplicit = race.horses.some(horseIsFeatured);
 
   const focusWrap = document.createElement('section');
@@ -291,13 +370,13 @@ function mobileRaceBody(race) {
 
   const focusList = document.createElement('div');
   focusList.className = 'viewer-focus-list';
-  focus.forEach((horse) => focusList.append(mobileHorseCard(horse, true)));
+  focus.forEach((horse) => focusList.append(mobileHorseCard(horse, true, ranks)));
   focusWrap.append(focusHead, focusList);
 
   const allWrap = document.createElement('div');
   allWrap.className = 'viewer-all-horses';
   allWrap.hidden = true;
-  race.horses.forEach((horse) => allWrap.append(mobileHorseCard(horse, horseIsFeatured(horse))));
+  race.horses.forEach((horse) => allWrap.append(mobileHorseCard(horse, horseIsFeatured(horse), ranks)));
 
   const toggle = document.createElement('button');
   toggle.type = 'button';
@@ -356,8 +435,8 @@ function raceCard(race) {
   table.className = 'viewer-table';
   table.innerHTML = `
     <thead><tr>
-      <th>印</th><th>馬番</th><th>馬名</th><th>AI勝率</th><th>AI複勝率</th>
-      <th>単勝</th><th>人気</th><th>期待値</th><th>予想TIME</th>
+      <th>印</th><th>馬番</th><th>馬名</th><th>人気</th><th>オッズ</th>
+      <th>EV</th><th>AI勝率</th><th>AI複勝率</th><th>予想TIME</th>
     </tr></thead>`;
   const body = document.createElement('tbody');
   race.horses.forEach((horse) => body.append(horseRow(horse)));
@@ -373,6 +452,8 @@ function renderRaceNav(day) {
 
   if (!day?.races?.length) {
     raceNav.hidden = true;
+    globalLegend.hidden = true;
+    globalLegend.hidden = true;
     return;
   }
 
@@ -402,11 +483,14 @@ function renderRaceNav(day) {
 
   top.append(label, links);
 
+  raceNav.append(top);
+  raceNav.hidden = false;
+
+  globalLegend.replaceChildren();
   const legend = viewerLegend();
   legend.classList.add('viewer-global-legend');
-
-  raceNav.append(top, legend);
-  raceNav.hidden = false;
+  globalLegend.append(legend);
+  globalLegend.hidden = false;
 }
 
 function renderDay(day) {
@@ -483,6 +567,33 @@ function mergeRaceDetail(day, detail) {
   });
   for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
     if (detail[key] != null) target[key] = detail[key];
+  }
+}
+
+function mergeRaceSummaries(day, summaries) {
+  const byNo = new Map(summaries.races.map((race) => [Number(race.raceNo), race]));
+  for (const race of day.races) {
+    const summary = byNo.get(Number(race.raceNo));
+    if (!summary) continue;
+    for (const key of ['raceName', 'startTime', 'surface', 'distance', 'going', 'fieldSize']) {
+      if (summary[key] != null && (race[key] == null || race[key] === '')) race[key] = summary[key];
+    }
+  }
+}
+
+async function fetchRaceSummaries(context, signal) {
+  const response = await fetch(buildViewerRacesUrl(context), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  if (!payload) return null;
+  try {
+    return sanitizeViewerRacesPayload(payload);
+  } catch {
+    return null;
   }
 }
 
@@ -636,7 +747,11 @@ async function loadViewerDay() {
     const day = mutableDay(sanitizeViewerDayPayload(payload));
     activeContext = context;
 
-    const marketDay = await fetchMarketDay(context, signal).catch(() => null);
+    const [summaries, marketDay] = await Promise.all([
+      fetchRaceSummaries(context, signal).catch(() => null),
+      fetchMarketDay(context, signal).catch(() => null),
+    ]);
+    if (summaries) mergeRaceSummaries(day, summaries);
     if (marketDay) mergeMarket(day, marketDay);
 
     renderDay(day);
