@@ -1,0 +1,868 @@
+name: Upgrade CHASS Viewer Ability & Comment UI v3.6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-ability-comment-v36
+  cancel-in-progress: false
+
+jobs:
+  upgrade-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify v3.5.1 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer-core.js
+          test -f viewer/viewer-app.js
+          test -f viewer/viewer.css
+          grep -Fq "CHASS Viewer v3.5.1: hard hidden-state guard" viewer/viewer.css
+          grep -Fq "TIME評価乖離" viewer/viewer-app.js
+          grep -Fq "sanitizeViewerMarketPayload" viewer/viewer-core.js
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "v3.5.1 baseline OK"
+
+      - name: Apply v3.6 ability and comment upgrade
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          core_path = Path("viewer/viewer-core.js")
+          app_path = Path("viewer/viewer-app.js")
+          css_path = Path("viewer/viewer.css")
+
+          core = core_path.read_text(encoding="utf-8")
+          app = app_path.read_text(encoding="utf-8")
+          css = css_path.read_text(encoding="utf-8")
+
+          # ----------------------------------------------------------
+          # viewer-core.js
+          # Public-only ability score/rank. No internal indices exposed.
+          # ----------------------------------------------------------
+          old = """  const probability = raw.probability || {};
+          const predictedTime = raw.predictedTime && typeof raw.predictedTime === 'object'
+            ? raw.predictedTime
+            : {};
+          const market = raw.market || {};
+          """
+          new = """  const probability = raw.probability || {};
+          const predictedTime = raw.predictedTime && typeof raw.predictedTime === 'object'
+            ? raw.predictedTime
+            : {};
+          const ability = raw.ability && typeof raw.ability === 'object' ? raw.ability : {};
+          const market = raw.market || {};
+          """
+          if old not in core:
+              raise SystemExit("core ability-object anchor not found")
+          core = core.replace(old, new, 1)
+
+          old = """    mark: textOrNull(raw.mark),
+              aiWinRate: finiteOrNull(probability.win ?? raw.win ?? raw.winProb),
+          """
+          new = """    mark: textOrNull(raw.mark),
+              abilityScore: finiteOrNull(
+                ability.totalScore ?? ability.score ?? raw.abilityScore ?? raw.overallScore ?? raw.score
+              ),
+              abilityRank: finiteOrNull(raw.abilityRank),
+              aiWinRate: finiteOrNull(probability.win ?? raw.win ?? raw.winProb),
+          """
+          if old not in core:
+              raise SystemExit("core sanitizeHorse anchor not found")
+          core = core.replace(old, new, 1)
+
+          old = """            horseNo: finiteOrNull(horse.horseNumber),
+                      horseName: textOrNull(horse.horseName) || '',
+                      odds: finiteOrNull(horse.odds),
+          """
+          new = """            horseNo: finiteOrNull(horse.horseNumber),
+                      horseName: textOrNull(horse.horseName) || '',
+                      abilityRank: finiteOrNull(horse.abilityRank),
+                      abilityScore: finiteOrNull(horse.score),
+                      odds: finiteOrNull(horse.odds),
+          """
+          if old not in core:
+              raise SystemExit("market sanitizer anchor not found")
+          core = core.replace(old, new, 1)
+
+          # ----------------------------------------------------------
+          # viewer-app.js
+          # ----------------------------------------------------------
+          old = "const expandedRaces = new Set();"
+          new = """const expandedRaces = new Set();
+          const expandedSecondaryRaces = new Set();"""
+          if old not in app:
+              raise SystemExit("expandedRaces anchor not found")
+          app = app.replace(old, new, 1)
+
+          # △ uses the same secondary styling as ○▲.
+          old = "if (['○', '▲'].includes(text)) return 'is-sub';"
+          new = "if (['○', '▲', '△'].includes(text)) return 'is-sub';"
+          if old not in app:
+              raise SystemExit("markClass anchor not found")
+          app = app.replace(old, new, 1)
+
+          # Fix missing TIME -> 0 seconds bug.
+          time_pattern = re.compile(
+              r"function timeSeconds\(horse\) \{.*?\n\}",
+              re.S,
+          )
+          time_repl = """function timeSeconds(horse) {
+            const direct = horse.predictedTimeSec;
+            if (direct != null && direct !== '' && Number.isFinite(Number(direct))) {
+              return Number(direct);
+            }
+
+            const text = String(horse.predictedTimeText || '').trim();
+            if (!text || text === '—') return null;
+
+            const match = /^(\\d+):(\\d{2}(?:\\.\\d+)?)$/.exec(text);
+            if (!match) return null;
+
+            const value = Number(match[1]) * 60 + Number(match[2]);
+            return Number.isFinite(value) && value > 0 ? value : null;
+          }"""
+          app, count = time_pattern.subn(time_repl, app, count=1)
+          if count != 1:
+              raise SystemExit("timeSeconds replacement failed")
+
+          # Same predicted TIME gets the same rank.
+          rank_pattern = re.compile(
+              r"function raceRanks\(race\) \{.*?\n\}\n\nfunction timeGapInfo",
+              re.S,
+          )
+          rank_repl = """function raceRanks(race) {
+            const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+
+            const byTime = active
+              .map((horse) => ({ horse, value: timeSeconds(horse) }))
+              .filter((item) => item.value != null)
+              .sort((a, b) => a.value - b.value || Number(a.horse.horseNo || 999) - Number(b.horse.horseNo || 999));
+
+            const byWin = active
+              .filter((horse) => horse.aiWinRate != null)
+              .sort((a, b) => Number(b.aiWinRate) - Number(a.aiWinRate) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
+
+            const timeRank = new Map();
+            let previousTime = null;
+            let currentTimeRank = 0;
+            byTime.forEach((item, index) => {
+              if (previousTime == null || Math.abs(item.value - previousTime) > 1e-9) {
+                currentTimeRank = index + 1;
+              }
+              timeRank.set(Number(item.horse.horseNo), currentTimeRank);
+              previousTime = item.value;
+            });
+
+            const winRank = new Map();
+            let previousWin = null;
+            let currentWinRank = 0;
+            byWin.forEach((horse, index) => {
+              const value = Number(horse.aiWinRate);
+              if (previousWin == null || Math.abs(value - previousWin) > 1e-12) {
+                currentWinRank = index + 1;
+              }
+              winRank.set(Number(horse.horseNo), currentWinRank);
+              previousWin = value;
+            });
+
+            return { timeRank, winRank };
+          }
+
+          function timeGapInfo"""
+          app, count = rank_pattern.subn(rank_repl, app, count=1)
+          if count != 1:
+              raise SystemExit("raceRanks replacement failed")
+
+          # Primary = ◎ / 💎 / ⚠.
+          # Secondary = ○ / ▲ / △, hidden until requested.
+          featured_pattern = re.compile(
+              r"function horseIsFeatured\(horse\) \{.*?\n\}\n\nfunction featuredHorses\(race\) \{.*?\n\}\n\nfunction legendChip",
+              re.S,
+          )
+          featured_repl = """const SECONDARY_MARKS = new Set(['○', '▲', '△']);
+
+          function horseHasPrimarySignal(horse) {
+            return horse.mark === '◎' || Boolean(horse.longshotMark) || Boolean(horse.dangerMark);
+          }
+
+          function horseHasSecondarySignal(horse) {
+            return SECONDARY_MARKS.has(String(horse.mark || ''));
+          }
+
+          function horseIsMarked(horse) {
+            return horseHasPrimarySignal(horse) || horseHasSecondarySignal(horse);
+          }
+
+          function primaryHorses(race) {
+            const explicit = race.horses.filter(horseHasPrimarySignal);
+            if (explicit.length) {
+              const priority = (horse) => {
+                if (horse.mark === '◎') return 0;
+                if (horse.longshotMark) return 1;
+                if (horse.dangerMark) return 2;
+                return 3;
+              };
+              return [...explicit].sort((a, b) => priority(a) - priority(b));
+            }
+
+            return [...race.horses]
+              .filter((horse) => horse.runnerStatus === 'active')
+              .sort((a, b) => Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1))
+              .slice(0, Math.min(1, race.horses.length));
+          }
+
+          function secondaryHorses(race, primary) {
+            const primaryNos = new Set(primary.map((horse) => Number(horse.horseNo)));
+            return race.horses.filter((horse) =>
+              !primaryNos.has(Number(horse.horseNo))
+              && horseHasSecondarySignal(horse)
+            );
+          }
+
+          function legendChip"""
+          app, count = featured_pattern.subn(featured_repl, app, count=1)
+          if count != 1:
+              raise SystemExit("featured horse functions replacement failed")
+
+          # Add △ legend.
+          old = """    legendChip('▲', '単穴', 'is-sub'),
+              legendChip('💎', '穴', 'is-longshot'),"""
+          new = """    legendChip('▲', '単穴', 'is-sub'),
+              legendChip('△', '連下', 'is-sub'),
+              legendChip('💎', '穴', 'is-longshot'),"""
+          if old not in app:
+              raise SystemExit("legend anchor not found")
+          app = app.replace(old, new, 1)
+
+          # Add ability badge + data-grounded short comment.
+          marker = "function mobileHorseCard(horse, featured = false, ranks = null) {"
+          if marker not in app:
+              raise SystemExit("mobileHorseCard marker not found")
+
+          helpers = r"""function abilityBadge(horse) {
+            const badge = document.createElement('div');
+            badge.className = 'viewer-ability-badge';
+            badge.title = '公開用総合能力指数';
+
+            const label = document.createElement('span');
+            label.textContent = '能力';
+
+            const score = document.createElement('strong');
+            score.textContent = horse.abilityScore == null
+              ? '—'
+              : formatViewerNumber(horse.abilityScore, 1);
+
+            const rank = document.createElement('em');
+            rank.textContent = horse.abilityRank == null
+              ? ''
+              : `${horse.abilityRank}位`;
+
+            badge.append(label, score, rank);
+            return badge;
+          }
+
+          function shortComment(horse, ranks) {
+            const facts = [];
+            const no = Number(horse.horseNo);
+            const aiRank = ranks?.winRank?.get(no);
+            const timeRank = ranks?.timeRank?.get(no);
+
+            if (horse.abilityRank != null && horse.abilityRank <= 3) {
+              facts.push(`能力${horse.abilityRank}位`);
+            }
+            if (aiRank != null && aiRank <= 3) {
+              facts.push(`AI勝率${aiRank}位`);
+            }
+            if (timeRank != null && timeRank <= 3) {
+              facts.push(`予想TIME${timeRank}位`);
+            }
+            if (horse.expectedValue != null && horse.expectedValue >= 1) {
+              facts.push(`EV ${formatViewerNumber(horse.expectedValue, 2)}×`);
+            }
+
+            const reasons = [];
+            if (horse.longshotReason) reasons.push(`💎 ${horse.longshotReason}`);
+            if (horse.dangerReason) reasons.push(`⚠ ${horse.dangerReason}`);
+
+            if (!reasons.length) {
+              if (horse.mark === '◎') reasons.push('◎ 本命評価');
+              else if (horse.mark === '○') reasons.push('○ 対抗評価');
+              else if (horse.mark === '▲') reasons.push('▲ 単穴評価');
+              else if (horse.mark === '△') reasons.push('△ 連下評価');
+              else if (horse.longshotMark) reasons.push('💎 穴評価');
+              else if (horse.dangerMark) reasons.push('⚠ 注意評価');
+            }
+
+            return [...facts, ...reasons].filter(Boolean).join('・');
+          }
+
+          """
+          app = app.replace(marker, helpers + marker, 1)
+
+          # Replace mobile horse card: mark left / horse center / ability right.
+          card_pattern = re.compile(
+              r"function mobileHorseCard\(horse, featured = false, ranks = null\) \{.*?\n\}\n\nfunction horseRow",
+              re.S,
+          )
+          card_repl = r"""function mobileHorseCard(horse, featured = false, ranks = null) {
+            const card = document.createElement('article');
+            card.className = 'viewer-horse-card';
+            if (featured) card.classList.add('is-featured');
+            if (horse.runnerStatus !== 'active') card.classList.add('viewer-runner-inactive');
+
+            const top = document.createElement('div');
+            top.className = 'viewer-horse-card-top viewer-horse-card-top-v36';
+
+            const marks = markCell(horse);
+            marks.classList.add('viewer-horse-card-marks', 'is-leading');
+            if (!marks.childElementCount) marks.classList.add('is-empty');
+
+            const identity = document.createElement('div');
+            identity.className = 'viewer-horse-identity';
+
+            const no = document.createElement('span');
+            no.className = 'viewer-horse-no';
+            no.textContent = horse.horseNo ?? '—';
+
+            const name = document.createElement('strong');
+            name.className = 'viewer-horse-name';
+            name.textContent = horse.horseName || '—';
+
+            identity.append(no, name);
+
+            const ability = abilityBadge(horse);
+            top.append(marks, identity, ability);
+
+            const marketAvailable = horse.popularity != null
+              || horse.odds != null
+              || horse.expectedValue != null
+              || (horse.aiWinRate != null && horse.odds != null);
+
+            if (marketAvailable) {
+              const marketMetrics = document.createElement('div');
+              marketMetrics.className = 'viewer-horse-metrics viewer-market-metrics';
+              marketMetrics.append(
+                metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`, horse.popularity != null ? 'has-market' : ''),
+                metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1), horse.odds != null ? 'has-market' : ''),
+                metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),
+              );
+              card.append(top, marketMetrics);
+            } else {
+              const marketMissing = document.createElement('div');
+              marketMissing.className = 'viewer-market-missing-row';
+              marketMissing.textContent = '市場データ未取得';
+              card.append(top, marketMissing);
+            }
+
+            const predictionMetrics = document.createElement('div');
+            predictionMetrics.className = 'viewer-horse-metrics viewer-prediction-metrics';
+
+            const timeRank = ranks?.timeRank?.get(Number(horse.horseNo));
+            predictionMetrics.append(
+              metric('AI勝率', formatViewerPercent(horse.aiWinRate), 'is-primary'),
+              metric('複勝率', formatViewerPercent(horse.aiTop3Rate), 'is-primary'),
+              metric('予想TIME', timeText(horse), timeRank && timeRank <= 3 ? 'is-time-top' : ''),
+            );
+            card.append(predictionMetrics);
+
+            const comment = featured ? shortComment(horse, ranks) : '';
+            if (comment) {
+              const note = document.createElement('p');
+              note.className = 'viewer-short-comment';
+              note.textContent = comment;
+              card.append(note);
+            }
+
+            const gapInfo = ranks ? timeGapInfo(horse, ranks) : null;
+            if (gapInfo) {
+              const diagnostic = document.createElement('div');
+              diagnostic.className = 'viewer-time-diagnostic';
+              diagnostic.textContent = `⏱ ${gapInfo.text} — TIME評価乖離`;
+              diagnostic.title = '予想TIME順位に対してAI勝率順位が低い馬です。AI勝率自体は変更していません。';
+              card.append(diagnostic);
+            }
+
+            return card;
+          }
+
+          function horseRow"""
+          app, count = card_pattern.subn(card_repl, app, count=1)
+          if count != 1:
+              raise SystemExit("mobileHorseCard replacement failed")
+
+          # Replace mobile race body with primary/secondary/all hierarchy.
+          body_pattern = re.compile(
+              r"function mobileRaceBody\(race\) \{.*?\n\}\n\nfunction raceCard",
+              re.S,
+          )
+          body_repl = r"""function mobileRaceBody(race) {
+            const shell = document.createElement('div');
+            shell.className = 'viewer-mobile-race-body';
+
+            const primary = primaryHorses(race);
+            const secondary = secondaryHorses(race, primary);
+            const ranks = raceRanks(race);
+            const hasPrimarySignal = primary.some(horseHasPrimarySignal);
+
+            const focusWrap = document.createElement('section');
+            focusWrap.className = 'viewer-focus';
+
+            const focusHead = document.createElement('div');
+            focusHead.className = 'viewer-focus-head';
+
+            const focusTitle = document.createElement('strong');
+            focusTitle.textContent = hasPrimarySignal ? '注目馬' : 'AI注目馬';
+
+            const status = marketStatus(race);
+            const marketBadge = document.createElement('span');
+            marketBadge.className = `viewer-market-badge is-${status.state}`;
+            marketBadge.textContent = status.text;
+
+            focusHead.append(focusTitle, marketBadge);
+
+            const focusList = document.createElement('div');
+            focusList.className = 'viewer-focus-list';
+            primary.forEach((horse) => focusList.append(mobileHorseCard(horse, true, ranks)));
+            focusWrap.append(focusHead, focusList);
+
+            const secondaryWrap = document.createElement('div');
+            secondaryWrap.className = 'viewer-secondary-horses';
+            secondaryWrap.hidden = true;
+            secondary.forEach((horse) => secondaryWrap.append(mobileHorseCard(horse, true, ranks)));
+
+            const allWrap = document.createElement('div');
+            allWrap.className = 'viewer-all-horses';
+            allWrap.hidden = true;
+            race.horses.forEach((horse) =>
+              allWrap.append(mobileHorseCard(horse, horseIsMarked(horse), ranks))
+            );
+
+            const actions = document.createElement('div');
+            actions.className = 'viewer-action-row';
+
+            const key = raceKey(race);
+
+            const secondaryToggle = document.createElement('button');
+            secondaryToggle.type = 'button';
+            secondaryToggle.className = 'viewer-secondary-button';
+            secondaryToggle.hidden = secondary.length === 0;
+
+            const allToggle = document.createElement('button');
+            allToggle.type = 'button';
+            allToggle.className = 'viewer-expand-button';
+
+            const setSecondary = (expanded) => {
+              secondaryWrap.hidden = !expanded;
+              secondaryToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+              secondaryToggle.textContent = expanded
+                ? '○▲△を閉じる'
+                : `○▲△を見る（${secondary.length}頭）`;
+              if (expanded) expandedSecondaryRaces.add(key);
+              else expandedSecondaryRaces.delete(key);
+            };
+
+            const setAll = (expanded) => {
+              allWrap.hidden = !expanded;
+              focusWrap.hidden = expanded;
+              secondaryWrap.hidden = expanded ? true : !expandedSecondaryRaces.has(key);
+              secondaryToggle.hidden = expanded || secondary.length === 0;
+              allToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+              allToggle.textContent = expanded
+                ? '注目馬に戻す'
+                : `全頭を見る（${race.horses.length}頭）`;
+              if (expanded) expandedRaces.add(key);
+              else expandedRaces.delete(key);
+            };
+
+            secondaryToggle.addEventListener('click', () => {
+              setSecondary(secondaryToggle.getAttribute('aria-expanded') !== 'true');
+            });
+
+            allToggle.addEventListener('click', () => {
+              setAll(allToggle.getAttribute('aria-expanded') !== 'true');
+            });
+
+            actions.append(secondaryToggle, allToggle);
+            shell.append(focusWrap, secondaryWrap, allWrap, actions);
+
+            setSecondary(expandedSecondaryRaces.has(key));
+            setAll(expandedRaces.has(key));
+            return shell;
+          }
+
+          function raceCard"""
+          app, count = body_pattern.subn(body_repl, app, count=1)
+          if count != 1:
+              raise SystemExit("mobileRaceBody replacement failed")
+
+          # Merge public ability fields from day-ai tabular.
+          old = """        ...horse,
+                  odds: market.odds ?? horse.odds,
+                  popularity: market.popularity ?? horse.popularity,
+          """
+          new = """        ...horse,
+                  abilityScore: market.abilityScore ?? horse.abilityScore,
+                  abilityRank: market.abilityRank ?? horse.abilityRank,
+                  odds: market.odds ?? horse.odds,
+                  popularity: market.popularity ?? horse.popularity,
+          """
+          if old not in app:
+              raise SystemExit("mergeMarket anchor not found")
+          app = app.replace(old, new, 1)
+
+          # ----------------------------------------------------------
+          # viewer.css
+          # ----------------------------------------------------------
+          marker = "/* CHASS Viewer v3.6: ability + comments + compact hierarchy */"
+          patch = r"""
+          /* CHASS Viewer v3.6: ability + comments + compact hierarchy */
+          .viewer-horse-card-top-v36 {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+          }
+
+          .viewer-horse-card-marks.is-leading {
+            justify-content: flex-start;
+            min-width: 0;
+          }
+
+          .viewer-horse-card-marks.is-leading.is-empty {
+            display: none;
+          }
+
+          .viewer-ability-badge {
+            display: grid;
+            grid-template-columns: auto auto;
+            align-items: baseline;
+            gap: 1px 5px;
+            min-width: 70px;
+            padding: 5px 7px;
+            border: 1px solid var(--viewer-line);
+            border-radius: 9px;
+            background: var(--viewer-panel-2);
+            text-align: right;
+          }
+
+          .viewer-ability-badge span {
+            grid-column: 1;
+            color: var(--viewer-muted);
+            font-size: 8px;
+            font-weight: 800;
+          }
+
+          .viewer-ability-badge strong {
+            grid-column: 2;
+            color: var(--viewer-text);
+            font-size: 13px;
+            line-height: 1;
+          }
+
+          .viewer-ability-badge em {
+            grid-column: 1 / -1;
+            color: var(--viewer-muted);
+            font-size: 8px;
+            font-style: normal;
+            font-weight: 800;
+          }
+
+          .viewer-short-comment {
+            margin: 6px 0 0;
+            padding: 6px 8px;
+            border-left: 2px solid var(--viewer-positive);
+            border-radius: 0 7px 7px 0;
+            background: var(--viewer-panel-2);
+            color: var(--viewer-muted);
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 1.45;
+          }
+
+          .viewer-secondary-horses {
+            border-top: 1px solid var(--viewer-line);
+          }
+
+          .viewer-action-row {
+            display: flex;
+            border-top: 1px solid var(--viewer-line);
+            background: var(--viewer-panel-2);
+          }
+
+          .viewer-action-row .viewer-expand-button,
+          .viewer-secondary-button {
+            flex: 1 1 0;
+            min-width: 0;
+            min-height: 38px;
+            border: 0;
+            background: transparent;
+            color: var(--viewer-muted);
+            font-size: 10px;
+            font-weight: 850;
+            letter-spacing: .01em;
+            cursor: pointer;
+          }
+
+          .viewer-secondary-button + .viewer-expand-button {
+            border-left: 1px solid var(--viewer-line);
+          }
+
+          .viewer-secondary-button[aria-expanded="true"],
+          .viewer-expand-button[aria-expanded="true"] {
+            color: var(--viewer-text);
+          }
+
+          @media (max-width: 720px) {
+            .viewer-horse-card-top-v36 {
+              gap: 6px;
+            }
+
+            .viewer-horse-card-top-v36 .viewer-horse-identity {
+              gap: 6px;
+            }
+
+            .viewer-horse-card-top-v36 .viewer-horse-name {
+              font-size: 14px;
+            }
+
+            .viewer-horse-card-marks.is-leading span {
+              min-width: 23px;
+              min-height: 23px;
+              padding: 2px 5px;
+              font-size: 11px;
+            }
+
+            .viewer-ability-badge {
+              min-width: 64px;
+              padding: 5px 6px;
+            }
+
+            .viewer-ability-badge strong {
+              font-size: 12px;
+            }
+
+            .viewer-short-comment {
+              margin-top: 5px;
+              padding: 5px 7px;
+              font-size: 8px;
+            }
+
+            .viewer-action-row .viewer-expand-button,
+            .viewer-secondary-button {
+              min-height: 36px;
+              font-size: 9px;
+            }
+          }
+          """
+
+          if marker not in css:
+              css = css.rstrip() + "\n\n" + patch.strip() + "\n"
+
+          core_path.write_text(core, encoding="utf-8")
+          app_path.write_text(app, encoding="utf-8")
+          css_path.write_text(css, encoding="utf-8")
+          print("Applied CHASS Viewer v3.6.")
+          PY
+
+          cat > tests/viewer-ability-comment-v36.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { sanitizeViewerMarketPayload } from '../viewer/viewer-core.js';
+
+          test('v3.6 exposes only public ability score/rank from tabular payload', () => {
+            const market = sanitizeViewerMarketPayload({
+              ok: true,
+              date: '2026-09-12',
+              track: '阪神',
+              organization: 'JRA',
+              horseColumns: [
+                'horseNumber', 'horseName', 'abilityRank', 'score',
+                'winProb', 'top3Prob', 'odds', 'popularity',
+                'expectedValue', 'evRank', 'abilityPopularityGap',
+                'diamond', 'warning',
+              ],
+              races: [{
+                raceNumber: 2,
+                raceName: '2歳未勝利',
+                horses: [[6, 'テストホース', 2, 86.4, .22, .51, null, null, null, null, null, null, null]],
+              }],
+            });
+
+            const horse = market.races[0].horses[0];
+            assert.equal(horse.abilityRank, 2);
+            assert.equal(horse.abilityScore, 86.4);
+            assert.equal('distanceScore' in horse, false);
+            assert.equal('courseScore' in horse, false);
+            assert.equal('paceScore' in horse, false);
+          });
+
+          test('v3.6 mobile UI has left marks, right ability badge, comments and collapsible secondary marks', () => {
+            const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+            const css = fs.readFileSync(new URL('../viewer/viewer.css', import.meta.url), 'utf8');
+
+            assert.match(app, /SECONDARY_MARKS = new Set\(\['○', '▲', '△'\]\)/);
+            assert.match(app, /○▲△を見る/);
+            assert.match(app, /viewer-ability-badge/);
+            assert.match(app, /公開用総合能力指数/);
+            assert.match(app, /viewer-short-comment/);
+            assert.match(app, /予想TIME/);
+            assert.match(css, /\.viewer-horse-card-top-v36/);
+            assert.match(css, /grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/);
+            assert.match(css, /\.viewer-secondary-button/);
+          });
+
+          test('v3.6 missing predicted TIME is excluded from TIME ranking', () => {
+            const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+
+            assert.match(app, /direct != null && direct !== ''/);
+            assert.match(app, /if \(!text \|\| text === '—'\) return null/);
+            assert.doesNotMatch(app, /Number\.isFinite\(Number\(horse\.predictedTimeSec\)\)/);
+          });
+          EOF
+
+      - name: Verify v3.6 contract and public boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "abilityScore" viewer/viewer-core.js
+          grep -Fq "abilityRank" viewer/viewer-core.js
+          grep -Fq "○▲△を見る" viewer/viewer-app.js
+          grep -Fq "公開用総合能力指数" viewer/viewer-app.js
+          grep -Fq "viewer-short-comment" viewer/viewer-app.js
+          grep -Fq "CHASS Viewer v3.6: ability + comments + compact hierarchy" viewer/viewer.css
+
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references protected/internal surfaces."
+            exit 1
+          fi
+
+          echo "v3.6 contract and Viewer public boundary OK"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/viewer-foundation.test.mjs \
+            tests/viewer-empty-date-v35.test.mjs \
+            tests/viewer-hidden-state-v351.test.mjs \
+            tests/viewer-ability-comment-v36.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Commit Viewer v3.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add viewer/viewer-core.js viewer/viewer-app.js viewer/viewer.css \
+            tests/viewer-ability-comment-v36.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Viewer v3.6 is already applied."
+          else
+            git commit -m "Add viewer ability index and compact marked-horse hierarchy"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker and Viewer assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke test with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          HEALTH_URL="$BASE_URL/api/chass/v1/public/health"
+          APP_URL="$BASE_URL/viewer/viewer-app.js?v=$GITHUB_SHA"
+          CORE_URL="$BASE_URL/viewer/viewer-core.js?v=$GITHUB_SHA"
+          CSS_URL="$BASE_URL/viewer/viewer.css?v=$GITHUB_SHA"
+
+          ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' "$HEALTH_URL" -o /tmp/health.json \
+              && curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' "$APP_URL" -o /tmp/viewer-app.js \
+              && curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' "$CORE_URL" -o /tmp/viewer-core.js \
+              && curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' "$CSS_URL" -o /tmp/viewer.css \
+              && grep -Fq "○▲△を見る" /tmp/viewer-app.js \
+              && grep -Fq "公開用総合能力指数" /tmp/viewer-app.js \
+              && grep -Fq "abilityScore" /tmp/viewer-core.js \
+              && grep -Fq "CHASS Viewer v3.6: ability + comments + compact hierarchy" /tmp/viewer.css; then
+                ok=1
+                break
+            fi
+
+            echo "Waiting for Viewer asset propagation ($i/12)..."
+            sleep 5
+          done
+
+          test "$ok" = "1"
+          node -e "const b=require('/tmp/health.json'); if(!b.ok||b.version!=='10.0.1') process.exit(1);"
+          echo "Production Viewer v3.6 OK"
+
+      - name: Final summary
+        shell: bash
+        run: |
+          echo "✅ Marks move to the far left of each horse card"
+          echo "✅ Public ability score + ability rank appear at the right"
+          echo "✅ ◎ / 💎 / ⚠ stay visible by default"
+          echo "✅ ○ / ▲ / △ are collapsed behind a dedicated button"
+          echo "✅ Full field remains available behind 全頭を見る"
+          echo "✅ Marked horses receive a compact data-grounded short comment"
+          echo "✅ Missing predicted TIME no longer creates false TIME-rank warnings"
+          echo "✅ Equal predicted TIME values receive equal TIME rank"
+          echo "✅ No internal index master/model weights are exposed"
+          echo "✅ Viewer/full regression tests passed"
+          echo "✅ Cloudflare deployment completed"
