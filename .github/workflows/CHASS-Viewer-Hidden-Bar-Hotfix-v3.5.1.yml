@@ -1,0 +1,211 @@
+name: Fix CHASS Viewer Hidden Bar v3.5.1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-hidden-bar-v351
+  cancel-in-progress: false
+
+jobs:
+  fix-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify v3.5 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer.css
+          test -f viewer/viewer-app.js
+          test -f viewer/index.html
+          grep -Fq ".viewer-availability-hint" viewer/viewer.css
+          grep -Fq "保存データなし" viewer/viewer-app.js
+          grep -Fq "この日の保存済み予想はありません" viewer/viewer-app.js
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "v3.5 baseline OK"
+
+      - name: Apply hidden-state hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          css_path = Path("viewer/viewer.css")
+          css = css_path.read_text(encoding="utf-8")
+
+          marker = "/* CHASS Viewer v3.5.1: hard hidden-state guard */"
+          patch = """
+          /* CHASS Viewer v3.5.1: hard hidden-state guard */
+          .viewer-availability-hint[hidden],
+          .viewer-track-quick[hidden],
+          .viewer-race-nav[hidden],
+          .viewer-global-legend-shell[hidden],
+          #viewer-status[hidden],
+          #viewer-summary[hidden] {
+            display: none !important;
+          }
+          """
+
+          if marker not in css:
+              css = css.rstrip() + "\n\n" + patch.strip() + "\n"
+              css_path.write_text(css, encoding="utf-8")
+              print("Applied v3.5.1 hidden-state CSS guard.")
+          else:
+              print("v3.5.1 hidden-state CSS guard already present.")
+          PY
+
+          cat > tests/viewer-hidden-state-v351.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          test('v3.5.1 hidden dynamic viewer blocks collapse completely', () => {
+            const css = fs.readFileSync(
+              new URL('../viewer/viewer.css', import.meta.url),
+              'utf8',
+            );
+
+            assert.match(css, /CHASS Viewer v3\.5\.1: hard hidden-state guard/);
+            assert.match(css, /\.viewer-availability-hint\[hidden\]/);
+            assert.match(css, /\.viewer-track-quick\[hidden\]/);
+            assert.match(css, /\.viewer-race-nav\[hidden\]/);
+            assert.match(css, /\.viewer-global-legend-shell\[hidden\]/);
+            assert.match(css, /display:\s*none\s*!important/);
+          });
+          EOF
+
+      - name: Verify hotfix contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "CHASS Viewer v3.5.1: hard hidden-state guard" viewer/viewer.css
+          grep -Fq ".viewer-availability-hint[hidden]" viewer/viewer.css
+          grep -Fq ".viewer-track-quick[hidden]" viewer/viewer.css
+          grep -Fq ".viewer-race-nav[hidden]" viewer/viewer.css
+          grep -Fq "display: none !important" viewer/viewer.css
+
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references protected/internal surfaces."
+            exit 1
+          fi
+
+          echo "Hidden-state hotfix contract OK"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-app.js
+          node --check viewer/viewer-core.js
+          node --test tests/viewer-foundation.test.mjs \
+            tests/viewer-empty-date-v35.test.mjs \
+            tests/viewer-hidden-state-v351.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          fi
+          npx -y wrangler@4 whoami
+
+      - name: Commit hidden-state hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add viewer/viewer.css tests/viewer-hidden-state-v351.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "v3.5.1 is already applied."
+          else
+            git commit -m "Fix hidden viewer placeholder bar"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker and Viewer assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke test with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          HEALTH_URL="$BASE_URL/api/chass/v1/public/health"
+          CSS_URL="$BASE_URL/viewer/viewer.css?v=$GITHUB_SHA"
+          VIEWER_URL="$BASE_URL/viewer/"
+
+          ok=0
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' \
+                "$HEALTH_URL" -o /tmp/health.json \
+              && curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' \
+                "$VIEWER_URL" -o /tmp/viewer.html \
+              && curl -fsSL --max-time 15 -H 'Cache-Control: no-cache' \
+                "$CSS_URL" -o /tmp/viewer.css \
+              && grep -Fq "Prediction Viewer" /tmp/viewer.html \
+              && grep -Fq "CHASS Viewer v3.5.1: hard hidden-state guard" /tmp/viewer.css \
+              && grep -Fq ".viewer-availability-hint[hidden]" /tmp/viewer.css \
+              && grep -Fq "display: none !important" /tmp/viewer.css; then
+                ok=1
+                break
+            fi
+
+            echo "Waiting for Viewer asset propagation ($i/12)..."
+            sleep 5
+          done
+
+          test "$ok" = "1"
+          node -e "const b=require('/tmp/health.json'); if(!b.ok||b.version!=='10.0.1') process.exit(1);"
+          echo "Production hidden-state hotfix v3.5.1 OK"
+
+      - name: Final summary
+        shell: bash
+        run: |
+          echo "✅ Empty horizontal placeholder bar is removed when hidden"
+          echo "✅ Availability card still appears normally on dates with no saved prediction"
+          echo "✅ Track quick buttons/race nav/global legend also fully collapse when hidden"
+          echo "✅ No prediction logic or API behavior changed"
+          echo "✅ v3.5 empty-date UI remains intact"
+          echo "✅ Viewer/full regression tests passed"
+          echo "✅ Cloudflare deployment completed"
