@@ -1,0 +1,385 @@
+name: Polish CHASS Viewer Ability & Mark Order UI v3.6.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-ability-mark-order-v362
+  cancel-in-progress: false
+
+jobs:
+  polish-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify v3.6.1 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer-app.js
+          test -f viewer/viewer.css
+          grep -Fq "function abilityBadge(horse)" viewer/viewer-app.js
+          grep -Fq "const SECONDARY_MARKS = new Set(['○', '▲', '△']);" viewer/viewer-app.js
+          grep -Fq "○▲△を見る" viewer/viewer-app.js
+          grep -Fq "CHASS Viewer v3.6.1: ability + comments + compact hierarchy" viewer/viewer.css
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "v3.6.1 baseline OK"
+
+      - name: Apply v3.6.2 UI polish
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          app_path = Path("viewer/viewer-app.js")
+          css_path = Path("viewer/viewer.css")
+
+          app = app_path.read_text(encoding="utf-8")
+          css = css_path.read_text(encoding="utf-8")
+
+          def replace_between(text, start, end, replacement, label):
+              start_i = text.find(start)
+              if start_i < 0:
+                  raise SystemExit(f"{label} start not found")
+              end_i = text.find(end, start_i)
+              if end_i < 0:
+                  raise SystemExit(f"{label} end not found")
+              return text[:start_i] + replacement + text[end_i:]
+
+          # --------------------------------------------------------
+          # 1. Ability score and ability rank are visually separated.
+          # --------------------------------------------------------
+          new_ability = r"""function abilityBadge(horse) {
+            const panel = document.createElement('div');
+            panel.className = 'viewer-ability-panel';
+            panel.title = '公開用総合能力指数と能力順位';
+
+            const scoreBox = document.createElement('div');
+            scoreBox.className = 'viewer-ability-stat viewer-ability-score';
+
+            const scoreLabel = document.createElement('span');
+            scoreLabel.textContent = '能力';
+
+            const score = document.createElement('strong');
+            score.textContent = horse.abilityScore == null
+              ? '—'
+              : formatViewerNumber(horse.abilityScore, 1);
+
+            scoreBox.append(scoreLabel, score);
+
+            const rankBox = document.createElement('div');
+            rankBox.className = 'viewer-ability-stat viewer-ability-rank';
+
+            const rankLabel = document.createElement('span');
+            rankLabel.textContent = '順位';
+
+            const rank = document.createElement('strong');
+            rank.textContent = horse.abilityRank == null
+              ? '—'
+              : `${horse.abilityRank}位`;
+
+            rankBox.append(rankLabel, rank);
+            panel.append(scoreBox, rankBox);
+            return panel;
+          }"""
+
+          app = replace_between(
+              app,
+              "function abilityBadge(horse) {",
+              "\n\nfunction shortComment(horse, ranks) {",
+              new_ability,
+              "abilityBadge",
+          )
+
+          # --------------------------------------------------------
+          # 2. Secondary marks are always shown in canonical order:
+          #    ○ -> ▲ -> △
+          #    Tie-break: ability rank -> AI win rate -> horse number.
+          # --------------------------------------------------------
+          new_secondary = r"""function secondaryHorses(race, primary) {
+            const primaryNos = new Set(primary.map((horse) => Number(horse.horseNo)));
+            const markPriority = new Map([
+              ['○', 0],
+              ['▲', 1],
+              ['△', 2],
+            ]);
+
+            return race.horses
+              .filter((horse) =>
+                !primaryNos.has(Number(horse.horseNo))
+                && horseHasSecondarySignal(horse)
+              )
+              .sort((a, b) => {
+                const markDiff = (markPriority.get(String(a.mark || '')) ?? 99)
+                  - (markPriority.get(String(b.mark || '')) ?? 99);
+                if (markDiff) return markDiff;
+
+                const abilityDiff = Number(a.abilityRank ?? 999) - Number(b.abilityRank ?? 999);
+                if (abilityDiff) return abilityDiff;
+
+                const winDiff = Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1);
+                if (winDiff) return winDiff;
+
+                return Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999);
+              });
+          }"""
+
+          app = replace_between(
+              app,
+              "function secondaryHorses(race, primary) {",
+              "\n\nfunction legendChip(symbol, label, className) {",
+              new_secondary,
+              "secondaryHorses",
+          )
+
+          # --------------------------------------------------------
+          # CSS: two independent compact boxes on the right.
+          # --------------------------------------------------------
+          marker = "/* CHASS Viewer v3.6.2: split ability + rank / canonical secondary mark order */"
+          patch = r"""
+          /* CHASS Viewer v3.6.2: split ability + rank / canonical secondary mark order */
+          .viewer-ability-panel {
+            display: flex;
+            align-items: stretch;
+            justify-content: flex-end;
+            gap: 4px;
+            min-width: 0;
+          }
+
+          .viewer-ability-stat {
+            display: grid;
+            align-content: center;
+            gap: 2px;
+            min-width: 49px;
+            min-height: 46px;
+            padding: 5px 7px;
+            border: 1px solid var(--viewer-line);
+            border-radius: 9px;
+            background: var(--viewer-panel-2);
+            text-align: center;
+          }
+
+          .viewer-ability-stat span {
+            color: var(--viewer-muted);
+            font-size: 8px;
+            font-weight: 800;
+            line-height: 1;
+          }
+
+          .viewer-ability-stat strong {
+            color: var(--viewer-text);
+            font-size: 12px;
+            font-weight: 900;
+            line-height: 1.05;
+            white-space: nowrap;
+          }
+
+          .viewer-ability-score {
+            min-width: 58px;
+          }
+
+          .viewer-ability-rank {
+            min-width: 48px;
+          }
+
+          /* v3.6.1 combined badge is superseded by v3.6.2 split badges */
+          .viewer-horse-card-top-v36 > .viewer-ability-badge {
+            display: none !important;
+          }
+
+          @media (max-width: 720px) {
+            .viewer-horse-card-top-v36 {
+              grid-template-columns: auto minmax(0, 1fr) auto;
+              gap: 5px;
+            }
+
+            .viewer-ability-panel {
+              gap: 3px;
+            }
+
+            .viewer-ability-stat {
+              min-width: 43px;
+              min-height: 42px;
+              padding: 4px 5px;
+              border-radius: 8px;
+            }
+
+            .viewer-ability-score {
+              min-width: 53px;
+            }
+
+            .viewer-ability-rank {
+              min-width: 43px;
+            }
+
+            .viewer-ability-stat span {
+              font-size: 7px;
+            }
+
+            .viewer-ability-stat strong {
+              font-size: 11px;
+            }
+          }
+          """
+
+          if marker not in css:
+              css = css.rstrip() + "\n\n" + patch.strip() + "\n"
+
+          app_path.write_text(app, encoding="utf-8")
+          css_path.write_text(css, encoding="utf-8")
+          print("Applied CHASS Viewer v3.6.2.")
+          PY
+
+          cat > tests/viewer-ability-mark-order-v362.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+          const css = fs.readFileSync(new URL('../viewer/viewer.css', import.meta.url), 'utf8');
+
+          test('v3.6.2 separates ability score and rank visually', () => {
+            assert.match(app, /viewer-ability-panel/);
+            assert.match(app, /viewer-ability-score/);
+            assert.match(app, /viewer-ability-rank/);
+            assert.match(app, /scoreLabel\.textContent = '能力'/);
+            assert.match(app, /rankLabel\.textContent = '順位'/);
+            assert.match(css, /\.viewer-ability-panel/);
+            assert.match(css, /\.viewer-ability-stat/);
+          });
+
+          test('v3.6.2 secondary marks use canonical order ○ then ▲ then △', () => {
+            const o = app.indexOf("['○', 0]");
+            const tri = app.indexOf("['▲', 1]");
+            const delta = app.indexOf("['△', 2]");
+            assert.ok(o >= 0);
+            assert.ok(tri > o);
+            assert.ok(delta > tri);
+            assert.match(app, /markPriority\.get/);
+          });
+
+          test('v3.6.2 keeps compact secondary expansion', () => {
+            assert.match(app, /○▲△を見る/);
+            assert.match(app, /expandedSecondaryRaces/);
+            assert.match(app, /全頭を見る/);
+          });
+          EOF
+
+      - name: Verify v3.6.2 source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "viewer-ability-panel" viewer/viewer-app.js
+          grep -Fq "viewer-ability-score" viewer/viewer-app.js
+          grep -Fq "viewer-ability-rank" viewer/viewer-app.js
+          grep -Fq "['○', 0]" viewer/viewer-app.js
+          grep -Fq "['▲', 1]" viewer/viewer-app.js
+          grep -Fq "['△', 2]" viewer/viewer-app.js
+          grep -Fq "CHASS Viewer v3.6.2: split ability + rank / canonical secondary mark order" viewer/viewer.css
+
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references protected/internal surfaces."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/viewer-foundation.test.mjs \
+            tests/viewer-empty-date-v35.test.mjs \
+            tests/viewer-hidden-state-v351.test.mjs \
+            tests/viewer-ability-comment-v361.test.mjs \
+            tests/viewer-ability-mark-order-v362.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Commit Viewer v3.6.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add viewer/viewer-app.js viewer/viewer.css \
+            tests/viewer-ability-mark-order-v362.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Viewer v3.6.2 already applied."
+          else
+            git commit -m "Polish viewer ability badges and secondary mark order"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -H 'Cache-Control: no-cache' "$BASE_URL/viewer/viewer-app.js?v=$GITHUB_SHA" -o /tmp/app.js \
+              && curl -fsSL -H 'Cache-Control: no-cache' "$BASE_URL/viewer/viewer.css?v=$GITHUB_SHA" -o /tmp/css \
+              && grep -Fq "viewer-ability-panel" /tmp/app.js \
+              && grep -Fq "['○', 0]" /tmp/app.js \
+              && grep -Fq "['▲', 1]" /tmp/app.js \
+              && grep -Fq "['△', 2]" /tmp/app.js \
+              && grep -Fq "CHASS Viewer v3.6.2" /tmp/css; then
+                echo "Production Viewer v3.6.2 OK"
+                exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::Viewer v3.6.2 production smoke test failed."
+          exit 1
+
+      - name: Final summary
+        run: |
+          echo "✅ 能力指数と能力順位を別ボックスへ分離"
+          echo "✅ ○ → ▲ → △ の順で展開"
+          echo "✅ 同印内は能力順位 → AI勝率 → 馬番で安定ソート"
+          echo "✅ ◎・💎・⚠の初期表示は維持"
+          echo "✅ ○▲△折りたたみと全頭表示は維持"
+          echo "✅ 予想ロジック・公開境界は変更なし"
