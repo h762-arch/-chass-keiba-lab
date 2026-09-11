@@ -1,0 +1,163 @@
+:root {
+  color-scheme: light dark;
+  --viewer-bg: #f5f6f8;
+  --viewer-panel: #ffffff;
+  --viewer-text: #181b20;
+  --viewer-muted: #68707c;
+  --viewer-line: #dfe3e8;
+  --viewer-accent: #111827;
+  --viewer-soft: #eef1f5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --viewer-bg: #0f1115;
+    --viewer-panel: #171a20;
+    --viewer-text: #f3f4f6;
+    --viewer-muted: #a2a9b3;
+    --viewer-line: #303640;
+    --viewer-accent: #f3f4f6;
+    --viewer-soft: #222730;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--viewer-bg);
+  color: var(--viewer-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+}
+button, input, select { font: inherit; }
+
+.viewer-shell {
+  width: min(1180px, calc(100% - 24px));
+  margin: 0 auto;
+  padding: 24px 0 56px;
+}
+
+.viewer-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.viewer-brand h1 { margin: 0; font-size: clamp(22px, 5vw, 34px); }
+.viewer-brand p { margin: 6px 0 0; color: var(--viewer-muted); }
+.viewer-badge {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 999px;
+  background: var(--viewer-panel);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.viewer-controls,
+.viewer-race-card {
+  border: 1px solid var(--viewer-line);
+  border-radius: 16px;
+  background: var(--viewer-panel);
+}
+.viewer-controls { padding: 14px; margin-bottom: 16px; }
+.viewer-form {
+  display: grid;
+  grid-template-columns: 1.2fr .8fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+.viewer-field { display: grid; gap: 6px; }
+.viewer-field label { color: var(--viewer-muted); font-size: 12px; font-weight: 700; }
+.viewer-field input,
+.viewer-field select,
+.viewer-submit {
+  min-height: 44px;
+  border: 1px solid var(--viewer-line);
+  border-radius: 10px;
+  padding: 0 11px;
+  background: var(--viewer-panel);
+  color: var(--viewer-text);
+}
+.viewer-submit {
+  padding: 0 18px;
+  background: var(--viewer-accent);
+  color: var(--viewer-bg);
+  border-color: var(--viewer-accent);
+  font-weight: 800;
+  cursor: pointer;
+}
+.viewer-submit:disabled { opacity: .55; cursor: wait; }
+
+.viewer-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  justify-content: space-between;
+  margin-top: 12px;
+  color: var(--viewer-muted);
+  font-size: 13px;
+}
+#viewer-status[data-state="error"] { color: #c2410c; }
+#viewer-status[data-state="success"] { color: #15803d; }
+
+.viewer-races { display: grid; gap: 14px; }
+.viewer-race-card { overflow: hidden; }
+.viewer-race-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--viewer-line);
+}
+.viewer-race-title { display: flex; gap: 10px; align-items: baseline; }
+.viewer-race-title strong { font-size: 20px; }
+.viewer-race-title span { font-weight: 700; }
+.viewer-race-meta { text-align: right; color: var(--viewer-muted); font-size: 12px; }
+.viewer-table-scroll { overflow-x: auto; }
+.viewer-table {
+  width: 100%;
+  min-width: 850px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.viewer-table th,
+.viewer-table td {
+  padding: 10px 9px;
+  border-bottom: 1px solid var(--viewer-line);
+  text-align: right;
+  white-space: nowrap;
+}
+.viewer-table thead th {
+  color: var(--viewer-muted);
+  background: var(--viewer-soft);
+  font-size: 11px;
+  font-weight: 800;
+}
+.viewer-table th:nth-child(1),
+.viewer-table td:nth-child(1),
+.viewer-table th:nth-child(3),
+.viewer-table td:nth-child(3) { text-align: left; }
+.viewer-table tbody tr:last-child > * { border-bottom: 0; }
+.viewer-marks { display: flex; gap: 4px; align-items: center; min-width: 72px; }
+.viewer-marks span { font-weight: 900; }
+.viewer-runner-inactive { opacity: .48; text-decoration: line-through; }
+.viewer-footer {
+  margin-top: 20px;
+  color: var(--viewer-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+@media (max-width: 720px) {
+  .viewer-shell { width: min(100% - 16px, 1180px); padding-top: 16px; }
+  .viewer-topbar { align-items: center; }
+  .viewer-brand p { font-size: 12px; }
+  .viewer-form { grid-template-columns: 1fr 1fr; }
+  .viewer-field:first-child { grid-column: 1 / -1; }
+  .viewer-submit { width: 100%; }
+  .viewer-race-header { display: block; }
+  .viewer-race-meta { text-align: left; margin-top: 6px; }
+}

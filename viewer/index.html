@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#111827">
+  <title>CHASS KEIBA LAB Viewer</title>
+  <link rel="stylesheet" href="./viewer.css">
+</head>
+<body>
+  <main class="viewer-shell">
+    <header class="viewer-topbar">
+      <div class="viewer-brand">
+        <h1>CHASS KEIBA LAB</h1>
+        <p>Prediction Viewer</p>
+      </div>
+      <div class="viewer-badge" aria-label="閲覧専用">VIEW ONLY</div>
+    </header>
+
+    <section class="viewer-controls" aria-label="予想検索">
+      <form id="viewer-form" class="viewer-form">
+        <div class="viewer-field">
+          <label for="viewer-date">開催日</label>
+          <input id="viewer-date" name="date" type="date" required>
+        </div>
+        <div class="viewer-field">
+          <label for="viewer-organization">主催</label>
+          <select id="viewer-organization" name="organization">
+            <option value="JRA">JRA</option>
+            <option value="NAR">NAR</option>
+          </select>
+        </div>
+        <div class="viewer-field">
+          <label for="viewer-track">競馬場</label>
+          <select id="viewer-track" name="track"></select>
+        </div>
+        <button id="viewer-submit" class="viewer-submit" type="submit">予想を表示</button>
+      </form>
+      <div class="viewer-status-row" aria-live="polite">
+        <span id="viewer-status">開催日・主催・競馬場を選択してください。</span>
+        <span id="viewer-summary" hidden></span>
+      </div>
+    </section>
+
+    <section id="viewer-races" class="viewer-races" aria-label="予想一覧"></section>
+
+    <footer class="viewer-footer">
+      <div>閲覧専用ページです。予想・設定・研究データの編集機能はありません。</div>
+      <div>表示内容はCHASS KEIBA LABに保存済みの公開用予想データのみを使用します。</div>
+    </footer>
+  </main>
+
+  <script type="module" src="./viewer-app.js"></script>
+</body>
+</html>
