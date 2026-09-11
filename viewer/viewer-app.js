@@ -33,9 +33,10 @@ function tokyoDateString() {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function setStatus(message, state = 'idle') {
+function setStatus(message = '', state = 'idle') {
   elements.status.textContent = message;
   elements.status.dataset.state = state;
+  elements.status.hidden = !message;
 }
 
 function fillTracks(preferredTrack = '') {
@@ -55,13 +56,18 @@ function fillTracks(preferredTrack = '') {
   }
 }
 
+function markValues(horse) {
+  return [horse.mark, horse.longshotMark, horse.dangerMark].filter(Boolean);
+}
+
 function markCell(horse) {
   const wrapper = document.createElement('div');
   wrapper.className = 'viewer-marks';
-  for (const value of [horse.mark, horse.longshotMark, horse.dangerMark]) {
-    if (!value) continue;
+  for (const value of markValues(horse)) {
     const span = document.createElement('span');
     span.textContent = value;
+    if (String(value).includes('💎')) span.classList.add('is-longshot');
+    if (String(value).includes('⚠️')) span.classList.add('is-danger');
     wrapper.append(span);
   }
   return wrapper;
@@ -104,6 +110,71 @@ function horseRow(horse) {
   return row;
 }
 
+function metric(label, value, emphasis = '') {
+  const item = document.createElement('div');
+  item.className = `viewer-horse-metric${emphasis ? ` ${emphasis}` : ''}`;
+
+  const key = document.createElement('span');
+  key.className = 'viewer-horse-metric-label';
+  key.textContent = label;
+
+  const val = document.createElement('strong');
+  val.className = 'viewer-horse-metric-value';
+  val.textContent = value;
+
+  item.append(key, val);
+  return item;
+}
+
+function mobileHorseCard(horse) {
+  const card = document.createElement('article');
+  card.className = 'viewer-horse-card';
+  if (horse.runnerStatus !== 'active') card.classList.add('viewer-runner-inactive');
+
+  const top = document.createElement('div');
+  top.className = 'viewer-horse-card-top';
+
+  const identity = document.createElement('div');
+  identity.className = 'viewer-horse-identity';
+
+  const no = document.createElement('span');
+  no.className = 'viewer-horse-no';
+  no.textContent = horse.horseNo ?? '—';
+
+  const name = document.createElement('strong');
+  name.className = 'viewer-horse-name';
+  name.textContent = horse.horseName || '—';
+
+  identity.append(no, name);
+
+  const marks = markCell(horse);
+  marks.classList.add('viewer-horse-card-marks');
+  top.append(identity, marks);
+
+  const metrics = document.createElement('div');
+  metrics.className = 'viewer-horse-metrics';
+  metrics.append(
+    metric('AI勝率', formatViewerPercent(horse.aiWinRate), 'is-primary'),
+    metric('複勝率', formatViewerPercent(horse.aiTop3Rate), 'is-primary'),
+    metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1)),
+    metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`),
+    metric('EV', horse.expectedValue == null ? '—' : formatViewerNumber(horse.expectedValue, 2), 'is-ev'),
+    metric('TIME', timeText(horse)),
+  );
+
+  card.append(top, metrics);
+
+  const notes = [horse.longshotReason, horse.dangerReason].filter(Boolean);
+  if (notes.length) {
+    const note = document.createElement('p');
+    note.className = 'viewer-horse-note';
+    note.textContent = notes.join(' / ');
+    card.append(note);
+  }
+
+  return card;
+}
+
 function raceCard(race) {
   const article = document.createElement('article');
   article.className = 'viewer-race-card';
@@ -130,6 +201,10 @@ function raceCard(race) {
 
   header.append(title, meta);
 
+  const mobileList = document.createElement('div');
+  mobileList.className = 'viewer-mobile-horses';
+  race.horses.forEach((horse) => mobileList.append(mobileHorseCard(horse)));
+
   const scroll = document.createElement('div');
   scroll.className = 'viewer-table-scroll';
   const table = document.createElement('table');
@@ -153,7 +228,8 @@ function raceCard(race) {
   race.horses.forEach((horse) => body.append(horseRow(horse)));
   table.append(body);
   scroll.append(table);
-  article.append(header, scroll);
+
+  article.append(header, mobileList, scroll);
   return article;
 }
 
@@ -185,7 +261,7 @@ async function loadViewerDay() {
   requestController?.abort();
   requestController = new AbortController();
   elements.submit.disabled = true;
-  setStatus('保存済み予想を読み込んでいます…', 'loading');
+  setStatus('予想を読み込んでいます…', 'loading');
   elements.summary.hidden = true;
 
   try {
@@ -203,10 +279,11 @@ async function loadViewerDay() {
     const day = sanitizeViewerDayPayload(payload);
     renderDay(day);
     updateAddressBar({ date, organization, track });
-    setStatus('閲覧専用 · 保存済み予想', 'success');
+    setStatus('', 'success');
   } catch (error) {
     if (error?.name === 'AbortError') return;
     elements.races.replaceChildren();
+    elements.summary.hidden = true;
     const code = String(error?.message || 'VIEWER_LOAD_FAILED');
     const message = code === 'RACE_NOT_FOUND'
       ? 'この条件の保存済み予想はありません。'
@@ -234,7 +311,7 @@ function initialize() {
   });
 
   if (normalizeViewerTrack(requestedTrack, organization)) loadViewerDay();
-  else setStatus('開催日・主催・競馬場を選択してください。');
+  else setStatus('');
 }
 
 initialize();

@@ -1,128 +1,212 @@
 :root {
   color-scheme: light dark;
-  --viewer-bg: #f5f6f8;
+  --viewer-bg: #f4f6f8;
   --viewer-panel: #ffffff;
-  --viewer-text: #181b20;
-  --viewer-muted: #68707c;
-  --viewer-line: #dfe3e8;
+  --viewer-panel-2: #f8fafc;
+  --viewer-text: #111827;
+  --viewer-muted: #697386;
+  --viewer-line: #dfe4ea;
   --viewer-accent: #111827;
-  --viewer-soft: #eef1f5;
+  --viewer-accent-text: #ffffff;
+  --viewer-soft: #eef2f6;
+  --viewer-glow: rgba(17, 24, 39, .06);
+  --viewer-positive: #0f9f6e;
+  --viewer-positive-soft: rgba(15, 159, 110, .10);
+  --viewer-danger: #e05252;
+  --viewer-danger-soft: rgba(224, 82, 82, .12);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --viewer-bg: #0f1115;
-    --viewer-panel: #171a20;
-    --viewer-text: #f3f4f6;
-    --viewer-muted: #a2a9b3;
-    --viewer-line: #303640;
-    --viewer-accent: #f3f4f6;
-    --viewer-soft: #222730;
+    --viewer-bg: #0b0d11;
+    --viewer-panel: #13171d;
+    --viewer-panel-2: #181d25;
+    --viewer-text: #f7f8fa;
+    --viewer-muted: #9199a7;
+    --viewer-line: #2a313b;
+    --viewer-accent: #f7f8fa;
+    --viewer-accent-text: #0b0d11;
+    --viewer-soft: #1c222b;
+    --viewer-glow: rgba(0, 0, 0, .28);
+    --viewer-positive: #42c998;
+    --viewer-positive-soft: rgba(66, 201, 152, .12);
+    --viewer-danger: #ff7979;
+    --viewer-danger-soft: rgba(255, 121, 121, .13);
   }
 }
 
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
 body {
   margin: 0;
-  background: var(--viewer-bg);
+  background: radial-gradient(circle at 50% -120px, var(--viewer-glow), transparent 360px), var(--viewer-bg);
   color: var(--viewer-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+  font-feature-settings: "palt";
 }
+
 button, input, select { font: inherit; }
 
 .viewer-shell {
-  width: min(1180px, calc(100% - 24px));
+  width: min(1180px, calc(100% - 28px));
   margin: 0 auto;
-  padding: 24px 0 56px;
+  padding: 28px 0 56px;
 }
 
 .viewer-topbar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
-.viewer-brand h1 { margin: 0; font-size: clamp(22px, 5vw, 34px); }
-.viewer-brand p { margin: 6px 0 0; color: var(--viewer-muted); }
+
+.viewer-brand h1 {
+  margin: 0;
+  font-size: clamp(23px, 5vw, 34px);
+  line-height: 1;
+  letter-spacing: -.035em;
+}
+
+.viewer-brand p {
+  margin: 7px 0 0;
+  color: var(--viewer-muted);
+  font-size: 13px;
+}
+
 .viewer-badge {
   flex: 0 0 auto;
-  padding: 7px 10px;
+  padding: 6px 9px;
   border: 1px solid var(--viewer-line);
   border-radius: 999px;
+  color: var(--viewer-muted);
   background: var(--viewer-panel);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
 }
 
 .viewer-controls,
 .viewer-race-card {
   border: 1px solid var(--viewer-line);
-  border-radius: 16px;
   background: var(--viewer-panel);
+  box-shadow: 0 10px 30px var(--viewer-glow);
 }
-.viewer-controls { padding: 14px; margin-bottom: 16px; }
+
+.viewer-controls {
+  padding: 15px;
+  margin-bottom: 18px;
+  border-radius: 18px;
+}
+
 .viewer-form {
   display: grid;
   grid-template-columns: 1.2fr .8fr 1fr auto;
   gap: 10px;
   align-items: end;
 }
+
 .viewer-field { display: grid; gap: 6px; }
-.viewer-field label { color: var(--viewer-muted); font-size: 12px; font-weight: 700; }
+
+.viewer-field label {
+  color: var(--viewer-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
 .viewer-field input,
 .viewer-field select,
 .viewer-submit {
   min-height: 44px;
   border: 1px solid var(--viewer-line);
-  border-radius: 10px;
-  padding: 0 11px;
-  background: var(--viewer-panel);
+  border-radius: 11px;
+  padding: 0 12px;
+  background: var(--viewer-panel-2);
   color: var(--viewer-text);
+  outline: none;
 }
+
 .viewer-submit {
-  padding: 0 18px;
+  padding: 0 19px;
   background: var(--viewer-accent);
-  color: var(--viewer-bg);
+  color: var(--viewer-accent-text);
   border-color: var(--viewer-accent);
-  font-weight: 800;
+  font-weight: 850;
   cursor: pointer;
 }
+
 .viewer-submit:disabled { opacity: .55; cursor: wait; }
 
 .viewer-status-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 14px;
-  justify-content: space-between;
-  margin-top: 12px;
+  justify-content: flex-end;
+  min-height: 17px;
+  margin-top: 11px;
   color: var(--viewer-muted);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 650;
 }
-#viewer-status[data-state="error"] { color: #c2410c; }
-#viewer-status[data-state="success"] { color: #15803d; }
 
-.viewer-races { display: grid; gap: 14px; }
-.viewer-race-card { overflow: hidden; }
+#viewer-status:not([hidden]) { margin-right: auto; }
+#viewer-status[data-state="error"] { color: var(--viewer-danger); }
+
+.viewer-races { display: grid; gap: 16px; }
+
+.viewer-race-card {
+  overflow: hidden;
+  border-radius: 18px;
+}
+
 .viewer-race-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 16px 18px 14px;
   border-bottom: 1px solid var(--viewer-line);
 }
-.viewer-race-title { display: flex; gap: 10px; align-items: baseline; }
-.viewer-race-title strong { font-size: 20px; }
-.viewer-race-title span { font-weight: 700; }
-.viewer-race-meta { text-align: right; color: var(--viewer-muted); font-size: 12px; }
+
+.viewer-race-title {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.viewer-race-title strong {
+  flex: 0 0 auto;
+  font-size: 22px;
+  letter-spacing: -.04em;
+}
+
+.viewer-race-title span {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-race-meta {
+  flex: 0 0 auto;
+  text-align: right;
+  color: var(--viewer-muted);
+  font-size: 12px;
+}
+
+.viewer-mobile-horses { display: none; }
 .viewer-table-scroll { overflow-x: auto; }
+
 .viewer-table {
   width: 100%;
   min-width: 850px;
   border-collapse: collapse;
   font-size: 13px;
 }
+
 .viewer-table th,
 .viewer-table td {
   padding: 10px 9px;
@@ -130,34 +214,261 @@ button, input, select { font: inherit; }
   text-align: right;
   white-space: nowrap;
 }
+
 .viewer-table thead th {
   color: var(--viewer-muted);
   background: var(--viewer-soft);
   font-size: 11px;
   font-weight: 800;
 }
+
 .viewer-table th:nth-child(1),
 .viewer-table td:nth-child(1),
 .viewer-table th:nth-child(3),
 .viewer-table td:nth-child(3) { text-align: left; }
+
 .viewer-table tbody tr:last-child > * { border-bottom: 0; }
-.viewer-marks { display: flex; gap: 4px; align-items: center; min-width: 72px; }
+
+.viewer-marks {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 72px;
+}
+
 .viewer-marks span { font-weight: 900; }
-.viewer-runner-inactive { opacity: .48; text-decoration: line-through; }
+.viewer-marks .is-longshot { color: var(--viewer-positive); }
+.viewer-marks .is-danger { color: var(--viewer-danger); }
+
+.viewer-runner-inactive {
+  opacity: .46;
+  filter: saturate(.55);
+}
+
 .viewer-footer {
-  margin-top: 20px;
+  margin-top: 24px;
   color: var(--viewer-muted);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.7;
 }
 
 @media (max-width: 720px) {
-  .viewer-shell { width: min(100% - 16px, 1180px); padding-top: 16px; }
-  .viewer-topbar { align-items: center; }
-  .viewer-brand p { font-size: 12px; }
-  .viewer-form { grid-template-columns: 1fr 1fr; }
+  .viewer-shell {
+    width: min(100% - 20px, 1180px);
+    padding-top: 18px;
+    padding-bottom: 40px;
+  }
+
+  .viewer-topbar {
+    margin-bottom: 16px;
+    padding: 0 2px;
+  }
+
+  .viewer-brand h1 { font-size: 24px; }
+  .viewer-brand p { margin-top: 5px; font-size: 11px; }
+  .viewer-badge { padding: 5px 8px; font-size: 9px; }
+
+  .viewer-controls {
+    padding: 13px;
+    margin-bottom: 14px;
+    border-radius: 16px;
+    box-shadow: none;
+  }
+
+  .viewer-form {
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+  }
+
   .viewer-field:first-child { grid-column: 1 / -1; }
-  .viewer-submit { width: 100%; }
-  .viewer-race-header { display: block; }
-  .viewer-race-meta { text-align: left; margin-top: 6px; }
+
+  .viewer-field input,
+  .viewer-field select,
+  .viewer-submit {
+    min-height: 43px;
+    border-radius: 10px;
+  }
+
+  .viewer-submit {
+    width: 100%;
+    min-height: 46px;
+    margin-top: 2px;
+  }
+
+  .viewer-status-row {
+    min-height: 0;
+    margin-top: 9px;
+    justify-content: flex-end;
+    font-size: 11px;
+  }
+
+  .viewer-races { gap: 14px; }
+
+  .viewer-race-card {
+    border-radius: 17px;
+    box-shadow: none;
+  }
+
+  .viewer-race-header {
+    display: block;
+    padding: 15px 15px 12px;
+  }
+
+  .viewer-race-title { gap: 8px; }
+  .viewer-race-title strong { font-size: 21px; }
+  .viewer-race-title span { font-size: 16px; }
+
+  .viewer-race-meta {
+    margin-top: 6px;
+    text-align: left;
+    font-size: 11px;
+  }
+
+  .viewer-table-scroll { display: none; }
+  .viewer-mobile-horses { display: grid; gap: 0; }
+
+  .viewer-horse-card {
+    padding: 13px 14px 12px;
+    border-bottom: 1px solid var(--viewer-line);
+    background: var(--viewer-panel);
+  }
+
+  .viewer-horse-card:last-child { border-bottom: 0; }
+
+  .viewer-horse-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .viewer-horse-identity {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .viewer-horse-no {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    min-width: 27px;
+    height: 27px;
+    padding: 0 7px;
+    border: 1px solid var(--viewer-line);
+    border-radius: 8px;
+    color: var(--viewer-muted);
+    background: var(--viewer-panel-2);
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .viewer-horse-name {
+    overflow: hidden;
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.25;
+    letter-spacing: -.015em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .viewer-horse-card-marks {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .viewer-horse-card-marks span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    min-height: 26px;
+    padding: 3px 6px;
+    border-radius: 8px;
+    background: var(--viewer-soft);
+    font-size: 13px;
+  }
+
+  .viewer-horse-card-marks .is-longshot {
+    background: var(--viewer-positive-soft);
+    color: var(--viewer-positive);
+  }
+
+  .viewer-horse-card-marks .is-danger {
+    background: var(--viewer-danger-soft);
+    color: var(--viewer-danger);
+  }
+
+  .viewer-horse-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+    margin-top: 10px;
+  }
+
+  .viewer-horse-metric {
+    min-width: 0;
+    padding: 8px 8px 7px;
+    border-radius: 10px;
+    background: var(--viewer-panel-2);
+  }
+
+  .viewer-horse-metric-label {
+    display: block;
+    overflow: hidden;
+    color: var(--viewer-muted);
+    font-size: 9px;
+    font-weight: 750;
+    letter-spacing: .02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .viewer-horse-metric-value {
+    display: block;
+    overflow: hidden;
+    margin-top: 2px;
+    color: var(--viewer-text);
+    font-size: 13px;
+    line-height: 1.2;
+    letter-spacing: -.01em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .viewer-horse-metric.is-primary {
+    background: var(--viewer-soft);
+  }
+
+  .viewer-horse-metric.is-primary .viewer-horse-metric-value {
+    font-size: 14px;
+  }
+
+  .viewer-horse-metric.is-ev .viewer-horse-metric-value {
+    color: var(--viewer-positive);
+  }
+
+  .viewer-horse-note {
+    margin: 8px 0 0;
+    color: var(--viewer-muted);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .viewer-footer {
+    margin-top: 18px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 390px) {
+  .viewer-shell { width: min(100% - 14px, 1180px); }
+  .viewer-horse-card { padding-inline: 11px; }
+  .viewer-horse-metrics { gap: 5px; }
+  .viewer-horse-metric { padding-inline: 6px; }
 }
