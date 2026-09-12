@@ -1,0 +1,466 @@
+name: CHASS JRA Integrated Race + Odds Cache Refresh v2.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - refresh_d1
+      date:
+        description: "日付。空欄なら日本時間の今日 (YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      track:
+        description: "競馬場。ALLは開催場すべて"
+        required: true
+        default: "ALL"
+        type: choice
+        options:
+          - ALL
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "0は対象競馬場の全R"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+
+  # JRA通常開催向け。
+  # 06:15 JSTに出馬表を先行更新し、09:00-16:45 JSTは15分間隔で
+  # 出馬表＋発売済み単勝オッズを更新する。
+  # 祝日開催はworkflow_dispatchで手動実行可能。
+  schedule:
+    - cron: "15 21 * * 5,6"
+    - cron: "*/15 0-7 * * 6,0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-integrated-race-odds-refresh-v20
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Runtime safety check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test -f scripts/jra-official-refresh.mjs
+          test -f scripts/jra-official-odds-refresh.mjs
+          test -f jra-race-fetch.mjs
+          test -f jra-odds-fetch.mjs
+          test -f jra-official-cache.mjs
+
+          node --check scripts/jra-official-refresh.mjs
+          node --check scripts/jra-official-odds-refresh.mjs
+          node --check jra-race-fetch.mjs
+          node --check jra-odds-fetch.mjs
+          node --check jra-official-cache.mjs
+
+          echo "JRA integrated refresh runtime safety: PASS"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'refresh_d1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+
+          npx -y wrangler@4 whoami
+
+      - name: Fetch official race cards for selected scope
+        id: race_fetch
+        shell: bash
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_TRACK: ${{ inputs.track }}
+          INPUT_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+
+          DATE_ARG="${INPUT_DATE:-}"
+          TRACK_ARG="${INPUT_TRACK:-ALL}"
+          RACE_ARG="${INPUT_RACE:-0}"
+
+          # Scheduled runs have no workflow_dispatch inputs.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DATE_ARG=""
+            TRACK_ARG="ALL"
+            RACE_ARG="0"
+          fi
+
+          node scripts/jra-official-refresh.mjs \
+            --date="$DATE_ARG" \
+            --track="$TRACK_ARG" \
+            --race="$RACE_ARG" \
+            --out=/tmp/jra-race-cache.sql \
+            --summary=/tmp/jra-race-summary.json
+
+          if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-race-cache.sql; then
+            echo "::error::Race cache SQL contains an explicit transaction statement."
+            exit 1
+          fi
+
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-race-summary.json', 'utf8'));
+
+          console.log(`resolved_date=${x.date || ''}`);
+          console.log(`race_target_count=${Number(x.targetCount || 0)}`);
+          console.log(`race_success_count=${Number(x.successCount || 0)}`);
+          console.log(`race_failure_count=${Number(x.failureCount || 0)}`);
+
+          const first = x.successes?.[0];
+          if (first) {
+            console.log(`first_race_track=${first.track}`);
+            console.log(`first_race_no=${first.race}`);
+          }
+          NODE
+
+      - name: Fetch official win odds for every successful race card
+        id: odds_fetch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/jra-odds-parts
+          mkdir -p /tmp/jra-odds-parts
+          : > /tmp/jra-odds-cache.sql
+          : > /tmp/jra-odds-skipped.tsv
+
+          node - <<'NODE' > /tmp/jra-race-targets.tsv
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-race-summary.json', 'utf8'));
+          for (const item of x.successes || []) {
+            console.log([item.date, item.track, item.race].join('\t'));
+          }
+          NODE
+
+          INDEX=0
+          ODDS_SUCCESS=0
+          ODDS_COMPLETE=0
+          ODDS_PARTIAL=0
+          ODDS_SKIPPED=0
+          FIRST_ODDS_TRACK=""
+          FIRST_ODDS_RACE=""
+
+          while IFS=$'\t' read -r DATE_VALUE TRACK_VALUE RACE_VALUE; do
+            [ -n "${DATE_VALUE:-}" ] || continue
+            INDEX=$((INDEX + 1))
+
+            OUT_SQL="/tmp/jra-odds-parts/${INDEX}.sql"
+            OUT_JSON="/tmp/jra-odds-parts/${INDEX}.json"
+            OUT_LOG="/tmp/jra-odds-parts/${INDEX}.log"
+
+            echo "Odds refresh target: ${DATE_VALUE} ${TRACK_VALUE} ${RACE_VALUE}R"
+
+            if node scripts/jra-official-odds-refresh.mjs \
+              --date="$DATE_VALUE" \
+              --track="$TRACK_VALUE" \
+              --race="$RACE_VALUE" \
+              --out="$OUT_SQL" \
+              --summary="$OUT_JSON" >"$OUT_LOG" 2>&1
+            then
+              cat "$OUT_LOG"
+
+              if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' "$OUT_SQL"; then
+                echo "::error::Odds SQL contains an explicit transaction statement."
+                exit 1
+              fi
+
+              cat "$OUT_SQL" >> /tmp/jra-odds-cache.sql
+              ODDS_SUCCESS=$((ODDS_SUCCESS + 1))
+
+              COMPLETE="$(node -e "const x=require(process.argv[1]);process.stdout.write(x.complete===true?'1':'0')" "$OUT_JSON")"
+              if [ "$COMPLETE" = "1" ]; then
+                ODDS_COMPLETE=$((ODDS_COMPLETE + 1))
+              else
+                ODDS_PARTIAL=$((ODDS_PARTIAL + 1))
+              fi
+
+              if [ -z "$FIRST_ODDS_TRACK" ]; then
+                FIRST_ODDS_TRACK="$TRACK_VALUE"
+                FIRST_ODDS_RACE="$RACE_VALUE"
+              fi
+            else
+              # Odds may not be on sale yet. This is expected for future races,
+              # so it is recorded but does not fail the whole race-card refresh.
+              cat "$OUT_LOG" || true
+              printf '%s\t%s\t%s\t%s\n' \
+                "$DATE_VALUE" "$TRACK_VALUE" "$RACE_VALUE" "ODDS_NOT_AVAILABLE_OR_FETCH_FAILED" \
+                >> /tmp/jra-odds-skipped.tsv
+              ODDS_SKIPPED=$((ODDS_SKIPPED + 1))
+            fi
+
+            # Avoid hammering the official site.
+            sleep 0.25
+          done < /tmp/jra-race-targets.tsv
+
+          {
+            echo "odds_success_count=$ODDS_SUCCESS"
+            echo "odds_complete_count=$ODDS_COMPLETE"
+            echo "odds_partial_count=$ODDS_PARTIAL"
+            echo "odds_skipped_count=$ODDS_SKIPPED"
+            echo "first_odds_track=$FIRST_ODDS_TRACK"
+            echo "first_odds_race=$FIRST_ODDS_RACE"
+          } >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "Odds success : $ODDS_SUCCESS"
+          echo "Odds complete: $ODDS_COMPLETE"
+          echo "Odds partial : $ODDS_PARTIAL"
+          echo "Odds skipped : $ODDS_SKIPPED"
+
+          if [ -s /tmp/jra-odds-skipped.tsv ]; then
+            echo "--- Odds skipped targets ---"
+            cat /tmp/jra-odds-skipped.tsv
+          fi
+
+      - name: Validation-only summary
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Integrated Race + Odds Cache Refresh v2.0 - VALIDATION"
+            echo
+            echo "- Date: ${{ steps.race_fetch.outputs.resolved_date }}"
+            echo "- Race-card targets: ${{ steps.race_fetch.outputs.race_target_count }}"
+            echo "- Race-card successes: ${{ steps.race_fetch.outputs.race_success_count }}"
+            echo "- Race-card failures: ${{ steps.race_fetch.outputs.race_failure_count }}"
+            echo "- Odds successes: ${{ steps.odds_fetch.outputs.odds_success_count }}"
+            echo "- Odds complete snapshots: ${{ steps.odds_fetch.outputs.odds_complete_count }}"
+            echo "- Odds partial snapshots: ${{ steps.odds_fetch.outputs.odds_partial_count }}"
+            echo "- Odds skipped/not-on-sale: ${{ steps.odds_fetch.outputs.odds_skipped_count }}"
+            echo "- D1 write: NOT PERFORMED"
+            echo "- Production API smoke: NOT PERFORMED"
+            echo
+            echo "If these counts are reasonable, rerun with mode=refresh_d1."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write race-card cache to D1
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'refresh_d1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s /tmp/jra-race-cache.sql || {
+            echo "::error::Race cache SQL is empty."
+            exit 1
+          }
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-race-cache.sql
+
+      - name: Write available odds cache to D1
+        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'refresh_d1') && steps.odds_fetch.outputs.odds_success_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s /tmp/jra-odds-cache.sql || {
+            echo "::error::Odds success count is nonzero but combined SQL is empty."
+            exit 1
+          }
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-odds-cache.sql
+
+      - name: D1 cache inventory
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'refresh_d1' }}
+        shell: bash
+        env:
+          RESOLVED_DATE: ${{ steps.race_fetch.outputs.resolved_date }}
+        run: |
+          set -euo pipefail
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind, COUNT(*) AS row_count FROM jra_official_cache WHERE race_date='$RESOLVED_DATE' GROUP BY kind ORDER BY kind;"
+
+      - name: Production race-card smoke
+        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'refresh_d1') && steps.race_fetch.outputs.race_success_count != '0' }}
+        shell: bash
+        env:
+          DATE_VALUE: ${{ steps.race_fetch.outputs.resolved_date }}
+          TRACK_VALUE: ${{ steps.race_fetch.outputs.first_race_track }}
+          RACE_VALUE: ${{ steps.race_fetch.outputs.first_race_no }}
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            : > /tmp/race-smoke.json
+            : > /tmp/race-smoke.headers
+
+            CODE="$(curl -sS --max-time 20 \
+              -D /tmp/race-smoke.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/race" \
+              --data-urlencode "date=$DATE_VALUE" \
+              --data-urlencode "track=$TRACK_VALUE" \
+              --data-urlencode "race=$RACE_VALUE" \
+              -o /tmp/race-smoke.json \
+              -w '%{http_code}' || true)"
+
+            if [ "$CODE" = "200" ] \
+              && grep -qi '^x-chass-jra-race-cache: D1-HIT' /tmp/race-smoke.headers \
+              && node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/race-smoke.json', 'utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) process.exit(1);
+          if (x.bridgeCache?.provider !== 'github_actions_d1') process.exit(1);
+          NODE
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Race-card D1 production smoke failed."
+            cat /tmp/race-smoke.json || true
+            exit 1
+          fi
+
+          echo "Race-card D1 production smoke: PASS"
+
+      - name: Production odds smoke
+        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'refresh_d1') && steps.odds_fetch.outputs.odds_success_count != '0' }}
+        shell: bash
+        env:
+          DATE_VALUE: ${{ steps.race_fetch.outputs.resolved_date }}
+          TRACK_VALUE: ${{ steps.odds_fetch.outputs.first_odds_track }}
+          RACE_VALUE: ${{ steps.odds_fetch.outputs.first_odds_race }}
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            : > /tmp/odds-smoke.json
+            : > /tmp/odds-smoke.headers
+
+            CODE="$(curl -sS --max-time 20 \
+              -D /tmp/odds-smoke.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/odds" \
+              --data-urlencode "date=$DATE_VALUE" \
+              --data-urlencode "track=$TRACK_VALUE" \
+              --data-urlencode "race=$RACE_VALUE" \
+              -o /tmp/odds-smoke.json \
+              -w '%{http_code}' || true)"
+
+            if [ "$CODE" = "200" ] \
+              && grep -qi '^x-chass-jra-odds-cache: D1-HIT' /tmp/odds-smoke.headers \
+              && node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/odds-smoke.json', 'utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (!Array.isArray(x.odds) || x.odds.length < 1) process.exit(1);
+          if (Number(x.quality?.oddsHorseCount) < 1) process.exit(1);
+          if (x.bridgeCache?.provider !== 'github_actions_d1') process.exit(1);
+          if (x.bridgeCache?.kind !== 'odds') process.exit(1);
+          NODE
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Odds D1 production smoke failed."
+            cat /tmp/odds-smoke.json || true
+            exit 1
+          fi
+
+          echo "Odds D1 production smoke: PASS"
+
+      - name: Refresh summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Integrated Race + Odds Cache Refresh v2.0"
+            echo
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- Date: ${{ steps.race_fetch.outputs.resolved_date || 'unresolved' }}"
+            echo "- Race-card targets: ${{ steps.race_fetch.outputs.race_target_count || '0' }}"
+            echo "- Race-card successes: ${{ steps.race_fetch.outputs.race_success_count || '0' }}"
+            echo "- Race-card failures: ${{ steps.race_fetch.outputs.race_failure_count || '0' }}"
+            echo "- Odds successes: ${{ steps.odds_fetch.outputs.odds_success_count || '0' }}"
+            echo "- Odds complete snapshots: ${{ steps.odds_fetch.outputs.odds_complete_count || '0' }}"
+            echo "- Odds partial snapshots: ${{ steps.odds_fetch.outputs.odds_partial_count || '0' }}"
+            echo "- Odds skipped/not-on-sale: ${{ steps.odds_fetch.outputs.odds_skipped_count || '0' }}"
+            echo
+            if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.mode }}" = "refresh_d1" ]; then
+              echo "- D1 update: REQUESTED"
+            else
+              echo "- D1 update: NOT REQUESTED"
+            fi
+            echo
+            echo "Odds that are not yet on sale are skipped without breaking race-card cache refresh."
+          } >> "$GITHUB_STEP_SUMMARY"
