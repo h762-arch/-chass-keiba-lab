@@ -811,16 +811,80 @@ function jraDraftFromSelection(input=jraRaceInput()){
 function expectedJraRaceId(date,track,raceNo){
   return raceId({raceDate:date,track,raceNo});
 }
-function ensureJraRaceSelectionState({renderNow=true}={}){
-  if(raceTypeOf(state)!=='JRA')return false;
-  const draft=jraDraftFromSelection();
+// CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8
+function exactSavedJraRace(draft){
   const nextId=raceId(draft);
+  if(!nextId)return null;
+  const sources=[raceCache,store.get(KEY,{}),store.get(LEGACY_KEY,{})];
+  for(const source of sources){
+    const saved=source?.[nextId];
+    if(!saved?.predictionSnapshot)continue;
+    const recordIdentity=activeRaceIdentity(saved);
+    const predictionIdentity=snapshotIdentity(saved.predictionSnapshot,saved,'prediction');
+    if(recordIdentity.organization!=='JRA'||recordIdentity.raceId!==nextId)continue;
+    if(predictionIdentity.organization!=='JRA'||predictionIdentity.raceId!==nextId)continue;
+    return saved;
+  }
+  return null;
+}
+
+function activateJraSelectionState(draft,{renderNow=true}={}){
+  const normalized={
+    ...jraDraftFromSelection(),
+    ...cloneData(draft||{}),
+    raceType:'JRA',
+    category:'中央競馬'
+  };
+  const nextId=raceId(normalized);
   if(!nextId)return false;
   const active=activeRaceIdentity();
   if(active.organization==='JRA'&&active.raceId===nextId)return false;
-  beginActiveRaceTransition('JRA',draft);
+
+  activeRaceGeneration++;
+  lastRaceFetchAudit=null;
+  predictionViewMode='original';
+  jraNormalizedDraft=null;
+
+  const saved=exactSavedJraRace(normalized);
+  if(saved){
+    const restored=restoreSavedRace(saved,{organization:'JRA',raceId:nextId});
+    const restoredIdentity=activeRaceIdentity(restored);
+    const predictionIdentity=restored?.predictionSnapshot
+      ? snapshotIdentity(restored.predictionSnapshot,restored,'prediction')
+      : {organization:'',raceId:''};
+
+    if(
+      restored?.predictionSnapshot &&
+      restoredIdentity.organization==='JRA' &&
+      restoredIdentity.raceId===nextId &&
+      predictionIdentity.organization==='JRA' &&
+      predictionIdentity.raceId===nextId
+    ){
+      state=restored;
+      state.race={...state.race,...cloneData(normalized),raceType:'JRA',category:'中央競馬'};
+      state.predictionSaved=state.predictionSaved??true;
+      saveCurrentRace(nextId);
+      if(renderNow)render();
+      if(typeof document!=='undefined'&&$('jraStatus')){
+        $('jraStatus').textContent='保存済み予想を復元しました｜現在オッズは必要に応じて更新してください。';
+      }
+      return true;
+    }
+  }
+
+  state=emptyRaceState('JRA');
+  state.race={...state.race,...cloneData(normalized),raceType:'JRA',category:'中央競馬'};
+  clearValidationTransient(state);
+  renderRaceFetchDiagnostics(null);
   if(renderNow)render();
+  if(typeof document!=='undefined'&&$('jraStatus')){
+    $('jraStatus').textContent='予想データ未読込｜JRA公式データを取得してください。';
+  }
   return true;
+}
+function ensureJraRaceSelectionState({renderNow=true}={}){
+  if(raceTypeOf(state)!=='JRA')return false;
+  return activateJraSelectionState(jraDraftFromSelection(),{renderNow});
 }
 function jraPayloadMatchesActive(data){
   const expected=expectedJraRaceId(data?.date,data?.track,data?.race);
@@ -1879,7 +1943,7 @@ if($('raceMode'))$('raceMode').onchange=e=>setRaceMode(e.target.value);
 if($('jraDataFile'))$('jraDataFile').onchange=loadJraFile;
 if($('jraAnalyze'))$('jraAnalyze').onclick=()=>{if(jraNormalizedDraft)commitJraNormalized(jraNormalizedDraft);else $('jraStatus').textContent='先にJRA JSONまたはCSVを読み込んでください。'};
 if($('jraManualAnalyze'))$('jraManualAnalyze').onclick=analyzeJraManual;
-function switchActiveRaceDraft(next,mode){const before=activeRaceIdentity(),after={organization:mode,raceId:raceId(next)};if(before.organization===after.organization&&before.raceId===after.raceId)return false;beginActiveRaceTransition(mode,next);return true}
+function switchActiveRaceDraft(next,mode){const before=activeRaceIdentity(),after={organization:mode,raceId:raceId(next)};if(before.organization===after.organization&&before.raceId===after.raceId)return false;if(mode==='JRA')return activateJraSelectionState(next,{renderNow:false});beginActiveRaceTransition(mode,next);return true}
 if($('autoTrack'))$('autoTrack').onchange=e=>{
   if($('track'))$('track').value=e.target.value;
   const before=Number($('autoRaceNo')?.value)||null;renderMeetingSelector({message:before&&!selectorRaceNumbers(e.target.value).includes(before)?'開催会場変更に伴いレースを1Rへ変更しました。':''});switchActiveRaceDraft(raceFromForm(),'NAR');render();
