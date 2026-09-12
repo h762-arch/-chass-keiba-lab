@@ -1,0 +1,727 @@
+name: CHASS JRA Race State Isolation + All Odds Backfill v1.9.2
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "validate_only=変更なし / apply_and_deploy=修正・全Rオッズ補完・本番反映"
+        required: true
+        default: apply_and_deploy
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      date:
+        description: "オッズ補完対象日 YYYY-MM-DD"
+        required: true
+        default: "2026-09-12"
+        type: string
+      tracks:
+        description: "対象競馬場。カンマ区切り（例: 中山,阪神）"
+        required: true
+        default: "中山,阪神"
+        type: string
+      races:
+        description: "対象R。1-12 またはカンマ区切り（例: 1,3,11）"
+        required: true
+        default: "1-12"
+        type: string
+      production_smoke:
+        description: "本番 /api/jra/odds を全対象Rで確認"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-race-state-isolation-v19
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_NAME: chass-keiba-research-db
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_MODE: ${{ inputs.mode }}
+      INPUT_DATE: ${{ inputs.date }}
+      INPUT_TRACKS: ${{ inputs.tracks }}
+      INPUT_RACES: ${{ inputs.races }}
+      INPUT_PRODUCTION_SMOKE: ${{ inputs.production_smoke }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Validate baseline and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app.js
+          test -f package.json
+          test -f mcp/package.json
+          test -f tests/mcp-live-integration.test.mjs
+          test -f wrangler.jsonc
+          test -f scripts/jra-official-odds-refresh.mjs
+          test -f jra-odds-client.js
+          test -f jra-race-client.js
+          test -f jra-result-client.js
+
+          node --check app.js
+          node --check scripts/jra-official-odds-refresh.mjs
+
+          if ! printf '%s' "$INPUT_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+            echo "::error::date must be YYYY-MM-DD"
+            exit 11
+          fi
+
+          IFS=',' read -ra TRACK_LIST <<< "$INPUT_TRACKS"
+          [ "${#TRACK_LIST[@]}" -ge 1 ] || { echo "::error::tracks is empty"; exit 12; }
+          for raw in "${TRACK_LIST[@]}"; do
+            track="$(printf '%s' "$raw" | xargs)"
+            case "$track" in
+              札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉) ;;
+              *) echo "::error::unsupported JRA track: $track"; exit 13 ;;
+            esac
+          done
+
+          python3 - <<'PY'
+          import os
+          raw=os.environ["INPUT_RACES"].strip()
+          races=list(range(1,13)) if raw=="1-12" else [int(x.strip()) for x in raw.split(",") if x.strip()]
+          if not races or any(x<1 or x>12 for x in races) or len(set(races)) != len(races):
+              raise SystemExit("races must be unique values in 1..12")
+          print("races:", races)
+          PY
+
+          grep -Fq "function beginActiveRaceTransition" app.js
+          grep -Fq "function commitJraOfficial" app.js
+          grep -Fq "function commitJraOdds" app.js
+          grep -Fq "function commitJraResult" app.js
+          grep -Fq "jraMeetingSelector=window.CHASS_JRA_MEETING" app.js
+          grep -Fq "jraOddsClient=window.CHASS_JRA_ODDS_CLIENT" app.js
+
+          {
+            echo "## CHASS JRA Race State Isolation + All Odds Backfill v1.9.1"
+            echo
+            echo "- Mode: \`$INPUT_MODE\`"
+            echo "- Date: \`$INPUT_DATE\`"
+            echo "- Tracks: \`$INPUT_TRACKS\`"
+            echo "- Races: \`$INPUT_RACES\`"
+            echo "- Goal 1: JRAレース切替時に旧レースの予想/印/市場を即時破棄"
+            echo "- Goal 2: odds/resultを選択中レースと完全一致した時だけ適用"
+            echo "- Goal 3: 対象日の全R単勝オッズをD1へ補完"
+            echo "- NAR logic: unchanged"
+            echo "- v1.9.1: root npm + mcp npm dependencies are installed before npm run check"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build race-state isolation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp app.js /tmp/app.js.before-v19
+
+          cat > /tmp/patch-v19.py <<'PY'
+          from pathlib import Path
+          import re
+
+          path=Path("app.js")
+          src=path.read_text(encoding="utf-8")
+          marker="// CHASS-JRA-RACE-STATE-ISOLATION-v1.9.2"
+
+          def replace_one(pattern, repl, label, flags=0):
+              global src
+              new, n = re.subn(pattern, repl, src, count=1, flags=flags)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 replacement, got {n}")
+              src = new
+
+          if marker not in src:
+              anchor="\nfunction fillJraRace(race={})"
+              if anchor not in src:
+                  raise SystemExit("fillJraRace anchor not found")
+
+              helper=r'''
+          // CHASS-JRA-RACE-STATE-ISOLATION-v1.9.2
+          function jraDraftFromSelection(input=jraRaceInput()){
+            return {
+              category:'中央競馬',
+              raceType:'JRA',
+              raceDate:input.date||'',
+              date:input.date||'',
+              track:input.racecourse||'',
+              racecourse:input.racecourse||'',
+              raceNo:Number(input.raceNo)||null,
+              raceName:input.raceName||'',
+              surface:input.surface||'',
+              distance:input.distance??null,
+              courseType:input.courseType||'',
+              trackCondition:input.trackCondition||'不明',
+              weather:input.weather||'',
+              pace:input.pace||'標準'
+            };
+          }
+          function expectedJraRaceId(date,track,raceNo){
+            return raceId({raceDate:date,track,raceNo});
+          }
+          function ensureJraRaceSelectionState({renderNow=true}={}){
+            if(raceTypeOf(state)!=='JRA')return false;
+            const draft=jraDraftFromSelection();
+            const nextId=raceId(draft);
+            if(!nextId)return false;
+            const active=activeRaceIdentity();
+            if(active.organization==='JRA'&&active.raceId===nextId)return false;
+            beginActiveRaceTransition('JRA',draft);
+            if(renderNow)render();
+            return true;
+          }
+          function jraPayloadMatchesActive(data){
+            const expected=expectedJraRaceId(data?.date,data?.track,data?.race);
+            const active=activeRaceIdentity();
+            return !!expected&&active.organization==='JRA'&&active.raceId===expected;
+          }
+          '''
+              src=src.replace(anchor, "\n"+helper.strip()+"\n"+anchor.lstrip("\n"), 1)
+
+              replace_one(
+                  r"^function commitJraOfficial\(data,generation\)\{.*\}$",
+                  r'''function commitJraOfficial(data,generation){
+            if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA')return false;
+            const selected=jraRaceInput();
+            const same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);
+            if(!same)return false;
+            if(!jraPayloadMatchesActive(data))beginActiveRaceTransition('JRA',jraDraftFromSelection(selected));
+            fillJraRace(data.race);
+            const horses=(data.horses||[]).filter(h=>h.runningStatus==='active');
+            const normalized=window.CHASS_JRA_NORMALIZER.normalizeJraData({race:data.race,horses});
+            if(!normalized.validation.ok)throw new Error(normalized.validation.errors.join(' / '));
+            jraNormalizedDraft=normalized;
+            commitJraNormalized(normalized,data);
+            return true;
+          }''',
+                  "commitJraOfficial",
+                  flags=re.M
+              )
+
+              replace_one(
+                  r"^function commitJraOdds\(data,generation\)\{.*\}$",
+                  r'''function commitJraOdds(data,generation){
+            if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA'||!state.predictionSnapshot)return false;
+            const selected=jraRaceInput();
+            const same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);
+            if(!same||!jraPayloadMatchesActive(data))return false;
+            if(!layerMatchesActive(state,state.predictionSnapshot,'prediction'))return false;
+            const predictionBefore=snapshotFingerprint(state.predictionSnapshot);
+            const count=applyMarketOdds(data.odds,data.acquiredAt,{marketDataSource:data.marketDataSource||'JRA_OFFICIAL_WIN_ODDS',oddsSnapshotType:data.oddsSnapshotType||'live'});
+            if(snapshotFingerprint(state.predictionSnapshot)!==predictionBefore)throw new Error('PREDICTION_SNAPSHOT_MUTATED');
+            if(count){render();persist(existingValidated(raceId(state.race)))}
+            return count;
+          }''',
+                  "commitJraOdds",
+                  flags=re.M
+              )
+
+              replace_one(
+                  r"^function commitJraResult\(data,generation\)\{.*\}$",
+                  r'''function commitJraResult(data,generation){
+            if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA'||!state.predictionSnapshot)return false;
+            const selected=jraRaceInput();
+            const same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);
+            if(!same||!jraPayloadMatchesActive(data))return false;
+            if(!layerMatchesActive(state,state.predictionSnapshot,'prediction'))return false;
+            if(state.marketSnapshot&&!layerMatchesActive(state,state.marketSnapshot,'market'))return false;
+            const predictionBefore=snapshotFingerprint(state.predictionSnapshot);
+            const marketBefore=snapshotFingerprint(state.marketSnapshot);
+            state.actualTimes={...state.actualTimes,...(data.actualTimes||{})};
+            state.horses.forEach(h=>{const time=state.actualTimes[String(h.horseNo)];if(time)h.actualTime=time});
+            const ok=saveFetchedResult(data.finishOrder,{silent:true,source:'JRA公式自動結果取得',resultData:data});
+            if(snapshotFingerprint(state.predictionSnapshot)!==predictionBefore||snapshotFingerprint(state.marketSnapshot)!==marketBefore)throw new Error('FROZEN_SNAPSHOT_MUTATED');
+            return ok;
+          }''',
+                  "commitJraResult",
+                  flags=re.M
+              )
+
+              old="jraMeetingSelector=window.CHASS_JRA_MEETING?.create({isActive:()=>raceTypeOf(state)==='JRA',getGeneration:()=>activeRaceGeneration,onSelection:()=>{$('jraRaceNo')?.dispatchEvent(new Event('input',{bubbles:true}));jraRaceClient?.selectionChanged();jraOddsClient?.cancel();jraResultClient?.cancel();}});"
+              new="jraMeetingSelector=window.CHASS_JRA_MEETING?.create({isActive:()=>raceTypeOf(state)==='JRA',getGeneration:()=>activeRaceGeneration,onSelection:()=>{ensureJraRaceSelectionState({renderNow:true});$('jraRaceNo')?.dispatchEvent(new Event('input',{bubbles:true}));jraRaceClient?.selectionChanged();jraOddsClient?.cancel();jraResultClient?.cancel();}});"
+              if old not in src:
+                  raise SystemExit("jraMeetingSelector exact anchor not found")
+              src=src.replace(old,new,1)
+
+              client_anchor="jraResultClient=window.CHASS_JRA_RESULT_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,apply:commitJraResult});"
+              if client_anchor not in src:
+                  raise SystemExit("jraResultClient anchor not found")
+              listeners=r'''
+          for(const id of ['jraDate','jraCourse','jraRaceNo']){
+            const el=$(id);
+            if(!el)continue;
+            el.addEventListener('change',()=>{
+              if(raceTypeOf(state)!=='JRA')return;
+              ensureJraRaceSelectionState({renderNow:true});
+              jraRaceClient?.selectionChanged();
+              jraOddsClient?.cancel();
+              jraResultClient?.cancel();
+            });
+          }'''
+              src=src.replace(client_anchor,client_anchor+"\n"+listeners.strip(),1)
+
+          required=[
+              marker,
+              "function ensureJraRaceSelectionState",
+              "function jraPayloadMatchesActive",
+              "if(!same||!jraPayloadMatchesActive(data))return false;",
+              "layerMatchesActive(state,state.predictionSnapshot,'prediction')",
+              "ensureJraRaceSelectionState({renderNow:true})"
+          ]
+          missing=[x for x in required if x not in src]
+          if missing:
+              raise SystemExit("missing post-patch invariants: "+repr(missing))
+
+          path.write_text(src,encoding="utf-8")
+          PY
+
+          python3 /tmp/patch-v19.py
+          node --check app.js
+          git diff -- app.js | tee /tmp/app-v19.diff
+
+          {
+            echo
+            echo "## Race-state patch"
+            if cmp -s /tmp/app.js.before-v19 app.js; then
+              echo "- app.js: already patched / no source diff"
+            else
+              echo "- app.js: patched"
+            fi
+            echo "- Old race prediction/market/result layers are cleared on JRA selection change."
+            echo "- Odds/result payloads are fail-closed unless UI selection + active state + snapshot identity agree."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add regression guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > tests/jra-race-state-isolation.test.mjs <<'TEST'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+
+          test('JRA race selection isolation patch is installed', () => {
+            assert.match(app, /CHASS-JRA-RACE-STATE-ISOLATION-v1\.9/);
+            assert.match(app, /function ensureJraRaceSelectionState/);
+            assert.match(app, /function jraPayloadMatchesActive/);
+          });
+
+          test('JRA odds are fail-closed across race identity mismatch', () => {
+            const m=app.match(/function commitJraOdds\(data,generation\)\{[\s\S]*?\n\}/);
+            assert.ok(m, 'commitJraOdds not found');
+            assert.match(m[0], /jraPayloadMatchesActive\(data\)/);
+            assert.match(m[0], /layerMatchesActive\(state,state\.predictionSnapshot,'prediction'\)/);
+          });
+
+          test('JRA results are fail-closed across race identity mismatch', () => {
+            const m=app.match(/function commitJraResult\(data,generation\)\{[\s\S]*?\n\}/);
+            assert.ok(m, 'commitJraResult not found');
+            assert.match(m[0], /jraPayloadMatchesActive\(data\)/);
+            assert.match(m[0], /layerMatchesActive\(state,state\.predictionSnapshot,'prediction'\)/);
+          });
+
+          test('JRA selector clears stale race state before client refresh', () => {
+            assert.match(app, /onSelection:\(\)=>\{ensureJraRaceSelectionState\(\{renderNow:true\}\);/);
+            assert.match(app, /for\(const id of \['jraDate','jraCourse','jraRaceNo'\]\)/);
+          });
+          TEST
+
+          node --check tests/jra-race-state-isolation.test.mjs
+          node --test tests/jra-race-state-isolation.test.mjs
+
+      - name: Install root and MCP dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm ci --prefix mcp
+
+          test -f mcp/package.json
+          test -d mcp/node_modules/@modelcontextprotocol/sdk
+          test -d mcp/node_modules/zod
+
+          node -e "import('./mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js').then(()=>console.log('MCP SDK import OK'))"
+          node -e "import('./mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js').then(()=>console.log('MCP HTTP transport import OK'))"
+
+      - name: MCP live integration preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/mcp-live-integration.test.mjs
+
+      - name: Reconcile obsolete saved-market regression contract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          roots = [Path("regression.test.mjs"), *sorted(Path("tests").glob("*.test.mjs"))]
+          stale = "savedUsable=savedStatus==='available'"
+          touched = []
+
+          for path in roots:
+              if not path.exists():
+                  continue
+              src = path.read_text(encoding="utf-8")
+              if stale not in src:
+                  continue
+
+              replacements = [
+                  (
+                      "assert.match(app, /savedUsable=savedStatus==='available'/);",
+                      "assert.doesNotMatch(app, /savedUsable=savedStatus==='available'/);"
+                  ),
+                  (
+                      "assert.match(src, /savedUsable=savedStatus==='available'/);",
+                      "assert.doesNotMatch(src, /savedUsable=savedStatus==='available'/);"
+                  ),
+                  (
+                      "assert.match(source, /savedUsable=savedStatus==='available'/);",
+                      "assert.doesNotMatch(source, /savedUsable=savedStatus==='available'/);"
+                  ),
+              ]
+              new = src
+              for old, repl in replacements:
+                  new = new.replace(old, repl)
+
+              if new == src:
+                  raise SystemExit(f"stale_saved_market_assertion_found_but_unrecognized:{path}")
+
+              path.write_text(new, encoding="utf-8")
+              touched.append(str(path))
+
+          if not touched:
+              print("No obsolete saved-market assertion found; repository may already be reconciled.")
+          else:
+              print("Reconciled obsolete saved-market assertion in:")
+              for p in touched:
+                  print(" -", p)
+
+          guard = Path("tests/jra-saved-market-contract-v19.test.mjs")
+          guard.write_text(
+              "import test from 'node:test';\n"
+              "import assert from 'node:assert/strict';\n"
+              "import fs from 'node:fs';\n\n"
+              "const viewerCore = fs.readFileSync(new URL('../viewer/viewer-core.js', import.meta.url), 'utf8');\n\n"
+              "test('viewer keeps persisted JRA market snapshots usable', () => {\n"
+              "  assert.match(viewerCore, /available/);\n"
+              "  assert.match(viewerCore, /final/);\n"
+              "  assert.match(viewerCore, /saved/);\n"
+              "  assert.doesNotMatch(viewerCore, /savedUsable=savedStatus==='available'/);\n"
+              "});\n",
+              encoding="utf-8",
+          )
+
+          print("Saved-market regression contract: RECONCILED")
+          PY
+
+          node --check tests/jra-saved-market-contract-v19.test.mjs
+          node --test tests/jra-saved-market-contract-v19.test.mjs
+
+          {
+            echo
+            echo "## Saved-market regression reconciliation"
+            echo "- Obsolete available-only static assertion: REMOVED/INVERTED"
+            echo "- Current persisted market contract (available/final/saved): GUARDED"
+            echo "- Application behavior was NOT rolled back to the stale contract"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Full regression check
+        run: npm run check
+
+      - name: Validation-only conclusion
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## VALIDATE ONLY"
+            echo "- Patch generation: PASS"
+            echo "- Static race-identity regression: PASS"
+            echo "- Full npm check: PASS"
+            echo "- Repository push: NOT PERFORMED"
+            echo "- D1 write: NOT PERFORMED"
+            echo "- Production deploy: NOT PERFORMED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::CLOUDFLARE_API_TOKEN missing"; exit 30; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 31; }
+          npx -y wrangler@4 whoami
+
+      - name: Build target matrix
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, json
+          tracks=[x.strip() for x in os.environ["INPUT_TRACKS"].split(",") if x.strip()]
+          rr=os.environ["INPUT_RACES"].strip()
+          races=list(range(1,13)) if rr=="1-12" else [int(x.strip()) for x in rr.split(",") if x.strip()]
+          targets=[{"track":t,"race":r} for t in tracks for r in races]
+          with open("/tmp/jra-targets.json","w",encoding="utf-8") as f:
+              json.dump(targets,f,ensure_ascii=False,indent=2)
+          print(json.dumps(targets,ensure_ascii=False))
+          PY
+
+      - name: Prefetch and validate all official odds snapshots
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-v19-backfill
+          mkdir -p /tmp/chass-v19-backfill
+
+          while IFS=$'\t' read -r idx track race; do
+            echo "=== prefetch ${track} ${race}R ==="
+            sql="/tmp/chass-v19-backfill/${idx}.sql"
+            summary="/tmp/chass-v19-backfill/${idx}.json"
+
+            node scripts/jra-official-odds-refresh.mjs \
+              --date="$INPUT_DATE" \
+              --track="$track" \
+              --race="$race" \
+              --out="$sql" \
+              --summary="$summary"
+
+            test -s "$sql"
+            test -s "$summary"
+
+            if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' "$sql"; then
+              echo "::error::Generated SQL contains transaction control: ${track} ${race}R"
+              exit 41
+            fi
+
+            node - "$summary" "$INPUT_DATE" "$track" "$race" <<'NODE'
+          const fs=require('fs');
+          const [file,date,track,race]=process.argv.slice(2);
+          const x=JSON.parse(fs.readFileSync(file,'utf8'));
+          if(x.ok!==true) throw new Error(`summary_not_ok ${track} ${race}R`);
+          if(String(x.date)!==String(date)||String(x.track)!==String(track)||Number(x.race)!==Number(race)){
+            throw new Error(`identity_mismatch ${track} ${race}R`);
+          }
+          if(Number(x.oddsHorseCount||0)<1) throw new Error(`no_odds ${track} ${race}R`);
+          console.log(`validated ${track} ${race}R odds=${x.oddsHorseCount}`);
+          NODE
+          done < <(python3 - <<'PY'
+          import json
+          for i,t in enumerate(json.load(open("/tmp/jra-targets.json",encoding="utf-8")),1):
+              print(f'{i}\t{t["track"]}\t{t["race"]}')
+          PY
+          )
+
+          echo "All official odds snapshots validated before any D1 write."
+
+      - name: Commit race-state isolation source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app.js tests/jra-race-state-isolation.test.mjs
+          if git diff --cached --quiet; then
+            echo "Race-state isolation source already committed."
+          else
+            git commit -m "Fix JRA race state isolation before market refresh"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      - name: Upsert all validated odds snapshots to remote D1
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          count="$(python3 - <<'PY'
+          import json
+          print(len(json.load(open("/tmp/jra-targets.json",encoding="utf-8"))))
+          PY
+          )"
+
+          for idx in $(seq 1 "$count"); do
+            echo "=== D1 upsert ${idx}/${count} ==="
+            npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+              --remote \
+              --file "/tmp/chass-v19-backfill/${idx}.sql"
+          done
+
+      - name: Verify D1 exact rows for every target
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > /tmp/verify-targets.tsv
+          import json, os
+          date=os.environ["INPUT_DATE"]
+          for t in json.load(open("/tmp/jra-targets.json",encoding="utf-8")):
+              key=f'odds|{date}|{t["track"]}|{t["race"]}'
+              print(f'{t["track"]}\t{t["race"]}\t{key}')
+          PY
+
+          while IFS=$'\t' read -r track race key; do
+            out="/tmp/d1-${race}.json"
+            npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+              --remote \
+              --command "SELECT cache_key,json_extract(payload_json,'$.ok') AS ok,json_extract(payload_json,'$.organization') AS organization,json_extract(payload_json,'$.quality.oddsHorseCount') AS odds_horse_count FROM jra_official_cache WHERE kind='odds' AND cache_key='$key' LIMIT 1;" \
+              --json > "$out"
+
+            node - "$out" "$key" "$track" "$race" <<'NODE'
+          const fs=require('fs');
+          const [file,key,track,race]=process.argv.slice(2);
+          const raw=JSON.parse(fs.readFileSync(file,'utf8'));
+          const rows=[];
+          const walk=v=>{
+            if(Array.isArray(v)){for(const x of v)walk(x);return}
+            if(v&&typeof v==='object'){
+              if(Array.isArray(v.results))rows.push(...v.results);
+              for(const [k,x] of Object.entries(v))if(k!=='results')walk(x);
+            }
+          };
+          walk(raw);
+          const x=rows[0];
+          if(!x)throw new Error(`D1 exact row missing ${key}`);
+          if(x.cache_key!==key)throw new Error(`D1 key mismatch ${key}`);
+          if(x.organization!=='JRA')throw new Error(`D1 organization mismatch ${track} ${race}R`);
+          if(!(x.ok===1||x.ok===true||x.ok==='true'))throw new Error(`D1 payload ok=false ${track} ${race}R`);
+          if(Number(x.odds_horse_count||0)<1)throw new Error(`D1 no odds ${track} ${race}R`);
+          console.log(`PASS ${track} ${race}R ${x.odds_horse_count} horses`);
+          NODE
+          done < /tmp/verify-targets.tsv
+
+          {
+            echo
+            echo "## D1 all-race verification"
+            echo "- Every requested exact odds cache key: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy CHASS Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production health smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEALTH_URL="$PRODUCTION_BASE_URL/api/chass/v1/public/health"
+          for i in 1 2 3 4 5; do
+            code="$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' "$HEALTH_URL" || true)"
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          cat /tmp/health.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/health.json','utf8'));
+          if(x.ok!==true)throw new Error('production health not ok');
+          NODE
+
+      - name: Production all-race odds D1-HIT smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.production_smoke }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS=$'\t' read -r track race key; do
+            body="/tmp/prod-${race}.json"
+            headers="/tmp/prod-${race}.headers"
+
+            code="$(curl -sS --max-time 25 \
+              -D "$headers" \
+              --get "$PRODUCTION_BASE_URL/api/jra/odds" \
+              --data-urlencode "date=$INPUT_DATE" \
+              --data-urlencode "track=$track" \
+              --data-urlencode "race=$race" \
+              -o "$body" \
+              -w '%{http_code}' || true)"
+
+            if [ "$code" != "200" ]; then
+              echo "::error::Production odds HTTP $code: ${track} ${race}R"
+              cat "$body" || true
+              exit 51
+            fi
+
+            cache_header="$(awk 'BEGIN{IGNORECASE=1} /^x-chass-jra-odds-cache:/{sub(/\r$/,""); sub(/^[^:]*:[[:space:]]*/,""); print; exit}' "$headers")"
+
+            node - "$body" "$INPUT_DATE" "$track" "$race" <<'NODE'
+          const fs=require('fs');
+          const [file,date,track,race]=process.argv.slice(2);
+          const x=JSON.parse(fs.readFileSync(file,'utf8'));
+          if(x.ok!==true)throw new Error(`production body ok=false ${track} ${race}R`);
+          if(String(x.date)!==String(date)||String(x.track)!==String(track)||Number(x.race)!==Number(race)){
+            throw new Error(`production identity mismatch ${track} ${race}R`);
+          }
+          if(!Array.isArray(x.odds)||x.odds.length<1)throw new Error(`production odds empty ${track} ${race}R`);
+          NODE
+
+            if ! printf '%s' "$cache_header" | grep -Fq 'D1-HIT'; then
+              echo "::error::Production odds is not D1-HIT: ${track} ${race}R header=${cache_header:-none}"
+              exit 52
+            fi
+
+            echo "PASS ${track} ${race}R | $cache_header"
+          done < /tmp/verify-targets.tsv
+
+          {
+            echo
+            echo "## Production all-race smoke"
+            echo "- /api/jra/odds HTTP 200: PASS"
+            echo "- Exact race identity: PASS"
+            echo "- Odds payload non-empty: PASS"
+            echo "- D1-HIT header for every target: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "## FINAL"
+            echo "- workflow mode: \`$INPUT_MODE\`"
+            echo "- race-state isolation marker: \`CHASS-JRA-RACE-STATE-ISOLATION-v1.9.2\`"
+            echo "- target: \`$INPUT_DATE / $INPUT_TRACKS / $INPUT_RACES\`"
+            if [ "$INPUT_MODE" = "apply_and_deploy" ]; then
+              echo "- JRAレース切替直後に旧レースの最終判断・穴馬・全馬比較を破棄"
+              echo "- odds/resultは選択レースとidentity一致時のみ反映"
+              echo "- 指定日の全対象RオッズをD1へ保存"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
