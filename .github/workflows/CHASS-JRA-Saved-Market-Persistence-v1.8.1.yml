@@ -1,0 +1,603 @@
+name: CHASS JRA Saved Market Persistence v1.8.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "まず validate_only。成功後 apply_and_deploy"
+        required: true
+        default: validate_only
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      smoke_date:
+        description: "本番確認日"
+        required: true
+        default: "2026-09-12"
+        type: string
+      smoke_track:
+        description: "本番確認競馬場"
+        required: true
+        default: "阪神"
+        type: string
+      smoke_race:
+        description: "保存市場確認R"
+        required: true
+        default: "11"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-saved-market-persistence-v181
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Baseline diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test -f jra-official-cache.mjs
+          test -f jra-odds-fetch.mjs
+          test -f worker.js
+          test -f viewer/viewer-core.js
+
+          grep -Fq "export async function readJraOfficialOddsCache" jra-official-cache.mjs
+          grep -Fq "function publicViewerMarketOverlay(day,races)" worker.js
+          grep -Fq "finalPopularity=publicPositiveInteger" worker.js
+          grep -Fq "savedStatus=String" worker.js
+          grep -Fq "payload.viewerMarketOverlay=publicViewerMarketOverlay(day,races);" worker.js
+          grep -Fq "const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';" viewer/viewer-core.js
+          grep -Fq "error:'JRA_ODDS_CACHE_MISS'" jra-odds-fetch.mjs
+
+          echo "v1.8.1 baseline diagnostics: PASS"
+
+      - name: Install MCP dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix mcp
+
+      - name: Apply robust v1.8.1 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/chass_saved_market_v181.py <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 exact match, found {count}")
+              return text.replace(old, new, 1)
+
+          def sub_once(text, pattern, repl, label, flags=0):
+              new_text, count = re.subn(pattern, repl, text, count=1, flags=flags)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 regex match, found {count}")
+              return new_text
+
+          # ============================================================
+          # jra-official-cache.mjs
+          # ============================================================
+          cache_path = Path("jra-official-cache.mjs")
+          cache = cache_path.read_text(encoding="utf-8")
+
+          start = cache.index("export async function readJraOfficialOddsCache")
+          end = cache.index("\n\nconst resultKey", start)
+          odds_fn = cache[start:end]
+
+          odds_fn = replace_once(
+              odds_fn,
+              "export async function readJraOfficialOddsCache(env, { date, track, race, nowMs = Date.now() } = {}) {",
+              "export async function readJraOfficialOddsCache(env, { date, track, race, nowMs = Date.now(), allowExpired = false } = {}) {",
+              "odds cache signature",
+          )
+
+          odds_fn = sub_once(
+              odds_fn,
+              r"""const expiresMs = Date\.parse\(row\.expires_at \|\| ''\);\s*
+          if \(!Number\.isFinite\(expiresMs\) \|\| expiresMs <= Number\(nowMs\)\) return null;""",
+              """const expiresMs = Date.parse(row.expires_at || '');
+            const expired = !Number.isFinite(expiresMs) || expiresMs <= Number(nowMs);
+            if (expired && !allowExpired) return null;""",
+              "odds cache expiry",
+          )
+
+          odds_fn = sub_once(
+              odds_fn,
+              r"""contentHash:\s*row\.content_hash\s*\|\|\s*null\s*
+          \s*}""",
+              """contentHash: row.content_hash || null,
+                  expired,
+                  freshness: expired ? 'saved' : 'current'
+                }""",
+              "odds cache metadata",
+          )
+
+          cache = cache[:start] + odds_fn + cache[end:]
+          cache_path.write_text(cache, encoding="utf-8")
+
+          # ============================================================
+          # worker.js
+          # ============================================================
+          worker_path = Path("worker.js")
+          worker = worker_path.read_text(encoding="utf-8")
+
+          worker = replace_once(
+              worker,
+              "import {handleJraOddsRequest} from './jra-odds-fetch.mjs';",
+              """import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
+          import {readJraOfficialOddsCache} from './jra-official-cache.mjs';""",
+              "worker odds cache import",
+          )
+
+          worker = replace_once(
+              worker,
+              """function publicViewerMarketOverlay(day,races){
+           const rawByRaceNo=new Map((races||[]).map(r=>[Number(r?.raceNo),r]));
+           return (day?.races||[]).map(item=>{""",
+              """async function publicViewerMarketOverlay(day,races,env){
+           const rawByRaceNo=new Map((races||[]).map(r=>[Number(r?.raceNo),r]));
+           const officialSavedByRaceNo=new Map();
+           if(env?.DB){
+            await Promise.all((day?.races||[]).map(async item=>{
+             const raceNo=Number(item?.raceNumber);
+             if(!Number.isInteger(raceNo))return;
+             try{
+              const cached=await readJraOfficialOddsCache(env,{
+               date:day?.date,
+               track:day?.track,
+               race:raceNo,
+               allowExpired:true
+              });
+              if(cached?.body?.ok)officialSavedByRaceNo.set(raceNo,cached.body);
+             }catch(error){
+              console.warn('[CHASS VIEWER SAVED MARKET]',{
+               raceNo,
+               error:String(error?.code||error?.message||error).slice(0,120)
+              });
+             }
+            }));
+           }
+           return (day?.races||[]).map(item=>{""",
+              "viewer overlay async setup",
+          )
+
+          worker = sub_once(
+              worker,
+              r"""resultAt=raw\?\.resultAcquiredAt\|\|raw\?\.result\?\.fetchedAt\|\|raw\?\.result\?\.resultAcquiredAt\|\|null;""",
+              """resultAt=raw?.resultAcquiredAt||raw?.result?.fetchedAt||raw?.result?.resultAcquiredAt||null,
+                  officialSaved=officialSavedByRaceNo.get(Number(item?.raceNumber))||null,
+                  officialSavedByNo=new Map((officialSaved?.odds||[]).map(h=>[Number(h?.horseNo),h])),
+                  officialSavedExpired=officialSaved?.bridgeCache?.expired===true;""",
+              "viewer race saved context",
+          )
+
+          # Robustly inject after finalPopularity regardless of indentation.
+          worker = sub_once(
+              worker,
+              r"""(finalPopularity=publicPositiveInteger\(resultHorse\?\.finalPopularity\?\?resultHorse\?\.popularity\),\s*)
+          (savedStatus=String\(h\?\.oddsStatus\|\|item\?\.market\?\.oddsStatus\|\|'unavailable'\),\s*
+          savedUsable=savedStatus==='available',\s*
+          finalUsable=finalOdds!=null;)""",
+              r"""\1officialMarket=officialSavedByNo.get(no)||null,
+                    officialOdds=publicPositiveNumber(officialMarket?.odds),
+                    officialPopularity=publicPositiveInteger(officialMarket?.popularity),
+                    officialStatus=officialOdds!=null
+                      ?(officialSaved?.oddsSnapshotType==='final'?'final':(officialSavedExpired?'saved':'available'))
+                      :null,
+                    \2""".replace("savedUsable=savedStatus==='available',", "savedUsable=savedStatus==='available',\n          officialUsable=officialOdds!=null,"),
+              "viewer horse cache variables",
+              flags=re.S,
+          )
+
+          worker = sub_once(
+              worker,
+              r"""odds:finalUsable\?finalOdds:\(savedUsable\?publicPositiveNumber\(h\?\.odds\):null\),""",
+              """odds:finalUsable
+                 ?finalOdds
+                 :(officialUsable?officialOdds:(savedUsable?publicPositiveNumber(h?.odds):null)),""",
+              "viewer odds priority",
+          )
+
+          worker = sub_once(
+              worker,
+              r"""popularity:finalUsable\?\(finalPopularity\?\?publicPositiveInteger\(h\?\.popularity\)\):\(savedUsable\?publicPositiveInteger\(h\?\.popularity\):null\),""",
+              """popularity:finalUsable
+                 ?(finalPopularity??publicPositiveInteger(h?.popularity))
+                 :(officialUsable
+                   ?(officialPopularity??publicPositiveInteger(h?.popularity))
+                   :(savedUsable?publicPositiveInteger(h?.popularity):null)),""",
+              "viewer popularity priority",
+          )
+
+          worker = sub_once(
+              worker,
+              r"""oddsStatus:finalUsable\?'final':savedStatus,""",
+              """oddsStatus:finalUsable?'final':(officialUsable?officialStatus:savedStatus),""",
+              "viewer odds status priority",
+          )
+
+          worker = sub_once(
+              worker,
+              r"""oddsFetchedAt:finalUsable\?resultAt:\(h\?\.oddsFetchedAt\|\|item\?\.market\?\.oddsFetchedAt\|\|null\),""",
+              """oddsFetchedAt:finalUsable
+                 ?resultAt
+                 :(officialUsable
+                   ?(officialSaved?.bridgeCache?.fetchedAt||officialSaved?.acquiredAt||null)
+                   :(h?.oddsFetchedAt||item?.market?.oddsFetchedAt||null)),""",
+              "viewer odds fetchedAt priority",
+          )
+
+          worker = sub_once(
+              worker,
+              r"""marketDataSource:finalUsable\?'result_final':\(item\?\.market\?\.marketDataSource\|\|null\)""",
+              """marketDataSource:finalUsable
+                 ?'result_final'
+                 :(officialUsable
+                   ?(officialSavedExpired?'d1_saved_expired':'JRA_OFFICIAL_WIN_ODDS')
+                   :(item?.market?.marketDataSource||null))""",
+              "viewer market source priority",
+          )
+
+          worker = replace_once(
+              worker,
+              "payload.viewerMarketOverlay=publicViewerMarketOverlay(day,races);",
+              "payload.viewerMarketOverlay=await publicViewerMarketOverlay(day,races,env);",
+              "viewer overlay await",
+          )
+
+          worker_path.write_text(worker, encoding="utf-8")
+
+          # ============================================================
+          # viewer/viewer-core.js
+          # ============================================================
+          core_path = Path("viewer/viewer-core.js")
+          core = core_path.read_text(encoding="utf-8")
+
+          core = replace_once(
+              core,
+              "const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';",
+              """const overlayCurrent = overlayStatus === 'available' || overlayStatus === 'final';
+                      const overlaySaved = overlayStatus === 'saved';
+                      const overlayDisplayable = overlayCurrent || overlaySaved;""",
+              "viewer core overlay declaration",
+          )
+
+          # Only this function currently uses overlayUsable.
+          remaining = core.count("overlayUsable")
+          if remaining != 4:
+              raise SystemExit(f"viewer core overlayUsable remainder: expected 4, found {remaining}")
+          core = core.replace("overlayUsable", "overlayDisplayable")
+
+          core_path.write_text(core, encoding="utf-8")
+
+          print("CHASS JRA Saved Market Persistence v1.8.1 patch applied")
+          PY
+          sed -i 's/^          //' /tmp/chass_saved_market_v181.py
+          python3 /tmp/chass_saved_market_v181.py
+
+      - name: Add regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tests/jra-saved-market-persistence-v181.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          import { readJraOfficialOddsCache } from '../jra-official-cache.mjs';
+          import { sanitizeViewerMarketPayload } from '../viewer/viewer-core.js';
+
+          function d1Env(row) {
+            return {
+              DB: {
+                prepare() {
+                  return {
+                    bind() {
+                      return {
+                        async first() {
+                          return row;
+                        },
+                      };
+                    },
+                  };
+                },
+              },
+            };
+          }
+
+          const body = {
+            ok: true,
+            organization: 'JRA',
+            date: '2026-09-12',
+            track: '阪神',
+            race: 11,
+            oddsSnapshotType: 'live',
+            odds: [
+              { horseNo: 7, odds: 10.8, popularity: 5 },
+              { horseNo: 13, odds: 26.0, popularity: 11 },
+            ],
+            quality: { oddsHorseCount: 2 },
+          };
+
+          test('normal odds cache read remains current-only', async () => {
+            const env = d1Env({
+              payload_json: JSON.stringify(body),
+              source_url: 'https://www.jra.go.jp/',
+              fetched_at: '2026-09-12T06:50:00.000Z',
+              expires_at: '2026-09-12T07:10:00.000Z',
+              parser_version: 'jra-official-win-odds-v1',
+              content_hash: 'abc',
+            });
+
+            const result = await readJraOfficialOddsCache(env, {
+              date: '2026-09-12',
+              track: '阪神',
+              race: 11,
+              nowMs: Date.parse('2026-09-12T11:00:00.000Z'),
+            });
+
+            assert.equal(result, null);
+          });
+
+          test('viewer may explicitly read expired odds as saved', async () => {
+            const env = d1Env({
+              payload_json: JSON.stringify(body),
+              source_url: 'https://www.jra.go.jp/',
+              fetched_at: '2026-09-12T06:50:00.000Z',
+              expires_at: '2026-09-12T07:10:00.000Z',
+              parser_version: 'jra-official-win-odds-v1',
+              content_hash: 'abc',
+            });
+
+            const result = await readJraOfficialOddsCache(env, {
+              date: '2026-09-12',
+              track: '阪神',
+              race: 11,
+              nowMs: Date.parse('2026-09-12T11:00:00.000Z'),
+              allowExpired: true,
+            });
+
+            assert.equal(result.body.bridgeCache.expired, true);
+            assert.equal(result.body.bridgeCache.freshness, 'saved');
+            assert.equal(result.body.odds[0].horseNo, 7);
+            assert.equal(result.body.odds[0].odds, 10.8);
+          });
+
+          test('viewer sanitizer accepts saved market overlay', () => {
+            const horseColumns = [
+              'horseNumber',
+              'horseName',
+              'abilityRank',
+              'score',
+              'winProb',
+              'top3Prob',
+              'odds',
+              'popularity',
+              'expectedValue',
+              'diamond',
+              'warning',
+            ];
+
+            const payload = {
+              ok: true,
+              date: '2026-09-12',
+              track: '阪神',
+              organization: 'JRA',
+              horseColumns,
+              races: [{
+                raceNumber: 11,
+                raceName: 'チャレンジカップ',
+                horses: [[7, 'ジーティーアダマン', 1, 77.8, 0.36, 0.733, null, null, null, null, null]],
+              }],
+              viewerMarketMode: 'fresh-final-overlay-v1',
+              viewerMarketOverlay: [{
+                raceNumber: 11,
+                horses: [{
+                  horseNumber: 7,
+                  horseName: 'ジーティーアダマン',
+                  odds: 10.8,
+                  popularity: 5,
+                  oddsStatus: 'saved',
+                  oddsFetchedAt: '2026-09-12T06:50:00.000Z',
+                  marketDataSource: 'd1_saved_expired',
+                }],
+              }],
+            };
+
+            const out = sanitizeViewerMarketPayload(payload);
+            const horse = out.races[0].horses[0];
+
+            assert.equal(horse.horseNo, 7);
+            assert.equal(horse.odds, 10.8);
+            assert.equal(horse.popularity, 5);
+            assert.equal(horse.marketStatus, 'saved');
+            assert.equal(horse.marketDataSource, 'd1_saved_expired');
+          });
+
+          test('worker priority and async overlay are installed', () => {
+            const worker = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+            assert.match(worker, /allowExpired:true/);
+            assert.match(worker, /officialUsable=officialOdds!=null/);
+            assert.match(worker, /officialSavedExpired\?'saved':'available'/);
+            assert.match(worker, /await publicViewerMarketOverlay\(day,races,env\)/);
+          });
+
+          test('current-odds endpoint still does not request allowExpired', () => {
+            const source = fs.readFileSync(new URL('../jra-odds-fetch.mjs', import.meta.url), 'utf8');
+            assert.match(source, /readJraOfficialOddsCache\(env,\{date,track,race,nowMs:now\(\)\}\)/);
+            assert.match(source, /error:'JRA_ODDS_CACHE_MISS'/);
+          });
+          EOF
+          sed -i 's/^          //' tests/jra-saved-market-persistence-v181.test.mjs
+
+      - name: Syntax and full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check jra-official-cache.mjs
+          node --check worker.js
+          node --check viewer/viewer-core.js
+          node --test tests/jra-saved-market-persistence-v181.test.mjs
+          npm run check
+
+      - name: Validate summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## CHASS JRA Saved Market Persistence v1.8.1
+
+          - Previous v1.8 failure cause: fixed
+          - Cause: exact-text patch anchor mismatch in worker.js
+          - Patch method: whitespace-tolerant regex
+          - Saved expired D1 odds display: validated
+          - Current-odds endpoint remains current-only
+          - Result final odds remain highest priority
+          - Horse identity / marks / AI / TIME: unchanged
+          - NAR: unchanged
+          - D1 migration: none
+          - Full regression: PASS
+          - Deploy: NOT PERFORMED
+
+          次は `apply_and_deploy` で実行してください。
+          EOF
+
+      - name: Cloudflare auth
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::CLOUDFLARE_API_TOKEN missing"; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 1; }
+          npx -y wrangler@4 whoami
+
+      - name: Commit patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-official-cache.mjs \
+            worker.js \
+            viewer/viewer-core.js \
+            tests/jra-saved-market-persistence-v181.test.mjs
+
+          git diff --cached --check
+
+          git commit -m "fix: preserve saved JRA market after expiry"
+          git push origin HEAD:main
+
+      - name: Deploy production
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          SMOKE_DATE: ${{ inputs.smoke_date }}
+          SMOKE_TRACK: ${{ inputs.smoke_track }}
+          SMOKE_RACE: ${{ inputs.smoke_race }}
+        run: |
+          set -euo pipefail
+
+          CODE="$(
+            curl -sS --max-time 30 \
+              -o /tmp/v181-smoke.json \
+              -w '%{http_code}' \
+              --get "$PRODUCTION_BASE_URL/api/chass/v1/public/day-ai" \
+              --data-urlencode "date=$SMOKE_DATE" \
+              --data-urlencode "track=$SMOKE_TRACK" \
+              --data-urlencode "organization=JRA" \
+              --data-urlencode "format=tabular" \
+              --data-urlencode "viewerMarket=1" || true
+          )"
+
+          test "$CODE" = "200" || {
+            echo "::error::Production viewer market smoke HTTP $CODE"
+            cat /tmp/v181-smoke.json || true
+            exit 1
+          }
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/v181-smoke.json', 'utf8'));
+          const raceNo = Number(process.env.SMOKE_RACE);
+
+          if (body.ok !== true) throw new Error('public day-ai not ok');
+          if (!Array.isArray(body.viewerMarketOverlay)) throw new Error('viewerMarketOverlay missing');
+
+          const race = body.viewerMarketOverlay.find((x) => Number(x?.raceNumber) === raceNo);
+          if (!race) throw new Error(`race ${raceNo} overlay missing`);
+
+          const horses = Array.isArray(race.horses) ? race.horses : [];
+          const displayable = horses.filter((h) =>
+            Number.isFinite(Number(h?.odds))
+            && ['final', 'available', 'saved'].includes(String(h?.oddsStatus))
+          );
+
+          if (!displayable.length) {
+            console.error(JSON.stringify(race, null, 2));
+            throw new Error('saved/current/final market not available');
+          }
+
+          console.log(JSON.stringify({
+            raceNo,
+            count: displayable.length,
+            statuses: [...new Set(displayable.map((h) => h.oddsStatus))],
+            sources: [...new Set(displayable.map((h) => h.marketDataSource))],
+          }, null, 2));
+          NODE
+
+      - name: Production summary
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## CHASS JRA Saved Market Persistence v1.8.1 - PRODUCTION SUCCESS
+
+          - Saved expired JRA odds: ENABLED
+          - Saved data label: ENABLED
+          - Current odds API strictness: PRESERVED
+          - Final odds priority: PRESERVED
+          - Horse identity: PRESERVED
+          - Marks / AI / TIME: PRESERVED
+          - Full regression: PASS
+          - Production smoke: PASS
+          EOF
