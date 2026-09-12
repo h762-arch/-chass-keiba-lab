@@ -1,0 +1,1300 @@
+name: CHASS JRA Drive Prediction Input v1.4.4
+
+"on":
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        required: true
+        default: "apply_and_deploy"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      date:
+        description: "Drive/JRA live verification date (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-13"
+        type: string
+      track:
+        description: "JRA track"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "Race number"
+        required: true
+        default: "2"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-drive-prediction-input-v144
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    name: Validate, integrate and deploy JRA Drive prediction input
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON }}
+      ENABLE_DRIVE_READ_IMPORT: "true"
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+      PRODUCTION_BASE_URL: "https://chass-keiba-lab7.h7625421.workers.dev"
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Capture baseline
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Safety preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          for f in \
+            worker.js \
+            jra-race-fetch.mjs \
+            jra-normalizer.js \
+            jra-model.js \
+            google-drive-readonly-import.mjs \
+            google-drive-readonly-api.mjs \
+            .assetsignore
+          do
+            test -f "$f" || { echo "::error::Missing required file: $f"; exit 1; }
+          done
+
+          grep -q "1.2-service-account" google-drive-readonly-import.mjs
+          grep -q "GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON" google-drive-readonly-import.mjs
+          grep -q '^\*\.mjs$' .assetsignore
+
+          test -n "${GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:-}" || {
+            echo "::error::GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+
+          npx -y wrangler@4 whoami
+
+      - name: Record protected surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            server.mjs \
+            research-storage-sync.mjs \
+            wrangler.jsonc \
+            .assetsignore \
+            d1-schema.sql
+          do
+            if [ -f "$f" ]; then sha256sum "$f"; fi
+          done > /tmp/chass-jra-drive-protected-before.sha256
+
+      - name: Baseline full regression snapshot
+        id: baseline_regression
+        shell: bash
+        run: |
+          set +e
+          npm run check > /tmp/chass-baseline-regression.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-baseline-regression.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+          echo "Baseline regression exit=$CODE fail=$FAIL"
+
+      - name: Build isolated hybrid-input patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-drive-v14
+          git worktree add --detach /tmp/chass-jra-drive-v14 HEAD
+          cd /tmp/chass-jra-drive-v14
+
+          cat > jra-drive-prediction-input.mjs <<'CHASS_JRA_DRIVE_INPUT_EOF'
+          /**
+           * CHASS JRA Drive Prediction Input v1.4.4
+           *
+           * Hybrid input:
+           * - JRA official card/past-runs remain the primary ability evidence.
+           * - Private Drive JRA_指数マスター is read server-side only.
+           * - Drive forecast odds/popularity are NOT copied into horse market fields.
+           * - Only a normalized, market-independent Drive index signal is exposed to the app.
+           * - If Drive is unavailable, official JRA data still works unchanged.
+           */
+          
+          import { handleJraRaceRequest as handleOfficialJraRaceRequest } from './jra-race-fetch.mjs';
+          import {
+            getDriveReadReadiness,
+            readChassArchiveSheet,
+            sanitizeDriveReadError,
+          } from './google-drive-readonly-import.mjs';
+          
+          export const JRA_DRIVE_INPUT_SCHEMA_VERSION = 'jra-drive-input-v1.4.4';
+          export const JRA_DRIVE_INDEX_SHEET = 'JRA_指数マスター';
+          
+          const toNumber = value => {
+            if (value == null || String(value).trim() === '') return null;
+            const n = Number(String(value).replace(/,/g, '').trim());
+            return Number.isFinite(n) ? n : null;
+          };
+          
+          const text = value => value == null ? '' : String(value).trim();
+          
+          const horseNameKey = value => text(value)
+            .normalize('NFKC')
+            .replace(/\s+/g, '')
+            .toUpperCase();
+          
+          export function resolveOfficialJraDriveContext(official = {}) {
+            const rawRaceNo =
+              official?.raceNo ??
+              official?.race?.raceNo ??
+              (typeof official?.race === 'number' || typeof official?.race === 'string'
+                ? official.race
+                : null);
+
+            return {
+              date: official?.date || official?.race?.date || '',
+              track:
+                official?.track ||
+                official?.racecourse ||
+                official?.race?.racecourse ||
+                official?.race?.track ||
+                '',
+              race: Number(rawRaceNo),
+            };
+          }
+
+          function weighted(parts) {
+            const valid = parts.filter(x => Number.isFinite(x.value) && x.weight > 0);
+            const den = valid.reduce((s, x) => s + x.weight, 0);
+            return den ? valid.reduce((s, x) => s + x.value * x.weight, 0) / den : null;
+          }
+          
+          function percentileScore(values, value) {
+            const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+            if (!sorted.length || !Number.isFinite(value)) return null;
+            if (sorted.length === 1) return 70;
+            const below = sorted.filter(x => x < value).length;
+            const equal = sorted.filter(x => x === value).length;
+            const p = 100 * (below + Math.max(0, equal - 1) / 2) / Math.max(1, sorted.length - 1);
+            return Number(Math.max(15, Math.min(95, 15 + p * 0.8)).toFixed(1));
+          }
+          
+          function rowComposite(row) {
+            const highest = toNumber(row['最高指数']);
+            const avg5 = toNumber(row['5走平均']);
+            const distance = toNumber(row['距離指数']);
+            const course = toNumber(row['コース指数']);
+            const previous = toNumber(row['前走指数']);
+            const second = toNumber(row['2走前指数']);
+            const third = toNumber(row['3走前指数']);
+            const recent = weighted([
+              { value: previous, weight: 60 },
+              { value: second, weight: 25 },
+              { value: third, weight: 15 },
+            ]);
+            const composite = weighted([
+              { value: highest, weight: 20 },
+              { value: avg5, weight: 25 },
+              { value: distance, weight: 20 },
+              { value: course, weight: 15 },
+              { value: recent, weight: 20 },
+            ]);
+            const evidenceCount = [highest, avg5, distance, course, previous, second, third]
+              .filter(Number.isFinite).length;
+            const clusterText = text(row['指数近接パターン']);
+            const clusterStrength = Math.min(
+              3,
+              (clusterText.match(/=/g) || []).length + (clusterText.match(/\//g) || []).length,
+            );
+            return { composite, evidenceCount, clusterStrength };
+          }
+          
+          export function extractJraDriveRaceRows(records = [], context = {}) {
+            const date = text(context.date);
+            const track = text(context.track);
+            const race = Number(context.race);
+            if (!date || !track || !Number.isInteger(race) || race < 1 || race > 12) {
+              throw Object.assign(new Error('JRA_DRIVE_INVALID_CONTEXT'), {
+                code: 'JRA_DRIVE_INVALID_CONTEXT',
+              });
+            }
+          
+            return (Array.isArray(records) ? records : []).filter(row =>
+              text(row['主催']).toUpperCase() === 'JRA' &&
+              text(row['開催日']) === date &&
+              text(row['競馬場']) === track &&
+              Number(row['R']) === race
+            );
+          }
+          
+          export function buildDriveRaceSignals(rows = []) {
+            const prepared = rows
+              .map(row => {
+                const horseNo = toNumber(row['馬番']);
+                if (!Number.isInteger(horseNo) || horseNo < 1) return null;
+                const c = rowComposite(row);
+                return {
+                  horseNo,
+                  horseName: text(row['馬名']),
+                  horseNameKey: horseNameKey(row['馬名']),
+                  composite: c.composite,
+                  evidenceCount: c.evidenceCount,
+                  clusterStrength: c.clusterStrength,
+                };
+              })
+              .filter(Boolean);
+          
+            const composites = prepared.map(x => x.composite).filter(Number.isFinite);
+            return prepared.map(x => ({
+              horseNo: x.horseNo,
+              horseName: x.horseName,
+              horseNameKey: x.horseNameKey,
+              driveIndexSignal: percentileScore(composites, x.composite),
+              driveIndexEvidenceCount: x.evidenceCount,
+              driveClusterStrength: x.clusterStrength,
+            }));
+          }
+          
+          export function mergeOfficialJraWithDriveRows(official = {}, rows = []) {
+            const signals = buildDriveRaceSignals(rows);
+            const byNo = new Map(signals.map(x => [Number(x.horseNo), x]));
+            let matched = 0;
+            const mismatchedHorseNos = [];
+            const missingHorseNos = [];
+          
+            const horses = (official.horses || []).map(horse => {
+              const no = Number(horse?.horseNo);
+              const signal = byNo.get(no);
+              if (!signal) {
+                missingHorseNos.push(no);
+                return horse;
+              }
+          
+              const officialName = horseNameKey(horse?.horseName);
+              if (officialName && signal.horseNameKey && officialName !== signal.horseNameKey) {
+                mismatchedHorseNos.push(no);
+                return horse;
+              }
+          
+              matched += 1;
+          
+              // IMPORTANT:
+              // Do not copy Drive 予想オッズ / 人気 into odds / popularity.
+              // Ability remains market-independent until the normal official odds stage.
+              return {
+                ...horse,
+                driveIndexSignal: signal.driveIndexSignal,
+                driveIndexEvidenceCount: signal.driveIndexEvidenceCount,
+                driveClusterStrength: signal.driveClusterStrength,
+                driveInputSource: JRA_DRIVE_INDEX_SHEET,
+              };
+            });
+          
+            const activeCount = horses.filter(h => h?.runningStatus !== 'scratched' && h?.runningStatus !== 'excluded').length;
+            const status = !rows.length
+              ? 'not_found'
+              : matched === activeCount
+                ? 'matched'
+                : matched > 0
+                  ? 'partial'
+                  : 'mismatch';
+          
+            return {
+              ...official,
+              horses,
+              driveInput: {
+                schemaVersion: JRA_DRIVE_INPUT_SCHEMA_VERSION,
+                status,
+                sourceSheet: JRA_DRIVE_INDEX_SHEET,
+                matchedHorseCount: matched,
+                officialHorseCount: horses.length,
+                driveRowCount: rows.length,
+                missingHorseNos: missingHorseNos.filter(Number.isFinite),
+                mismatchedHorseNos,
+                marketReferenceExcludedFromAbility: true,
+                rawDriveIndicesExposed: false,
+              },
+            };
+          }
+          
+          export async function addJraDrivePredictionInput(env = {}, official = {}) {
+            const readiness = getDriveReadReadiness(env);
+            if (!readiness.enabled || !readiness.configured) {
+              return {
+                ...official,
+                driveInput: {
+                  schemaVersion: JRA_DRIVE_INPUT_SCHEMA_VERSION,
+                  status: 'disabled',
+                  sourceSheet: JRA_DRIVE_INDEX_SHEET,
+                  marketReferenceExcludedFromAbility: true,
+                  rawDriveIndicesExposed: false,
+                },
+              };
+            }
+          
+            const context = resolveOfficialJraDriveContext(official);
+          
+            try {
+              const sheet = await readChassArchiveSheet(
+                env,
+                JRA_DRIVE_INDEX_SHEET,
+                {
+                  organization: 'JRA',
+                  maxRows: 5000,
+                  maxColumn: 'AA',
+                },
+              );
+          
+              const rows = extractJraDriveRaceRows(sheet.records, context);
+              return mergeOfficialJraWithDriveRows(official, rows);
+            } catch (error) {
+              const safe = sanitizeDriveReadError(error);
+              return {
+                ...official,
+                driveInput: {
+                  schemaVersion: JRA_DRIVE_INPUT_SCHEMA_VERSION,
+                  status: 'unavailable',
+                  sourceSheet: JRA_DRIVE_INDEX_SHEET,
+                  errorCode: safe.code,
+                  marketReferenceExcludedFromAbility: true,
+                  rawDriveIndicesExposed: false,
+                },
+              };
+            }
+          }
+          
+          export async function handleJraRaceRequest(request, env = {}) {
+            const officialResponse = await handleOfficialJraRaceRequest(request, env);
+            if (!officialResponse.ok) return officialResponse;
+          
+            let official;
+            try {
+              official = await officialResponse.clone().json();
+            } catch {
+              return officialResponse;
+            }
+          
+            if (!official?.ok) return officialResponse;
+          
+            const merged = await addJraDrivePredictionInput(env, official);
+          
+            return new Response(JSON.stringify(merged, null, 2), {
+              status: officialResponse.status,
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                'cache-control': 'no-store',
+                'x-content-type-options': 'nosniff',
+                'x-chass-jra-drive-input': merged?.driveInput?.status || 'unknown',
+              },
+            });
+          }
+          CHASS_JRA_DRIVE_INPUT_EOF
+
+          mkdir -p tests
+          cat > tests/jra-drive-prediction-input.test.mjs <<'CHASS_JRA_DRIVE_TEST_EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          
+          import {
+            buildDriveRaceSignals,
+            extractJraDriveRaceRows,
+            mergeOfficialJraWithDriveRows,
+            resolveOfficialJraDriveContext,
+          } from '../jra-drive-prediction-input.mjs';
+          
+          const rows = [
+            {
+              '開催日': '2026-09-13',
+              '主催': 'JRA',
+              '競馬場': '阪神',
+              'R': 1,
+              '馬番': 1,
+              '馬名': 'テストホースA',
+              '最高指数': 90,
+              '5走平均': 85,
+              '距離指数': 88,
+              'コース指数': 84,
+              '前走指数': 89,
+              '2走前指数': 80,
+              '3走前指数': 78,
+              '指数近接パターン': '最高=前走(89) / 距離=コース',
+              '予想オッズ': 99.9,
+              '人気': 12,
+            },
+            {
+              '開催日': '2026-09-13',
+              '主催': 'JRA',
+              '競馬場': '阪神',
+              'R': 1,
+              '馬番': 2,
+              '馬名': 'テストホースB',
+              '最高指数': 50,
+              '5走平均': 48,
+              '距離指数': 45,
+              'コース指数': 44,
+              '前走指数': 50,
+              '2走前指数': 42,
+              '3走前指数': 40,
+              '指数近接パターン': '',
+              '予想オッズ': 1.2,
+              '人気': 1,
+            },
+          ];
+          
+          test('nested official race object resolves to a valid Drive context', () => {
+            const context = resolveOfficialJraDriveContext({
+              ok: true,
+              race: {
+                date: '2026-09-13',
+                racecourse: '中山',
+                raceNo: 2,
+              },
+            });
+
+            assert.deepEqual(context, {
+              date: '2026-09-13',
+              track: '中山',
+              race: 2,
+            });
+            assert.equal(Number.isNaN(context.race), false);
+          });
+
+          test('Drive race rows are selected only by exact JRA date track race', () => {
+            const selected = extractJraDriveRaceRows(
+              [...rows, { ...rows[0], '競馬場': '中山' }],
+              { date: '2026-09-13', track: '阪神', race: 1 },
+            );
+            assert.equal(selected.length, 2);
+          });
+          
+          test('Drive signal is normalized within the race and market columns are irrelevant', () => {
+            const signals = buildDriveRaceSignals(rows);
+            const a = signals.find(x => x.horseNo === 1);
+            const b = signals.find(x => x.horseNo === 2);
+            assert.ok(a.driveIndexSignal > b.driveIndexSignal);
+            assert.ok(a.driveIndexEvidenceCount >= 4);
+          
+            const changedMarket = rows.map((r, i) => ({
+              ...r,
+              '予想オッズ': i ? 999 : 1.01,
+              '人気': i ? 99 : 1,
+            }));
+            assert.deepEqual(
+              buildDriveRaceSignals(changedMarket),
+              signals,
+            );
+          });
+          
+          test('official past-runs are preserved and Drive market is never copied into odds/popularity', () => {
+            const official = {
+              ok: true,
+              date: '2026-09-13',
+              track: '阪神',
+              race: 1,
+              horses: [
+                {
+                  horseNo: 1,
+                  horseName: 'テストホースA',
+                  runningStatus: 'active',
+                  odds: null,
+                  popularity: null,
+                  pastRuns: [{ date: '2026-08-01', finish: 2 }],
+                },
+                {
+                  horseNo: 2,
+                  horseName: 'テストホースB',
+                  runningStatus: 'active',
+                  odds: null,
+                  popularity: null,
+                  pastRuns: [{ date: '2026-08-02', finish: 3 }],
+                },
+              ],
+            };
+          
+            const merged = mergeOfficialJraWithDriveRows(official, rows);
+            assert.equal(merged.driveInput.status, 'matched');
+            assert.equal(merged.driveInput.matchedHorseCount, 2);
+            assert.equal(merged.driveInput.rawDriveIndicesExposed, false);
+            assert.equal(merged.horses[0].pastRuns[0].finish, 2);
+            assert.equal(merged.horses[0].odds, null);
+            assert.equal(merged.horses[0].popularity, null);
+            assert.ok(Number.isFinite(merged.horses[0].driveIndexSignal));
+          });
+          
+          test('horse-name mismatch fails closed for that horse', () => {
+            const official = {
+              ok: true,
+              horses: [{
+                horseNo: 1,
+                horseName: '別の馬名',
+                runningStatus: 'active',
+                pastRuns: [],
+                odds: null,
+                popularity: null,
+              }],
+            };
+          
+            const merged = mergeOfficialJraWithDriveRows(official, [rows[0]]);
+            assert.equal(merged.driveInput.status, 'mismatch');
+            assert.deepEqual(merged.driveInput.mismatchedHorseNos, [1]);
+            assert.equal(merged.horses[0].driveIndexSignal, undefined);
+          });
+          CHASS_JRA_DRIVE_TEST_EOF
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          // 1) Route all existing /api/jra/race traffic through the hybrid wrapper.
+          {
+            const file = 'worker.js';
+            let src = fs.readFileSync(file, 'utf8');
+            const oldImport =
+              "import {handleJraRaceRequest} from './jra-race-fetch.mjs';";
+            const newImport =
+              "import {handleJraRaceRequest} from './jra-drive-prediction-input.mjs';";
+
+            if (!src.includes(newImport)) {
+              if (!src.includes(oldImport)) {
+                throw new Error('worker.js JRA race import marker not found.');
+              }
+              src = src.replace(oldImport, newImport);
+            }
+            fs.writeFileSync(file, src);
+          }
+
+          // 2) Preserve the normalized Drive signal through the existing JRA normalizer.
+          {
+            const file = 'jra-normalizer.js';
+            let src = fs.readFileSync(file, 'utf8');
+
+            const old =
+              "bodyWeightChange:numberOrNull(horse.bodyWeightChange??horse.body_weight_change),pastRuns:past};";
+            const next =
+              "bodyWeightChange:numberOrNull(horse.bodyWeightChange??horse.body_weight_change),driveIndexSignal:numberOrNull(horse.driveIndexSignal??horse.drive_index_signal),driveIndexEvidenceCount:numberOrNull(horse.driveIndexEvidenceCount??horse.drive_index_evidence_count),driveClusterStrength:numberOrNull(horse.driveClusterStrength??horse.drive_cluster_strength),driveInputSource:text(horse.driveInputSource??horse.drive_input_source),pastRuns:past};";
+
+            if (!src.includes(next)) {
+              if (!src.includes(old)) {
+                throw new Error('jra-normalizer.js horse marker not found.');
+              }
+              src = src.replace(old, next);
+            }
+            fs.writeFileSync(file, src);
+          }
+
+          // 3) Blend the Drive signal only as a small auxiliary ability feature.
+          //    Market odds/popularity are not involved in this blend.
+          {
+            const file = 'jra-model.js';
+            let src = fs.readFileSync(file, 'utf8');
+
+            const oldReturn =
+              "return round(clamp(base*.88+(classEvidence??50)*.12+age+weightDelta,15,95),1)";
+            const newReturn =
+              "const core=base*.88+(classEvidence??50)*.12+age+weightDelta,driveSignal=Number(row.horse.driveIndexSignal),driveEvidence=Number(row.horse.driveIndexEvidenceCount)||0,driveCluster=Number(row.horse.driveClusterStrength)||0,driveWeight=Number.isFinite(driveSignal)?Math.min(.12,(driveEvidence>=4?.10:driveEvidence>=2?.06:.03)+(driveCluster>=2?.02:0)):0;return round(clamp(driveWeight?core*(1-driveWeight)+driveSignal*driveWeight:core,15,95),1)";
+
+            if (!src.includes(newReturn)) {
+              if (!src.includes(oldReturn)) {
+                throw new Error('jra-model.js total-score marker not found.');
+              }
+              src = src.replace(oldReturn, newReturn);
+            }
+
+            src = src.replace(
+              "modelVersion:'10.0.1-jra-calibration1'",
+              "modelVersion:'10.0.1-jra-drive1'"
+            );
+
+            fs.writeFileSync(file, src);
+          }
+          NODE
+
+          node --check jra-drive-prediction-input.mjs
+          node --check worker.js
+          node --check jra-normalizer.js
+          node --check jra-model.js
+          node --check tests/jra-drive-prediction-input.test.mjs
+
+          git status --porcelain=v1 | sed -E 's/^.. //' | sort > /tmp/chass-jra-drive-changed.txt
+
+          cat > /tmp/chass-jra-drive-allowed.txt <<'EOF'
+          jra-drive-prediction-input.mjs
+          jra-model.js
+          jra-normalizer.js
+          tests/jra-drive-prediction-input.test.mjs
+          worker.js
+          EOF
+
+          sort -o /tmp/chass-jra-drive-allowed.txt /tmp/chass-jra-drive-allowed.txt
+          diff -u /tmp/chass-jra-drive-allowed.txt /tmp/chass-jra-drive-changed.txt
+
+      - name: Targeted hybrid-input tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-drive-v14
+
+          node --test \
+            tests/jra-drive-prediction-input.test.mjs \
+            tests/google-drive-readonly-import.test.mjs
+
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+
+          await import('./jra-normalizer.js');
+          await import('./jra-model.js');
+
+          const makeHorse = (horseNo, name, driveIndexSignal, odds) => ({
+            horseNo,
+            horseName: name,
+            sexAge: '牡4',
+            weightCarried: 57,
+            jockey: 'テスト',
+            trainer: 'テスト',
+            odds,
+            popularity: horseNo,
+            driveIndexSignal,
+            driveIndexEvidenceCount: 6,
+            driveClusterStrength: horseNo === 1 ? 2 : 0,
+            pastRuns: [
+              {
+                date: '2026-08-01',
+                racecourse: '阪神',
+                surface: 'ダート',
+                distance: 1400,
+                trackCondition: '良',
+                raceClass: '1勝',
+                finish: 3,
+                fieldSize: 12,
+                time: '1:25.0',
+                timeSeconds: 85,
+                margin: 0.3,
+                cornerPositions: [4, 4],
+                last3F: 37,
+                weightCarried: 57,
+              },
+            ],
+          });
+
+          const raw = {
+            race: {
+              date: '2026-09-13',
+              racecourse: '阪神',
+              raceNo: 1,
+              raceName: 'TEST',
+              surface: 'ダート',
+              distance: 1400,
+              trackCondition: '良',
+              pace: '標準',
+            },
+            horses: [
+              makeHorse(1, 'A', 95, 1.2),
+              makeHorse(2, 'B', 15, 100),
+            ],
+          };
+
+          const normalized = globalThis.CHASS_JRA_NORMALIZER.normalizeJraData(raw);
+          assert.equal(normalized.horses[0].driveIndexSignal, 95);
+
+          const p1 = globalThis.CHASS_JRA_MODEL.calculate(normalized);
+          assert.ok(p1.horses[0].overall > p1.horses[1].overall);
+          assert.equal(p1.modelVersion, '10.0.1-jra-drive1');
+
+          const swapped = globalThis.CHASS_JRA_NORMALIZER.normalizeJraData({
+            ...raw,
+            horses: [
+              makeHorse(1, 'A', 95, 999),
+              makeHorse(2, 'B', 15, 1.01),
+            ],
+          });
+          const p2 = globalThis.CHASS_JRA_MODEL.calculate(swapped);
+
+          // Ability score must not change when only market odds change.
+          assert.equal(p1.horses[0].overall, p2.horses[0].overall);
+          assert.equal(p1.horses[1].overall, p2.horses[1].overall);
+
+          console.log('Drive auxiliary blend + market independence: PASS');
+          NODE
+
+      - name: Resolve and live verify a usable race in private Drive master
+        id: drive_target
+        shell: bash
+        env:
+          REQUESTED_DATE: ${{ inputs.date }}
+          REQUESTED_TRACK: ${{ inputs.track }}
+          REQUESTED_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-drive-v14
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {
+            readChassArchiveSheet,
+          } from './google-drive-readonly-import.mjs';
+          import {
+            extractJraDriveRaceRows,
+            buildDriveRaceSignals,
+          } from './jra-drive-prediction-input.mjs';
+
+          const env = {
+            ENABLE_DRIVE_READ_IMPORT: process.env.ENABLE_DRIVE_READ_IMPORT,
+            CHASS_DRIVE_SPREADSHEET_ID: process.env.CHASS_DRIVE_SPREADSHEET_ID,
+            GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:
+              process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON,
+          };
+
+          const sheet = await readChassArchiveSheet(
+            env,
+            'JRA_指数マスター',
+            {
+              organization: 'JRA',
+              maxRows: 5000,
+              maxColumn: 'AA',
+            },
+          );
+
+          const requested = {
+            date: process.env.REQUESTED_DATE,
+            track: process.env.REQUESTED_TRACK,
+            race: Number(process.env.REQUESTED_RACE),
+          };
+
+          const usable = rows => {
+            if (!Array.isArray(rows) || rows.length < 2) return false;
+            const signals = buildDriveRaceSignals(rows);
+            return signals.some(x => Number.isFinite(x.driveIndexSignal));
+          };
+
+          let rows = extractJraDriveRaceRows(sheet.records, requested);
+          let resolved = { ...requested };
+          let requestedFound = usable(rows);
+
+          if (!requestedFound) {
+            const groups = new Map();
+
+            for (const row of sheet.records || []) {
+              if (String(row['主催'] || '').trim().toUpperCase() !== 'JRA') continue;
+
+              const date = String(row['開催日'] || '').trim();
+              const track = String(row['競馬場'] || '').trim();
+              const race = Number(row['R']);
+
+              if (!date || !track || !Number.isInteger(race) || race < 1 || race > 12) continue;
+
+              const key = `${date}\t${track}\t${race}`;
+              if (!groups.has(key)) groups.set(key, []);
+              groups.get(key).push(row);
+            }
+
+            const candidates = [...groups.entries()]
+              .map(([key, groupedRows]) => {
+                const [date, track, raceText] = key.split('\t');
+                const signals = buildDriveRaceSignals(groupedRows);
+                const indexedHorses = signals.filter(
+                  x => Number.isFinite(x.driveIndexSignal),
+                ).length;
+
+                return {
+                  date,
+                  track,
+                  race: Number(raceText),
+                  rows: groupedRows,
+                  indexedHorses,
+                };
+              })
+              .filter(x => x.rows.length >= 2 && x.indexedHorses >= 1)
+              .sort((a, b) =>
+                b.date.localeCompare(a.date) ||
+                a.track.localeCompare(b.track, 'ja') ||
+                a.race - b.race
+              );
+
+            if (!candidates.length) {
+              throw new Error(
+                'No usable indexed JRA race exists in JRA_指数マスター.',
+              );
+            }
+
+            const fallback = candidates[0];
+            resolved = {
+              date: fallback.date,
+              track: fallback.track,
+              race: fallback.race,
+            };
+            rows = fallback.rows;
+
+            console.log(
+              `::warning::Requested smoke target ${requested.date} ${requested.track} ${requested.race}R is not currently usable in JRA_指数マスター. ` +
+              `Using ${resolved.date} ${resolved.track} ${resolved.race}R only for integration verification.`,
+            );
+          }
+
+          const signals = buildDriveRaceSignals(rows);
+          const available = signals.filter(
+            x => Number.isFinite(x.driveIndexSignal),
+          ).length;
+
+          if (available < 1) {
+            throw new Error('Resolved JRA Drive race has no usable index signal.');
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            [
+              `date=${resolved.date}`,
+              `track=${resolved.track}`,
+              `race=${resolved.race}`,
+              `requested_found=${requestedFound ? 'true' : 'false'}`,
+              `drive_rows=${rows.length}`,
+              `indexed_horses=${available}`,
+              '',
+            ].join('\n'),
+          );
+
+          console.log(JSON.stringify({
+            requested: `${requested.date} ${requested.track} ${requested.race}R`,
+            requestedFound,
+            verificationTarget:
+              `${resolved.date} ${resolved.track} ${resolved.race}R`,
+            driveRows: rows.length,
+            indexedHorses: available,
+            marketUsedForAbility: false,
+          }, null, 2));
+          NODE
+
+      - name: Patched full regression comparison
+        id: patched_regression
+        shell: bash
+        env:
+          BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+        run: |
+          set +e
+          cd /tmp/chass-jra-drive-v14
+          npm run check > /tmp/chass-patched-regression.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-patched-regression.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+
+          echo "Baseline fail count: $BASE_FAIL"
+          echo "Patched fail count:  $FAIL"
+
+          if [ "$FAIL" -gt "$BASE_FAIL" ]; then
+            echo "::error::The JRA Drive patch increased regression failures."
+            tail -n 120 /tmp/chass-patched-regression.log
+            exit 1
+          fi
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo "::warning::Existing regression failures remain, but this patch did not increase them."
+          fi
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Drive Prediction Input v1.4.4 - VALIDATED"
+            echo
+            echo "- Private Drive JRA_指数マスター live read: PASS"
+            echo "- Requested smoke target present: ${{ steps.drive_target.outputs.requested_found }}"
+            echo "- Verification target: ${{ steps.drive_target.outputs.date }} ${{ steps.drive_target.outputs.track }} ${{ steps.drive_target.outputs.race }}R"
+            echo "- Drive rows in verification target: ${{ steps.drive_target.outputs.drive_rows }}"
+            echo "- Indexed horses in verification target: ${{ steps.drive_target.outputs.indexed_horses }}"
+            echo "- Official past-runs preservation test: PASS"
+            echo "- Drive market exclusion from ability: PASS"
+            echo "- Drive index auxiliary blend: PASS"
+            echo "- Raw Drive indices exposed to browser: NO"
+            echo "- Regression failures increased: NO"
+            echo "- Production deploy: NOT PERFORMED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "${{ steps.baseline.outputs.sha }}" = "$(git rev-parse origin/main)" || {
+            echo "::error::main changed during validation. Refusing to commit."
+            exit 1
+          }
+
+      - name: Apply tested hybrid-input patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-drive-v14/jra-drive-prediction-input.mjs .
+          cp /tmp/chass-jra-drive-v14/jra-model.js .
+          cp /tmp/chass-jra-drive-v14/jra-normalizer.js .
+          cp /tmp/chass-jra-drive-v14/worker.js .
+          cp /tmp/chass-jra-drive-v14/tests/jra-drive-prediction-input.test.mjs tests/
+
+          for f in \
+            server.mjs \
+            research-storage-sync.mjs \
+            wrangler.jsonc \
+            .assetsignore \
+            d1-schema.sql
+          do
+            if [ -f "$f" ]; then sha256sum "$f"; fi
+          done > /tmp/chass-jra-drive-protected-after.sha256
+
+          diff -u \
+            /tmp/chass-jra-drive-protected-before.sha256 \
+            /tmp/chass-jra-drive-protected-after.sha256
+
+          node --check worker.js
+          node --check jra-drive-prediction-input.mjs
+          node --check jra-normalizer.js
+          node --check jra-model.js
+
+      - name: Commit tested JRA Drive integration
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-drive-prediction-input.mjs \
+            jra-model.js \
+            jra-normalizer.js \
+            tests/jra-drive-prediction-input.test.mjs \
+            worker.js
+
+          if git diff --cached --quiet; then
+            echo "::error::No JRA Drive prediction patch was staged."
+            exit 1
+          fi
+
+          git commit -m "Use private Drive JRA index data as prediction input"
+          PATCH_SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+          echo "sha=$PATCH_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production Worker and assets
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production Drive runtime health before hybrid smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in 1 2 3 4 5; do
+            HTTP="$(curl -sS --max-time 25 \
+              -o /tmp/chass-drive-health-v144.json \
+              -w '%{http_code}' \
+              "$PRODUCTION_BASE_URL/api/drive-read/health" || true)"
+            if [ "$HTTP" = "200" ]; then break; fi
+            sleep 2
+          done
+
+          cat /tmp/chass-drive-health-v144.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(
+            fs.readFileSync('/tmp/chass-drive-health-v144.json', 'utf8')
+          );
+          if (x.ok !== true) {
+            throw new Error(`Production Drive health failed: ${x.error?.code || x.error || 'unknown'}`);
+          }
+          if (x.authMode !== 'service_account') {
+            throw new Error('Production Drive authMode is not service_account');
+          }
+          if (x.spreadsheetReachable !== true) {
+            throw new Error('Production private CHASS master is not reachable');
+          }
+          console.log('Production Drive runtime health: PASS');
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Production hybrid JRA prediction-input smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: smoke
+        shell: bash
+        env:
+          TARGET_DATE: ${{ steps.drive_target.outputs.date }}
+          TARGET_TRACK: ${{ steps.drive_target.outputs.track }}
+          TARGET_RACE: ${{ steps.drive_target.outputs.race }}
+        run: |
+          set -euo pipefail
+
+          export BODY=/tmp/chass-jra-drive-production-v144.json
+          export HEADERS=/tmp/chass-jra-drive-production-v144.headers
+
+          # Write the semantic verifier once, OUTSIDE the retry loop.
+          # Keeping the heredoc at the top level prevents Bash from treating
+          # an indented terminator as unterminated.
+          cat > /tmp/chass-verify-jra-drive-v144.cjs <<'NODE'
+          const fs = require('fs');
+
+          let x;
+          try {
+            x = JSON.parse(fs.readFileSync(process.env.BODY, 'utf8'));
+          } catch (error) {
+            console.error(`SEMANTIC_NOT_READY: invalid_json: ${error.message}`);
+            process.exit(11);
+          }
+
+          const headerText = fs.readFileSync(process.env.HEADERS, 'utf8');
+          const marker =
+            /(?:^|\r?\n)x-chass-jra-drive-input:\s*([^\r\n]+)/i
+              .exec(headerText)?.[1]?.trim() || '';
+
+          if (!marker) {
+            console.error(
+              'SEMANTIC_NOT_READY: missing x-chass-jra-drive-input header'
+            );
+            process.exit(12);
+          }
+
+          if (x.ok !== true) {
+            console.error(
+              `SEMANTIC_NOT_READY: JRA response not ok: ${x.error || 'unknown'}`
+            );
+            process.exit(13);
+          }
+
+          if (x.dataConfidence !== 'high') {
+            console.error(
+              `SEMANTIC_NOT_READY: dataConfidence=${x.dataConfidence || 'missing'}`
+            );
+            process.exit(14);
+          }
+
+          if (x.driveInput?.schemaVersion !== 'jra-drive-input-v1.4.4') {
+            console.error(
+              `SEMANTIC_NOT_READY: schema=${x.driveInput?.schemaVersion || 'missing'} marker=${marker}`
+            );
+            process.exit(15);
+          }
+
+          if (!['matched', 'partial'].includes(x.driveInput?.status)) {
+            console.error(
+              `SEMANTIC_NOT_READY: driveInput status=${x.driveInput?.status || 'missing'}`
+            );
+            process.exit(16);
+          }
+
+          if (Number(x.driveInput?.matchedHorseCount) < 1) {
+            console.error('SEMANTIC_NOT_READY: no Drive horse matched');
+            process.exit(17);
+          }
+
+          if (x.driveInput?.marketReferenceExcludedFromAbility !== true) {
+            console.error('SEMANTIC_NOT_READY: market-independence guard missing');
+            process.exit(18);
+          }
+
+          if (x.driveInput?.rawDriveIndicesExposed !== false) {
+            console.error('SEMANTIC_NOT_READY: raw Drive index exposure guard failed');
+            process.exit(19);
+          }
+
+          if (
+            !(x.horses || []).some(
+              horse => Number.isFinite(Number(horse.driveIndexSignal))
+            )
+          ) {
+            console.error('SEMANTIC_NOT_READY: no normalized Drive index signal present');
+            process.exit(20);
+          }
+
+          console.log(JSON.stringify({
+            ok: true,
+            marker,
+            schemaVersion: x.driveInput.schemaVersion,
+            status: x.driveInput.status,
+            matchedHorseCount: x.driveInput.matchedHorseCount,
+            driveRowCount: x.driveInput.driveRowCount,
+          }, null, 2));
+          NODE
+
+          node --check /tmp/chass-verify-jra-drive-v144.cjs
+
+          READY=0
+          LAST_REASON="not_started"
+
+          # Small head start after wrangler reports a successful deployment.
+          sleep 3
+
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            : > "$HEADERS"
+
+            HTTP="$(curl -sS --max-time 35 --get \
+              "$PRODUCTION_BASE_URL/api/jra/race" \
+              -H 'Cache-Control: no-cache, no-store, max-age=0' \
+              -H 'Pragma: no-cache' \
+              --data-urlencode "date=$TARGET_DATE" \
+              --data-urlencode "track=$TARGET_TRACK" \
+              --data-urlencode "race=$TARGET_RACE" \
+              --data-urlencode "_chass_drive_deploy=v144-$i-$(date +%s%N)" \
+              -D "$HEADERS" \
+              -o "$BODY" \
+              -w '%{http_code}' || true)"
+
+            echo "Smoke attempt $i: HTTP=$HTTP"
+            grep -i '^x-chass-jra-drive-input:' "$HEADERS" || true
+
+            if [ "$HTTP" = "200" ]; then
+              set +e
+              node /tmp/chass-verify-jra-drive-v144.cjs
+              CODE=$?
+              set -e
+
+              if [ "$CODE" = "0" ]; then
+                READY=1
+                break
+              fi
+
+              LAST_REASON="semantic_check_exit_$CODE"
+            else
+              LAST_REASON="http_$HTTP"
+            fi
+
+            sleep 3
+          done
+
+          if [ "$READY" != "1" ]; then
+            echo "::error::Production Worker never exposed the v1.4.4 Drive hybrid marker after 10 attempts. Last reason: $LAST_REASON"
+            echo "--- response headers ---"
+            cat "$HEADERS" || true
+            echo "--- response body ---"
+            cat "$BODY" || true
+            exit 1
+          fi
+
+          echo "Production JRA official + Drive hybrid input: PASS"
+
+      - name: Automatic rollback if production smoke fails
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.sha != '' && steps.deploy.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::warning::Production smoke failed. Reverting JRA Drive integration."
+
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.commit.outputs.sha }}"
+          git push origin main
+
+          npx -y wrangler@4 deploy
+
+          echo "Rollback commit deployed."
+
+      - name: Final summary
+        if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+        shell: bash
+        env:
+          BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+          PATCH_FAIL: ${{ steps.patched_regression.outputs.fail_count }}
+        run: |
+          {
+            echo "## CHASS JRA Drive Prediction Input v1.4.4 - ACTIVE"
+            echo
+            echo "- JRA official race card + past-runs: PRIMARY"
+            echo "- Private Drive JRA_指数マスター: AUXILIARY ABILITY INPUT"
+            echo "- Drive index maximum model weight: 12%"
+            echo "- Drive forecast odds/popularity used for ability: NO"
+            echo "- Normal official market odds stage: UNCHANGED"
+            echo "- Raw Drive index values exposed to browser: NO"
+            echo "- JRA/NAR separation: PRESERVED"
+            echo "- Drive -> D1 write: NONE"
+            echo "- Existing prediction snapshot mutation: NONE"
+            echo "- Baseline regression failures: ${BASE_FAIL:-unknown}"
+            echo "- Patched regression failures: ${PATCH_FAIL:-unknown}"
+            echo "- Production Drive runtime health: PASS"
+            echo "- Production hybrid smoke: PASS (v1.4.4 semantic marker verified)"
+            echo "- Smoke target: ${{ steps.drive_target.outputs.date }} ${{ steps.drive_target.outputs.track }} ${{ steps.drive_target.outputs.race }}R"
+            echo "- Originally requested target present in master: ${{ steps.drive_target.outputs.requested_found }}"
+            echo "- Model version: 10.0.1-jra-drive1"
+            echo "- Commit: ${{ steps.commit.outputs.sha }}"
+            echo
+            echo "The existing /api/jra/race route now enriches official JRA data"
+            echo "with a market-independent normalized signal from JRA_指数マスター."
+          } >> "$GITHUB_STEP_SUMMARY"
