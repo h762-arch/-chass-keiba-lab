@@ -1,0 +1,624 @@
+name: CHASS JRA Cloudflare Diagnostic Safe
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "診断するJRA開催日 (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-12"
+        type: string
+      track:
+        description: "競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "レース番号"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+      production_base_url:
+        description: "本番Worker URL（静的assets露出はHTTP statusだけ確認。変更はしない）"
+        required: true
+        default: "https://chass-keiba-lab7.h7625421.workers.dev"
+        type: string
+
+# IMPORTANT:
+# - Repository is read-only.
+# - Production Worker is never deployed or modified.
+# - D1 / migrations / NAR / prediction logic / Viewer are never touched.
+# - A short-lived, separately named diagnostic Worker is created and deleted.
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-cloudflare-diagnostic-safe
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      REVIEWED_HOTFIX_COMMIT: ee201b4343b31d3e877c7e44e5d752dd56443951
+      REVIEWED_FETCH_BLOB: 1c15319f4a7a56e835c23a821aeca13cb72dd8e7
+      PRODUCTION_WORKER_NAME: chass-keiba-lab7
+
+    steps:
+      - name: Checkout current main read-only
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Safety guard - prove this workflow cannot modify production source
+        id: safety
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASELINE_SHA="$(git rev-parse HEAD)"
+          echo "baseline_sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test -f worker.js
+          test -f jra-race-fetch.mjs
+          test -f jra-meeting-discovery.mjs
+          test -f wrangler.jsonc
+
+          # The reviewed hotfix commit must still be available in repository history.
+          git cat-file -e "${REVIEWED_HOTFIX_COMMIT}^{commit}"
+
+          # There must be no local source modification before diagnosis starts.
+          test -z "$(git status --porcelain=v1)"
+
+          # Never allow the diagnostic Worker to reuse the production Worker name.
+          DIAG_WORKER="chass-jra-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$DIAG_WORKER" != "$PRODUCTION_WORKER_NAME"
+          echo "diag_worker=$DIAG_WORKER" >> "$GITHUB_OUTPUT"
+
+          echo "Safety guard OK"
+          echo "Baseline: $BASELINE_SHA"
+          echo "Diagnostic Worker: $DIAG_WORKER"
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Materialize exact reviewed hotfix source into isolated diagnostic directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-jra-diag
+          mkdir -p /tmp/chass-jra-diag
+
+          # Use the exact source that passed the GitHub Runner live JRA smoke test.
+          git show "${REVIEWED_HOTFIX_COMMIT}:jra-race-fetch.mjs" > /tmp/chass-jra-diag/jra-race-fetch.mjs
+          git show "${REVIEWED_HOTFIX_COMMIT}:jra-meeting-discovery.mjs" > /tmp/chass-jra-diag/jra-meeting-discovery.mjs
+
+          ACTUAL_BLOB="$(git hash-object /tmp/chass-jra-diag/jra-race-fetch.mjs)"
+          echo "Reviewed fetch blob: $ACTUAL_BLOB"
+          test "$ACTUAL_BLOB" = "$REVIEWED_FETCH_BLOB"
+
+          cat > /tmp/chass-jra-diag/diagnostic-worker.mjs <<'EOF'
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const header = (response, name) => response.headers.get(name) || null;
+          const clip = (text, max = 280) => String(text || '')
+            .replace(/\s+/g, ' ')
+            .slice(0, max);
+
+          function safeUrl(input) {
+            try {
+              const u = new URL(typeof input === 'string' ? input : input.url);
+              // JRA URLs contain no credentials; keep path/query because navigation diagnosis needs them.
+              return `${u.origin}${u.pathname}${u.search}`;
+            } catch {
+              return 'unparseable-url';
+            }
+          }
+
+          export default {
+            async fetch(request) {
+              const incoming = new URL(request.url);
+              if (incoming.pathname !== '/probe') {
+                return new Response(JSON.stringify({ ok: false, error: 'DIAGNOSTIC_ROUTE_NOT_FOUND' }), {
+                  status: 404,
+                  headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+                });
+              }
+
+              const date = incoming.searchParams.get('date') || '';
+              const track = incoming.searchParams.get('track') || '';
+              const race = incoming.searchParams.get('race') || '';
+              const trace = [];
+
+              const tracedFetch = async (input, init = {}) => {
+                const started = Date.now();
+                const url = safeUrl(input);
+                const method = String(init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+                const redirect = init?.redirect || (input instanceof Request ? input.redirect : 'follow');
+                try {
+                  const response = await fetch(input, init);
+                  let bodyPrefix = null;
+                  try {
+                    bodyPrefix = clip(await response.clone().text());
+                  } catch {
+                    bodyPrefix = null;
+                  }
+                  trace.push({
+                    method,
+                    url,
+                    redirect,
+                    status: response.status,
+                    ok: response.ok,
+                    redirected: response.redirected,
+                    contentType: header(response, 'content-type'),
+                    location: header(response, 'location'),
+                    server: header(response, 'server'),
+                    cfRay: header(response, 'cf-ray'),
+                    elapsedMs: Date.now() - started,
+                    bodyPrefix
+                  });
+                  return response;
+                } catch (error) {
+                  trace.push({
+                    method,
+                    url,
+                    redirect,
+                    status: null,
+                    ok: false,
+                    elapsedMs: Date.now() - started,
+                    errorName: error?.name || 'Error',
+                    errorMessage: String(error?.message || error)
+                  });
+                  throw error;
+                }
+              };
+
+              const service = createJraRaceService({ fetchImpl: tracedFetch, timeoutMs: 20000 });
+              const target = new URL('https://diagnostic.invalid/api/jra/race');
+              target.searchParams.set('date', date);
+              target.searchParams.set('track', track);
+              target.searchParams.set('race', race);
+
+              const started = Date.now();
+              let serviceStatus = null;
+              let serviceBody = null;
+              let serviceError = null;
+
+              try {
+                const response = await service(new Request(target), { ENABLE_JRA_AUTO_FETCH: false });
+                serviceStatus = response.status;
+                const text = await response.text();
+                try {
+                  serviceBody = JSON.parse(text);
+                } catch {
+                  serviceBody = { rawPrefix: clip(text, 800) };
+                }
+              } catch (error) {
+                serviceError = {
+                  name: error?.name || 'Error',
+                  message: String(error?.message || error)
+                };
+              }
+
+              const result = {
+                ok: serviceBody?.ok === true,
+                diagnostic: true,
+                runtime: 'cloudflare-worker',
+                target: { date, track, race: Number(race) },
+                serviceStatus,
+                serviceBody,
+                serviceError,
+                trace,
+                traceCount: trace.length,
+                elapsedMs: Date.now() - started,
+                generatedAt: new Date().toISOString()
+              };
+
+              return new Response(JSON.stringify(result, null, 2), {
+                status: 200,
+                headers: {
+                  'Content-Type': 'application/json; charset=utf-8',
+                  'Cache-Control': 'no-store, max-age=0'
+                }
+              });
+            }
+          };
+          EOF
+
+          cat > /tmp/chass-jra-diag/wrangler.jsonc <<EOF
+          {
+            "name": "${{ steps.safety.outputs.diag_worker }}",
+            "main": "diagnostic-worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "workers_dev": true,
+            "preview_urls": false,
+            "observability": { "enabled": false }
+          }
+          EOF
+
+          node --check /tmp/chass-jra-diag/diagnostic-worker.mjs
+          node --check /tmp/chass-jra-diag/jra-race-fetch.mjs
+          node --check /tmp/chass-jra-diag/jra-meeting-discovery.mjs
+
+      - name: Runner live probe using exact reviewed hotfix
+        id: runner_probe
+        shell: bash
+        env:
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-diag
+
+          node --input-type=module <<'NODE' > /tmp/runner-probe.json
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const date = process.env.TARGET_DATE;
+          const track = process.env.TARGET_TRACK;
+          const race = process.env.TARGET_RACE;
+          const trace = [];
+
+          const tracedFetch = async (input, init = {}) => {
+            const started = Date.now();
+            const raw = typeof input === 'string' ? input : input.url;
+            const method = String(init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+            try {
+              const response = await fetch(input, init);
+              trace.push({
+                method,
+                url: raw,
+                status: response.status,
+                ok: response.ok,
+                location: response.headers.get('location'),
+                contentType: response.headers.get('content-type'),
+                elapsedMs: Date.now() - started
+              });
+              return response;
+            } catch (error) {
+              trace.push({ method, url: raw, status: null, ok: false, error: String(error?.message || error), elapsedMs: Date.now() - started });
+              throw error;
+            }
+          };
+
+          const service = createJraRaceService({ fetchImpl: tracedFetch, timeoutMs: 20000 });
+          const url = new URL('https://diagnostic.invalid/api/jra/race');
+          url.searchParams.set('date', date);
+          url.searchParams.set('track', track);
+          url.searchParams.set('race', race);
+          const response = await service(new Request(url), { ENABLE_JRA_AUTO_FETCH: false });
+          const body = await response.json();
+
+          console.log(JSON.stringify({
+            runtime: 'github-runner',
+            status: response.status,
+            ok: body.ok === true,
+            error: body.error ?? null,
+            race: body.race ?? null,
+            quality: body.quality ?? null,
+            navigation: body.navigation ?? null,
+            sourceUrl: body.sourceUrl ?? null,
+            trace
+          }, null, 2));
+          NODE
+
+          cat /tmp/runner-probe.json
+
+          RUNNER_OK="$(node -e "const x=require('/tmp/runner-probe.json'); process.stdout.write(String(x.ok===true))")"
+          echo "ok=$RUNNER_OK" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy isolated diagnostic Worker only
+        id: diag_deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-diag
+
+          # Explicitly prove the diagnostic config has no assets, D1, routes, or production name.
+          node - <<'NODE'
+          const fs = require('fs');
+          const cfg = JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8'));
+          if (cfg.name === process.env.PRODUCTION_WORKER_NAME) throw new Error('Refusing production Worker name');
+          if ('assets' in cfg) throw new Error('Diagnostic Worker must not define assets');
+          if ('d1_databases' in cfg) throw new Error('Diagnostic Worker must not bind D1');
+          if ('routes' in cfg || 'route' in cfg) throw new Error('Diagnostic Worker must not define production routes');
+          if (cfg.workers_dev !== true) throw new Error('Diagnostic Worker must use workers.dev only');
+          console.log('Isolated diagnostic config OK');
+          NODE
+
+          npx -y wrangler@4 deploy --config wrangler.jsonc 2>&1 | tee /tmp/diag-deploy.log
+
+          DIAG_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/diag-deploy.log | tail -n 1 || true)"
+          if [ -z "$DIAG_URL" ]; then
+            echo "::error::Could not determine diagnostic workers.dev URL from Wrangler output."
+            exit 1
+          fi
+
+          echo "diag_url=$DIAG_URL" >> "$GITHUB_OUTPUT"
+          echo "Diagnostic URL: $DIAG_URL"
+
+      - name: Cloudflare live probe - capture body even when upstream fails
+        id: cloudflare_probe
+        shell: bash
+        env:
+          DIAG_URL: ${{ steps.diag_deploy.outputs.diag_url }}
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set +e
+
+          HTTP_STATUS="$(curl -sS --max-time 35 \
+            --get "$DIAG_URL/probe" \
+            --data-urlencode "date=$TARGET_DATE" \
+            --data-urlencode "track=$TARGET_TRACK" \
+            --data-urlencode "race=$TARGET_RACE" \
+            -o /tmp/cloudflare-probe.json \
+            -w '%{http_code}')"
+          CURL_STATUS=$?
+
+          echo "curl_exit=$CURL_STATUS" >> "$GITHUB_OUTPUT"
+          echo "http_status=$HTTP_STATUS" >> "$GITHUB_OUTPUT"
+
+          echo "Cloudflare diagnostic endpoint HTTP: $HTTP_STATUS"
+          echo "curl exit: $CURL_STATUS"
+
+          if [ -s /tmp/cloudflare-probe.json ]; then
+            cat /tmp/cloudflare-probe.json
+            CF_OK="$(node -e "const fs=require('fs'); try{const x=JSON.parse(fs.readFileSync('/tmp/cloudflare-probe.json','utf8')); process.stdout.write(String(x.ok===true))}catch{process.stdout.write('false')}")"
+          else
+            printf '%s\n' '{"ok":false,"diagnostic":true,"error":"NO_DIAGNOSTIC_BODY"}' > /tmp/cloudflare-probe.json
+            CF_OK=false
+          fi
+
+          echo "ok=$CF_OK" >> "$GITHUB_OUTPUT"
+
+          # A failed upstream JRA call is diagnostic evidence, not a workflow failure.
+          # Only the inability to run the diagnostic endpoint itself is reported above.
+          exit 0
+
+      - name: Audit current production assets configuration without modifying it
+        id: assets_audit
+        shell: bash
+        env:
+          PRODUCTION_BASE_URL: ${{ inputs.production_base_url }}
+        run: |
+          set -euo pipefail
+
+          node - <<'NODE' > /tmp/assets-audit.json
+          const fs = require('fs');
+          const raw = fs.readFileSync('wrangler.jsonc', 'utf8')
+            .replace(/^\s*\/\/.*$/gm, '')
+            .replace(/\/\*[\s\S]*?\*\//g, '');
+          const cfg = JSON.parse(raw);
+          const directory = cfg?.assets?.directory ?? null;
+          const riskyRoot = directory === './' || directory === '.';
+          console.log(JSON.stringify({
+            workerName: cfg?.name ?? null,
+            assetsDirectory: directory,
+            riskyRepositoryRootAssets: riskyRoot,
+            hasAssetsBinding: Boolean(cfg?.assets?.binding),
+            recommendation: riskyRoot
+              ? 'Do not deploy another production build until static assets are constrained to an explicit public directory or equivalent ignore-safe layout.'
+              : 'No repository-root assets setting detected.'
+          }, null, 2));
+          NODE
+
+          cat /tmp/assets-audit.json
+          RISKY_ROOT="$(node -e "const x=require('/tmp/assets-audit.json'); process.stdout.write(String(x.riskyRepositoryRootAssets===true))")"
+          echo "risky_root=$RISKY_ROOT" >> "$GITHUB_OUTPUT"
+
+          # Read-only exposure probe. Never print body contents.
+          if [[ "$PRODUCTION_BASE_URL" =~ ^https://[A-Za-z0-9.-]+$ ]]; then
+            set +e
+            EXPOSURE_STATUS="$(curl -sS --max-time 12 -o /tmp/git-config-probe.bin -w '%{http_code}' "$PRODUCTION_BASE_URL/.git/config")"
+            EXPOSURE_CURL=$?
+            set -e
+            EXPOSURE_BYTES="$(wc -c < /tmp/git-config-probe.bin 2>/dev/null || echo 0)"
+          else
+            EXPOSURE_STATUS="invalid_url"
+            EXPOSURE_CURL=2
+            EXPOSURE_BYTES=0
+          fi
+
+          echo "git_config_http=$EXPOSURE_STATUS" >> "$GITHUB_OUTPUT"
+          echo "git_config_bytes=$EXPOSURE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "Production /.git/config probe: HTTP=$EXPOSURE_STATUS bytes=$EXPOSURE_BYTES curlExit=$EXPOSURE_CURL"
+          rm -f /tmp/git-config-probe.bin
+
+      - name: Audit current Hotfix summary quoting bug without modifying it
+        id: summary_audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=".github/workflows/CHASS-JRA-Live-Nav-Hotfix.yml"
+          if [ -f "$FILE" ] && grep -nE 'echo ".*`.*`.*"' "$FILE" > /tmp/summary-backticks.txt; then
+            echo "risk=true" >> "$GITHUB_OUTPUT"
+            echo "Double-quoted echo lines containing backticks were found:"
+            cat /tmp/summary-backticks.txt
+          else
+            echo "risk=false" >> "$GITHUB_OUTPUT"
+            echo "No risky summary backtick pattern found."
+          fi
+
+      - name: Build diagnostic report and safe summary
+        if: always()
+        shell: bash
+        env:
+          BASELINE_SHA: ${{ steps.safety.outputs.baseline_sha }}
+          DIAG_WORKER: ${{ steps.safety.outputs.diag_worker }}
+          DIAG_URL: ${{ steps.diag_deploy.outputs.diag_url }}
+          RUNNER_OK: ${{ steps.runner_probe.outputs.ok }}
+          CLOUDFLARE_OK: ${{ steps.cloudflare_probe.outputs.ok }}
+          CLOUDFLARE_HTTP: ${{ steps.cloudflare_probe.outputs.http_status }}
+          ASSET_ROOT_RISK: ${{ steps.assets_audit.outputs.risky_root }}
+          GIT_CONFIG_HTTP: ${{ steps.assets_audit.outputs.git_config_http }}
+          GIT_CONFIG_BYTES: ${{ steps.assets_audit.outputs.git_config_bytes }}
+          SUMMARY_QUOTE_RISK: ${{ steps.summary_audit.outputs.risk }}
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const readJson = p => {
+            try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+            catch { return null; }
+          };
+
+          const runner = readJson('/tmp/runner-probe.json');
+          const cloudflare = readJson('/tmp/cloudflare-probe.json');
+          const assets = readJson('/tmp/assets-audit.json');
+
+          const report = {
+            schema: 'CHASS_JRA_CLOUDFLARE_DIAGNOSTIC_V1',
+            generatedAt: new Date().toISOString(),
+            baselineSha: process.env.BASELINE_SHA || null,
+            target: {
+              date: process.env.TARGET_DATE,
+              track: process.env.TARGET_TRACK,
+              race: Number(process.env.TARGET_RACE)
+            },
+            safety: {
+              repositoryPermission: 'read-only',
+              productionDeployPerformed: false,
+              productionSourceModified: false,
+              d1Touched: false,
+              narTouched: false,
+              predictionLogicTouched: false,
+              viewerTouched: false,
+              diagnosticWorker: process.env.DIAG_WORKER || null
+            },
+            runner,
+            cloudflare,
+            comparison: {
+              runnerOk: process.env.RUNNER_OK === 'true',
+              cloudflareOk: process.env.CLOUDFLARE_OK === 'true',
+              cloudflareEndpointHttp: process.env.CLOUDFLARE_HTTP || null,
+              runtimeDifferenceConfirmed:
+                process.env.RUNNER_OK === 'true' && process.env.CLOUDFLARE_OK !== 'true'
+            },
+            assets,
+            productionGitConfigProbe: {
+              httpStatus: process.env.GIT_CONFIG_HTTP || null,
+              responseBytes: Number(process.env.GIT_CONFIG_BYTES || 0),
+              bodyLogged: false
+            },
+            hotfixSummaryQuotingRisk: process.env.SUMMARY_QUOTE_RISK === 'true'
+          };
+
+          fs.writeFileSync('/tmp/chass-jra-diagnostic-report.json', JSON.stringify(report, null, 2));
+
+          const failedTrace = Array.isArray(cloudflare?.trace)
+            ? cloudflare.trace.find(x => x?.ok === false || (Number.isFinite(x?.status) && x.status >= 400))
+            : null;
+
+          const lines = [
+            '## CHASS JRA Cloudflare Diagnostic',
+            '',
+            `- Baseline SHA: ${report.baselineSha || 'unknown'}`,
+            `- Target: ${report.target.date} ${report.target.track} ${report.target.race}R`,
+            `- GitHub Runner JRA: ${report.comparison.runnerOk ? 'SUCCESS' : 'FAILED/UNKNOWN'}`,
+            `- Cloudflare JRA: ${report.comparison.cloudflareOk ? 'SUCCESS' : 'FAILED/UNKNOWN'}`,
+            `- Runtime difference confirmed: ${report.comparison.runtimeDifferenceConfirmed ? 'YES' : 'NO/UNCONFIRMED'}`,
+            `- First failed Cloudflare outbound stage: ${failedTrace ? `${failedTrace.method || '?'} ${failedTrace.url || '?'} -> ${failedTrace.status ?? failedTrace.errorMessage ?? 'error'}` : 'none identified'}`,
+            `- Repository-root assets risk: ${report.assets?.riskyRepositoryRootAssets ? 'YES' : 'NO'}`,
+            `- Production /.git/config HTTP: ${report.productionGitConfigProbe.httpStatus ?? 'unknown'} (body intentionally not logged)`,
+            `- Existing hotfix summary quoting risk: ${report.hotfixSummaryQuotingRisk ? 'YES' : 'NO'}`,
+            '',
+            '### Safety',
+            '- No commit or push was performed.',
+            '- Production Worker was not deployed or modified.',
+            '- D1, migrations, NAR, prediction logic and Viewer were not changed.',
+            '- Only a separately named temporary diagnostic Worker was used.'
+          ];
+
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
+          NODE
+
+          cat /tmp/chass-jra-diagnostic-report.json
+
+      - name: Delete temporary diagnostic Worker
+        if: always() && steps.safety.outputs.diag_worker != ''
+        shell: bash
+        run: |
+          set +e
+          cd /tmp/chass-jra-diag 2>/dev/null || exit 0
+
+          # Wrangler delete may prompt; feed an explicit confirmation.
+          printf 'y\n' | npx -y wrangler@4 delete \
+            --name "${{ steps.safety.outputs.diag_worker }}" \
+            --config wrangler.jsonc
+          DELETE_STATUS=$?
+
+          if [ "$DELETE_STATUS" -ne 0 ]; then
+            echo "::warning::Temporary diagnostic Worker cleanup returned exit code $DELETE_STATUS."
+          else
+            echo "Temporary diagnostic Worker deleted."
+          fi
+          exit 0
+
+      - name: Final source immutability check
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          BASELINE_SHA="${{ steps.safety.outputs.baseline_sha }}"
+
+          if [ -n "$BASELINE_SHA" ] && [ "$CURRENT_SHA" != "$BASELINE_SHA" ]; then
+            echo "::error::Repository HEAD changed inside the diagnostic job."
+            exit 1
+          fi
+
+          if [ -n "$(git status --porcelain=v1)" ]; then
+            echo "::error::Repository working tree changed inside the diagnostic job."
+            git status --short
+            exit 1
+          fi
+
+          echo "Repository remained unchanged: $CURRENT_SHA"
