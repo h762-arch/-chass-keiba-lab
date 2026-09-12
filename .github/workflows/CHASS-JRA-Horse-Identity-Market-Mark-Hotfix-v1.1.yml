@@ -1,0 +1,664 @@
+name: CHASS JRA Horse Identity + Market + Mark Hotfix v1.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      repair_date:
+        description: "既存JRA保存データを修復する日付"
+        required: true
+        default: "2026-09-12"
+        type: string
+      repair_track:
+        description: "既存JRA保存データを修復する競馬場"
+        required: true
+        default: "阪神"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      repair_existing_d1:
+        description: "apply時に既存D1の馬番・市場紐付けも公式データ基準で修復"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-horse-identity-market-mark-v11
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+      REPAIR_DATE: ${{ inputs.repair_date }}
+      REPAIR_TRACK: ${{ inputs.repair_track }}
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test -f app.js
+          test -f jra-normalizer.js
+          test -f viewer/viewer-app.js
+          test -f jra-race-fetch.mjs
+          test -f jra-odds-fetch.mjs
+          test -f .github/workflows/CHASS-JRA-Canonical-Horse-Identity-v3.6.6.1.yml
+
+          # Upstream official parsers must already expose real horseNo.
+          grep -Fq "horses.push({horseNo:no" jra-race-fetch.mjs
+          grep -Fq "odds.push({horseNo,odds:winOdds,popularity})" jra-odds-fetch.mjs
+
+          # Do not proceed on an unexpected source layout.
+          grep -Fq "function normalizeHorse(horse={},index=0)" jra-normalizer.js
+          grep -Fq "function abilityMarks(horses)" app.js
+          grep -Fq "function commitJraNormalized" app.js
+          grep -Fq "function commitJraOdds" app.js
+          grep -Fq "function mergeRaceDetail(day, detail)" viewer/viewer-app.js
+          grep -Fq "function raceRanks(race)" viewer/viewer-app.js
+
+      - name: Build targeted source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp app.js /tmp/app.js.before
+          cp jra-normalizer.js /tmp/jra-normalizer.js.before
+          cp viewer/viewer-app.js /tmp/viewer-app.js.before
+
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 anchor, got {count}")
+              return text.replace(old, new, 1)
+
+          # 1) JRA normalizer: never invent a horse number from array position.
+          p = Path("jra-normalizer.js")
+          s = p.read_text(encoding="utf-8")
+
+          if "function requiredJraHorseNo(" not in s:
+              anchor = "function normalizeHorse(horse={},index=0){"
+              helper = (
+                  "function requiredJraHorseNo(horse={},index=0){"
+                  "const no=numberOrNull(horse.horseNo??horse.horse_no);"
+                  "if(Number.isInteger(no)&&no>=1&&no<=99)return no;"
+                  "const name=text(horse.horseName??horse.horse_name??horse.name)||`row${index+1}`;"
+                  "throw new Error(`JRA_HORSE_NO_REQUIRED:${name}`)"
+                  "}\n"
+              )
+              s = replace_once(s, anchor, helper + anchor, "normalizer helper")
+
+          old_no = "horseNo:numberOrNull(horse.horseNo??horse.horse_no)??index+1"
+          if old_no in s:
+              s = replace_once(
+                  s, old_no,
+                  "horseNo:requiredJraHorseNo(horse,index)",
+                  "normalizer horseNo"
+              )
+
+          p.write_text(s, encoding="utf-8")
+
+          # 2) Main app: strict identity, safe market join, canonical JRA marks.
+          p = Path("app.js")
+          s = p.read_text(encoding="utf-8")
+
+          if "function canonicalInputHorseNo(h,i,race={})" not in s:
+              anchor = "function transform(root){"
+              helper = dedent(r"""function chassJraRaceContext(race={}){
+           return String(race?.raceType||'').toUpperCase()==='JRA'||/中央|JRA/.test(String(race?.category||''));
+          }
+          function canonicalInputHorseNo(h,i,race={}){
+           const raw=h?.horseNo??h?.horseNumber??h?.馬番;
+           const no=Number(raw);
+           if(Number.isInteger(no)&&no>=1&&no<=99)return no;
+           if(chassJraRaceContext(race)){
+             const name=String(h?.horseName??h?.horse??h?.name??h?.馬名??`row${i+1}`).trim();
+             throw new Error(`JRA_HORSE_NO_REQUIRED:${name}`);
+           }
+           return i+1;
+          }
+          """)
+              s = replace_once(s, anchor, helper + anchor, "app canonical horse helper")
+
+          old_transform_no = "horseNo:h.horseNo??h.horseNumber??h.馬番??i+1"
+          if old_transform_no in s:
+              s = replace_once(
+                  s, old_transform_no,
+                  "horseNo:canonicalInputHorseNo(h,i,r)",
+                  "app transform horseNo"
+              )
+
+          # Current source has a very compact exact function. Use a regex-like simple
+          # anchor replacement instead of depending on whitespace after the first line.
+          marks_start = s.find("function abilityMarks(horses){")
+          if marks_start >= 0:
+              marks_end = s.find("\n}", marks_start)
+              if marks_end < 0:
+                  raise SystemExit("app abilityMarks closing brace not found")
+              marks_end += 2
+              current_marks = s[marks_start:marks_end]
+              new_marks = dedent("""function abilityMarks(horses,race={}){
+           const jra=chassJraRaceContext(race);
+           const value=(v,fallback=-Infinity)=>Number.isFinite(Number(v))?Number(v):fallback;
+           const sorted=[...(horses||[])].filter(isEligibleHorse).sort((a,b)=>{
+             if(jra){
+               const overall=value(b.overall)-value(a.overall);
+               if(overall)return overall;
+               const win=value(b.win)-value(a.win);
+               if(win)return win;
+             }else{
+               const win=value(b.win)-value(a.win);
+               if(win)return win;
+               const overall=value(b.overall)-value(a.overall);
+               if(overall)return overall;
+             }
+             return Number(a.horseNo||999)-Number(b.horseNo||999);
+           });
+           (horses||[]).forEach(h=>h.abilityMark='');
+           sorted.slice(0,4).forEach((h,i)=>h.abilityMark=['◎','○','▲','△'][i]);
+           return sorted;
+          }""")
+              s = s[:marks_start] + new_marks + s[marks_end:]
+          elif "function abilityMarks(horses,race={})" not in s:
+              raise SystemExit("app abilityMarks anchor not found")
+
+          s = s.replace("abilityMarks(horses||[]);\n applyValueFlags", "abilityMarks(horses||[],race||{});\n applyValueFlags")
+          s = s.replace("abilityMarks(active);applyValueFlags", "abilityMarks(active,record?.race||record?.predictionSnapshot?.race||{});applyValueFlags")
+
+          target = "abilityMarks(horses);\n if(ot==='実オッズ')"
+          if target in s:
+              s = s.replace(target, "abilityMarks(horses,r);\n if(ot==='実オッズ')", 1)
+
+          commit_anchor = "activeRaceGeneration++;state=result.state;if(provenance){"
+          if "state=result.state;abilityMarks(state.horses,state.race);if(provenance){" not in s:
+              s = replace_once(
+                  s, commit_anchor,
+                  "activeRaceGeneration++;state=result.state;abilityMarks(state.horses,state.race);if(provenance){",
+                  "commit JRA canonical marks"
+              )
+
+          if "function assertJraMarketIdentity(items=[])" not in s:
+              anchor = "function applyMarketOdds(items, acquiredAt, options={}){"
+              guard = dedent(r"""function assertJraMarketIdentity(items=[]){
+           if(raceTypeOf(state)!=='JRA')return true;
+           const active=(state.horses||[]).filter(isEligibleHorse);
+           const stateNos=active.map(h=>Number(h.horseNo));
+           const officialNos=(items||[]).map(x=>Number(x?.horseNo)).filter(Number.isFinite);
+           const duplicateState=stateNos.some((n,i)=>stateNos.indexOf(n)!==i);
+           const duplicateOfficial=officialNos.some((n,i)=>officialNos.indexOf(n)!==i);
+           const missingInState=officialNos.filter(n=>!stateNos.includes(n));
+           if(duplicateState||duplicateOfficial||missingInState.length){
+             const error=new Error(`JRA_HORSE_IDENTITY_MISMATCH:state=${stateNos.join(',')}:official=${officialNos.join(',')}`);
+             error.code='JRA_HORSE_IDENTITY_MISMATCH';
+             throw error;
+           }
+           return true;
+          }
+          """)
+              s = replace_once(s, anchor, guard + anchor, "market identity guard")
+
+          apply_anchor = "function applyMarketOdds(items, acquiredAt, options={}){\n if(!Array.isArray(items)||!items.length)return 0;"
+          apply_new = "function applyMarketOdds(items, acquiredAt, options={}){\n if(!Array.isArray(items)||!items.length)return 0;\n assertJraMarketIdentity(items);"
+          if apply_anchor in s:
+              s = replace_once(s, apply_anchor, apply_new, "applyMarketOdds guard")
+          elif "assertJraMarketIdentity(items);" not in s:
+              raise SystemExit("applyMarketOdds guard anchor not found")
+
+          p.write_text(s, encoding="utf-8")
+
+          # 3) Viewer: authoritative detail identity + marks from displayed ability rank.
+          p = Path("viewer/viewer-app.js")
+          s = p.read_text(encoding="utf-8")
+
+          stale_identity = "horseNo: horse.horseNo ?? full.horseNo,"
+          if stale_identity in s:
+              s = replace_once(
+                  s, stale_identity,
+                  "horseNo: full.horseNo ?? horse.horseNo,",
+                  "viewer detail horseNo precedence"
+              )
+
+          if "function normalizeAbilityMarkOrder(race)" not in s:
+              anchor = "function normalizeDuplicateMainMarks(race) {"
+              helper = dedent(r"""function normalizeAbilityMarkOrder(race) {
+            if (!race?.horses?.length) return;
+
+            const active = race.horses
+              .filter((horse) => horse.runnerStatus === 'active')
+              .filter((horse) => horse.abilityScore != null && Number.isFinite(Number(horse.abilityScore)))
+              .sort((a, b) =>
+                Number(b.abilityScore) - Number(a.abilityScore)
+                || Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1)
+                || Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999)
+              );
+
+            if (!active.length) return;
+
+            const marks = ['◎', '○', '▲', '△'];
+            for (const horse of race.horses) {
+              if (['◎', '○', '▲', '△'].includes(String(horse.mark || ''))) horse.mark = null;
+            }
+            active.slice(0, marks.length).forEach((horse, index) => {
+              horse.mark = marks[index];
+            });
+          }
+
+          """)
+              s = replace_once(s, anchor, helper + anchor, "viewer mark normalizer")
+
+          old_call = "    normalizeDuplicateMainMarks(race);"
+          canonical_call = "    normalizeAbilityMarkOrder(race);\n    normalizeDuplicateMainMarks(race);"
+          if old_call in s and canonical_call not in s:
+              s = s.replace(old_call, canonical_call)
+
+          detail_tail = dedent("""  for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
+              if (detail[key] != null) target[key] = detail[key];
+            }
+          }""")
+          if detail_tail in s and "normalizeAbilityMarkOrder(target);" not in s:
+              s = s.replace(
+                  detail_tail,
+                  dedent("""  for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
+              if (detail[key] != null) target[key] = detail[key];
+            }
+            normalizeAbilityMarkOrder(target);
+            normalizeDuplicateMainMarks(target);
+          }"""),
+                  1
+              )
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+      - name: Add regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tests/jra-horse-identity-market-mark-v1.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+          const normalizer = fs.readFileSync(new URL('../jra-normalizer.js', import.meta.url), 'utf8');
+          const viewer = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+          const raceFetch = fs.readFileSync(new URL('../jra-race-fetch.mjs', import.meta.url), 'utf8');
+          const oddsFetch = fs.readFileSync(new URL('../jra-odds-fetch.mjs', import.meta.url), 'utf8');
+
+          test('official JRA parsers retain horseNo as the identity key', () => {
+            assert.match(raceFetch, /horses\.push\(\{horseNo:no/);
+            assert.match(oddsFetch, /odds\.push\(\{horseNo,odds:winOdds,popularity\}\)/);
+          });
+
+          test('JRA normalizer never invents horseNo from array index', () => {
+            assert.match(normalizer, /function requiredJraHorseNo/);
+            assert.match(normalizer, /JRA_HORSE_NO_REQUIRED/);
+            assert.doesNotMatch(normalizer, /horseNo:numberOrNull\(horse\.horseNo\?\?horse\.horse_no\)\?\?index\+1/);
+          });
+
+          test('generic transform fails closed for missing JRA horseNo', () => {
+            assert.match(app, /function canonicalInputHorseNo\(h,i,race=\{\}\)/);
+            assert.match(app, /JRA_HORSE_NO_REQUIRED/);
+            assert.match(app, /horseNo:canonicalInputHorseNo\(h,i,r\)/);
+          });
+
+          test('JRA odds are blocked when horse identity sets disagree', () => {
+            assert.match(app, /function assertJraMarketIdentity\(items=\[\]\)/);
+            assert.match(app, /JRA_HORSE_IDENTITY_MISMATCH/);
+            assert.match(app, /assertJraMarketIdentity\(items\)/);
+          });
+
+          test('JRA ability marks use displayed overall ability ordering', () => {
+            assert.match(app, /function abilityMarks\(horses,race=\{\}\)/);
+            assert.match(app, /const overall=value\(b\.overall\)-value\(a\.overall\)/);
+            assert.match(app, /\['◎','○','▲','△'\]/);
+          });
+
+          test('viewer prefers resolved race-detail identity and rebuilds mark order', () => {
+            assert.match(viewer, /horseNo: full\.horseNo \?\? horse\.horseNo/);
+            assert.match(viewer, /function normalizeAbilityMarkOrder\(race\)/);
+            assert.match(viewer, /Number\(b\.abilityScore\) - Number\(a\.abilityScore\)/);
+            assert.match(viewer, /const marks = \['◎', '○', '▲', '△'\]/);
+          });
+          EOF
+
+      - name: Install MCP test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix mcp
+
+      - name: Static and regression checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check app.js
+          node --check jra-normalizer.js
+          node --check viewer/viewer-app.js
+          node --test tests/jra-horse-identity-market-mark-v1.test.mjs
+
+          for t in \
+            tests/viewer-horse-identity-v365.test.mjs \
+            tests/viewer-ability-mark-order-v363.test.mjs \
+            tests/viewer-ability-rank-ev-v364.test.mjs \
+            tests/market-ev-consistency.test.mjs
+          do
+            if [ -f "$t" ]; then node --test "$t"; fi
+          done
+
+          npm run check
+
+      - name: Verify patch scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- app.js jra-normalizer.js viewer/viewer-app.js tests/jra-horse-identity-market-mark-v1.test.mjs
+
+          test "$(git diff --name-only | grep -E '^(jra-model\.js|worker\.js|migrations/|nar-|result-|jra-result-fetch\.mjs)' | wc -l | tr -d ' ')" = "0"
+
+      - name: Extract existing fail-closed canonical D1 repair tool
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scripts artifacts/jra-identity-v1
+
+          python - <<'PY'
+          from pathlib import Path
+
+          wf = Path(".github/workflows/CHASS-JRA-Canonical-Horse-Identity-v3.6.6.1.yml").read_text(encoding="utf-8")
+          marker = "cat > scripts/repair-jra-horse-identity.mjs <<'EOF'"
+          start = wf.find(marker)
+          if start < 0:
+              raise SystemExit("existing canonical repair tool marker not found")
+          body_start = wf.find("\n", start) + 1
+          end_marker = "\n          EOF"
+          end = wf.find(end_marker, body_start)
+          if end < 0:
+              raise SystemExit("existing canonical repair tool end marker not found")
+          block = wf[body_start:end]
+          lines = []
+          for line in block.splitlines():
+              if line.startswith("          "):
+                  line = line[10:]
+              lines.append(line)
+          target = Path("scripts/repair-jra-horse-identity.mjs")
+          target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+          node --check scripts/repair-jra-horse-identity.mjs
+          grep -Fq "createJraRaceService" scripts/repair-jra-horse-identity.mjs
+          grep -Fq "createJraOddsService" scripts/repair-jra-horse-identity.mjs
+          grep -Fq "officialMatch" scripts/repair-jra-horse-identity.mjs
+          grep -Fq "horse_no=-(horse_no+1000)" scripts/repair-jra-horse-identity.mjs
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Refresh authoritative JRA race cache for repair scope
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/jra-official-refresh.mjs \
+            --date="$REPAIR_DATE" \
+            --track="$REPAIR_TRACK" \
+            --race=0 \
+            --out=/tmp/jra-identity-race-cache.sql \
+            --summary=artifacts/jra-identity-v1/official-race-refresh.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-identity-race-cache.sql
+
+      - name: Refresh authoritative JRA odds cache where available
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE' > /tmp/races-to-refresh.txt
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('artifacts/jra-identity-v1/official-race-refresh.json','utf8'));
+          for (const r of x.successes || []) console.log(r.race);
+          NODE
+
+          : > artifacts/jra-identity-v1/odds-refresh.log
+          while read -r RACE; do
+            [ -n "$RACE" ] || continue
+            echo "refresh odds: ${REPAIR_TRACK} ${RACE}R" | tee -a artifacts/jra-identity-v1/odds-refresh.log
+            if node scripts/jra-official-odds-refresh.mjs \
+              --date="$REPAIR_DATE" \
+              --track="$REPAIR_TRACK" \
+              --race="$RACE" \
+              --out="/tmp/jra-identity-odds-${RACE}.sql" \
+              --summary="/tmp/jra-identity-odds-${RACE}.json"
+            then
+              npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+                --remote \
+                --file="/tmp/jra-identity-odds-${RACE}.sql"
+              cat "/tmp/jra-identity-odds-${RACE}.json" >> artifacts/jra-identity-v1/odds-refresh.log
+              echo >> artifacts/jra-identity-v1/odds-refresh.log
+            else
+              echo "odds unavailable for ${RACE}R; canonical repair tool will use available official source/cache" \
+                | tee -a artifacts/jra-identity-v1/odds-refresh.log
+            fi
+          done < /tmp/races-to-refresh.txt
+
+      - name: Export current JRA rows for repair plan
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$REPAIR_TRACK" in
+            札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉) ;;
+            *) echo "::error::Unsupported JRA track: $REPAIR_TRACK"; exit 1 ;;
+          esac
+          [[ "$REPAIR_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+
+          RACE_PREFIX="${REPAIR_DATE}|${REPAIR_TRACK}|%"
+          RACE_CACHE_PREFIX="race|${REPAIR_DATE}|${REPAIR_TRACK}|%"
+          ODDS_CACHE_PREFIX="odds|${REPAIR_DATE}|${REPAIR_TRACK}|%"
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT race_id,model_version,race_json,prediction_json,market_json,final_json FROM races WHERE race_id LIKE '${RACE_PREFIX}' ORDER BY updated_at DESC" \
+            > artifacts/jra-identity-v1/before-races.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT race_id,model_version,horse_no,horse_name,ai_win_rate,ai_place_rate,overall,predicted_time,popularity,odds,expected_value,snapshot_json FROM predictions WHERE race_id LIKE '${RACE_PREFIX}' ORDER BY race_id,model_version,horse_no" \
+            > artifacts/jra-identity-v1/before-predictions.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT kind,cache_key,payload_json,fetched_at,expires_at FROM jra_official_cache WHERE cache_key LIKE '${RACE_CACHE_PREFIX}' OR cache_key LIKE '${ODDS_CACHE_PREFIX}'" \
+            > artifacts/jra-identity-v1/official-cache.json
+
+      - name: Build fail-closed D1 canonical repair plan
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node scripts/repair-jra-horse-identity.mjs \
+            --mode=plan \
+            --date="$REPAIR_DATE" \
+            --track="$REPAIR_TRACK" \
+            --races=artifacts/jra-identity-v1/before-races.json \
+            --predictions=artifacts/jra-identity-v1/before-predictions.json \
+            --cache=artifacts/jra-identity-v1/official-cache.json \
+            --sql=artifacts/jra-identity-v1/repair.sql \
+            --report=artifacts/jra-identity-v1/plan-report.json
+
+          test -s artifacts/jra-identity-v1/repair.sql
+
+          if grep -Eiq '(^|;)[[:space:]]*(BEGIN([[:space:]]+TRANSACTION)?|COMMIT|SAVEPOINT|RELEASE)([[:space:]]|;|$)' artifacts/jra-identity-v1/repair.sql; then
+            echo "::error::Repair SQL contains an unsupported explicit transaction."
+            exit 1
+          fi
+
+      - name: Commit targeted source guard
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app.js jra-normalizer.js viewer/viewer-app.js tests/jra-horse-identity-market-mark-v1.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Source guard already applied."
+          else
+            git commit -m "Fix JRA horse identity, popularity join, and mark order"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy production
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Apply canonical identity repair to remote D1
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote \
+            --file=artifacts/jra-identity-v1/repair.sql
+
+      - name: Query repaired D1 data
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RACE_PREFIX="${REPAIR_DATE}|${REPAIR_TRACK}|%"
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT race_id,model_version,race_json,prediction_json,market_json,final_json FROM races WHERE race_id LIKE '${RACE_PREFIX}' ORDER BY updated_at DESC" \
+            > artifacts/jra-identity-v1/after-races.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT race_id,model_version,horse_no,horse_name,ai_win_rate,ai_place_rate,overall,predicted_time,popularity,odds,expected_value,snapshot_json FROM predictions WHERE race_id LIKE '${RACE_PREFIX}' ORDER BY race_id,model_version,horse_no" \
+            > artifacts/jra-identity-v1/after-predictions.json
+
+      - name: Verify repaired horse identity
+        if: ${{ inputs.mode == 'apply_and_deploy' && inputs.repair_existing_d1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node scripts/repair-jra-horse-identity.mjs \
+            --mode=verify \
+            --date="$REPAIR_DATE" \
+            --track="$REPAIR_TRACK" \
+            --races=artifacts/jra-identity-v1/after-races.json \
+            --predictions=artifacts/jra-identity-v1/after-predictions.json \
+            --cache=artifacts/jra-identity-v1/official-cache.json \
+            --report=artifacts/jra-identity-v1/verify-report.json
+
+      - name: Production static smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PASS=0
+          for DELAY in 0 3 8 15; do
+            [ "$DELAY" -eq 0 ] || sleep "$DELAY"
+
+            APP="$(curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/app.js" || true)"
+            VIEWER="$(curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/viewer/viewer-app.js" || true)"
+            NORMALIZER="$(curl -fsS --max-time 20 "$PRODUCTION_BASE_URL/jra-normalizer.js" || true)"
+
+            if printf '%s' "$APP" | grep -Fq "JRA_HORSE_IDENTITY_MISMATCH" \
+              && printf '%s' "$APP" | grep -Fq "canonicalInputHorseNo" \
+              && printf '%s' "$VIEWER" | grep -Fq "normalizeAbilityMarkOrder" \
+              && printf '%s' "$NORMALIZER" | grep -Fq "requiredJraHorseNo"
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production static smoke failed."
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Horse Identity + Market + Mark Hotfix v1.1"
+            echo
+            echo "- Mode: ${{ inputs.mode }}"
+            echo "- Baseline: ${{ steps.base.outputs.sha }}"
+            echo "- Source scope: app.js / jra-normalizer.js / viewer/viewer-app.js / one regression test"
+            echo "- Official JRA race parser: unchanged"
+            echo "- Official JRA odds parser: unchanged"
+            echo "- JRA model probability logic: unchanged"
+            echo "- NAR: unchanged"
+            echo "- Result pipeline: unchanged"
+            echo "- v1.1: MCP test dependencies are installed before npm run check"
+            echo "- JRA horseNo array-index fallback: removed"
+            echo "- JRA odds/popularity wrong-horse join: fail-closed"
+            echo "- Viewer race-detail horse identity: authoritative detail preferred"
+            echo "- Viewer ◎○▲△: rebuilt from displayed ability score order"
+            echo "- D1 repair scope: ${REPAIR_DATE} ${REPAIR_TRACK}"
+            echo "- Existing D1 repair requested: ${{ inputs.repair_existing_d1 }}"
+          } >> "$GITHUB_STEP_SUMMARY"
