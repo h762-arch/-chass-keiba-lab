@@ -551,12 +551,19 @@ function marketStatus(race) {
   const finalCount = active.filter(
     (horse) => horse.odds != null && horse.marketStatus === 'final',
   ).length;
+  const savedCount = active.filter(
+    (horse) => horse.odds != null && horse.marketStatus === 'saved',
+  ).length;
   const staleCount = active.filter((horse) => horse.marketStatus === 'stale').length;
 
   if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
   if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
   if (finalCount === active.length && active.length > 0) {
     return { text: '確定市場 反映済み', state: 'ready' };
+  }
+  if (savedCount > 0) {
+    const suffix = withOdds === active.length ? '' : ` ${withOdds}/${active.length}`;
+    return { text: `保存市場${suffix}`, state: 'stale' };
   }
   if (withOdds < active.length) {
     return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };

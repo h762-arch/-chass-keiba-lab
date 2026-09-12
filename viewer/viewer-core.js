@@ -299,22 +299,27 @@ export function sanitizeViewerMarketPayload(payload = {}) {
             const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
             const baseOdds = finiteOrNull(horse.odds);
             const basePopularity = finiteOrNull(horse.popularity);
+            const overlayOdds = overlayUsable ? finiteOrNull(overlay?.odds) : null;
+            const overlayPopularity = overlayUsable ? finiteOrNull(overlay?.popularity) : null;
+            const fallbackToSaved = Boolean(overlay) && !overlayUsable && baseOdds != null;
 
             return {
               horseNo,
               horseName,
               abilityRank: finiteOrNull(horse.abilityRank),
               abilityScore: finiteOrNull(horse.score),
-              odds: overlay ? (overlayUsable ? finiteOrNull(overlay.odds) : null) : baseOdds,
-              popularity: overlay
-                ? (overlayUsable ? finiteOrNull(overlay.popularity) : null)
-                : basePopularity,
+              odds: overlayOdds ?? baseOdds,
+              popularity: overlayPopularity ?? basePopularity,
               expectedValue: finiteOrNull(horse.expectedValue),
               longshotMark: textOrNull(horse.diamond),
               dangerMark: textOrNull(horse.warning),
-              marketStatus: overlayStatus,
+              marketStatus: overlayUsable
+                ? overlayStatus
+                : (fallbackToSaved ? 'saved' : overlayStatus),
               marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
-              marketDataSource: textOrNull(overlay?.marketDataSource),
+              marketDataSource: overlayUsable
+                ? textOrNull(overlay?.marketDataSource)
+                : (fallbackToSaved ? 'saved_snapshot_fallback' : textOrNull(overlay?.marketDataSource)),
             };
           })
         : [],
