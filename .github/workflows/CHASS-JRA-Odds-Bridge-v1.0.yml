@@ -1,0 +1,868 @@
+name: CHASS JRA Odds Bridge v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      bootstrap_date:
+        description: "検証する日付 (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-12"
+        type: string
+      bootstrap_track:
+        description: "検証する競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      bootstrap_race:
+        description: "検証するレース番号"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-odds-bridge-v10
+  cancel-in-progress: false
+
+jobs:
+  odds_bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $BASE"
+
+      - name: Safety guard - current production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f .assetsignore
+          test -f jra-official-cache.mjs
+          test -f jra-race-fetch.mjs
+          test -f jra-odds-fetch.mjs
+          test -f scripts/jra-official-refresh.mjs
+          test -f wrangler.jsonc
+
+          # Refuse to overwrite if reviewed files changed after this package was built.
+          test "$(git hash-object jra-official-cache.mjs)" = "e42f5cdc5057f47483b474c5b6ea58a861b32189"
+          test "$(git hash-object jra-odds-fetch.mjs)" = "dc24cb27aa68605ad5c12b5e48cb485489a9c256"
+          test "$(git hash-object scripts/jra-official-refresh.mjs)" = "688e5bd7b8d1bbd1f474d66e9e595b9eee51a59f"
+          test "$(git hash-object wrangler.jsonc)" = "d8bd989c01bbab48daf3bb842f8b49e0485a4dbc"
+          test "$(git hash-object .assetsignore)" = "7b490721d5ef57f316c5e72e3236d99f59d10a23"
+
+          grep -Fq '"ENABLE_JRA_DIRECT_FETCH": "false"' wrangler.jsonc
+          grep -Fq '"ENABLE_JRA_ODDS_FETCH": "true"' wrangler.jsonc
+          grep -Fq "github_actions_d1" jra-official-cache.mjs
+
+          echo "Current JRA race bridge baseline: PASS"
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Build isolated odds bridge candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-odds-v10
+          git worktree add --detach /tmp/chass-jra-odds-v10 HEAD
+          cd /tmp/chass-jra-odds-v10
+
+          # ------------------------------------------------------------
+          # 1) Add odds cache reader beside the already-proven race reader.
+          # ------------------------------------------------------------
+          cat >> jra-official-cache.mjs <<'EOF'
+
+          const oddsKey = (date, track, race) => `odds|${date}|${track}|${Number(race)}`;
+
+          export async function readJraOfficialOddsCache(env, { date, track, race, nowMs = Date.now() } = {}) {
+            const DB = env?.DB;
+            if (!DB?.prepare) return null;
+
+            let row;
+            try {
+              row = await DB.prepare(
+                `SELECT payload_json,source_url,fetched_at,expires_at,parser_version,content_hash
+                   FROM jra_official_cache
+                  WHERE kind='odds' AND cache_key=?`
+              ).bind(oddsKey(date, track, race)).first();
+            } catch (error) {
+              if (/no such table/i.test(String(error?.message || error))) return null;
+              throw error;
+            }
+
+            if (!row) return null;
+
+            const expiresMs = Date.parse(row.expires_at || '');
+            if (!Number.isFinite(expiresMs) || expiresMs <= Number(nowMs)) return null;
+
+            let body;
+            try {
+              body = JSON.parse(row.payload_json || '');
+            } catch {
+              throw Object.assign(new Error('JRA_ODDS_CACHE_CORRUPT'), { code: 'JRA_ODDS_CACHE_CORRUPT' });
+            }
+
+            if (
+              !body?.ok ||
+              body?.organization !== 'JRA' ||
+              !Array.isArray(body?.odds) ||
+              Number(body?.quality?.oddsHorseCount) < 1
+            ) {
+              throw Object.assign(new Error('JRA_ODDS_CACHE_CORRUPT'), { code: 'JRA_ODDS_CACHE_CORRUPT' });
+            }
+
+            return {
+              body: {
+                ...body,
+                bridgeCache: {
+                  provider: 'github_actions_d1',
+                  kind: 'odds',
+                  fetchedAt: row.fetched_at,
+                  expiresAt: row.expires_at,
+                  contentHash: row.content_hash || null
+                }
+              }
+            };
+          }
+          EOF
+
+          # ------------------------------------------------------------
+          # 2) Make /api/jra/odds cache-first.
+          #    Direct Cloudflare -> JRA odds fetch is disabled in production.
+          # ------------------------------------------------------------
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'jra-odds-fetch.mjs';
+          let src = fs.readFileSync(file, 'utf8');
+
+          const importAnchor = "import {resolveRaceCardUrl,parseJraRaceCard} from './jra-race-fetch.mjs';";
+          if (!src.includes(importAnchor)) throw new Error('odds import anchor missing');
+
+          src = src.replace(
+            importAnchor,
+            importAnchor + "\nimport {readJraOfficialOddsCache} from './jra-official-cache.mjs';"
+          );
+
+          const gate =
+            "  if(!(env.ENABLE_JRA_ODDS_FETCH===true||env.ENABLE_JRA_ODDS_FETCH==='true'))return send({ok:false,error:'JRA_ODDS_FETCH_DISABLED'},503);";
+
+          if (!src.includes(gate)) throw new Error('odds feature gate anchor missing');
+
+          const bridge = `
+            if(env?.DB){
+              try{
+                const cached=await readJraOfficialOddsCache(env,{date,track,race,nowMs:now()});
+                if(cached)return send(cached.body,200,'D1-HIT');
+              }catch(error){
+                return send({
+                  ok:false,
+                  organization:'JRA',
+                  date,track,race,
+                  error:error?.code||'JRA_ODDS_CACHE_READ_FAILED'
+                },503,'D1-ERROR');
+              }
+
+              const allowDirect =
+                env.ENABLE_JRA_ODDS_DIRECT_FETCH===true ||
+                env.ENABLE_JRA_ODDS_DIRECT_FETCH==='true';
+
+              if(!allowDirect){
+                return send({
+                  ok:false,
+                  organization:'JRA',
+                  date,track,race,
+                  error:'JRA_ODDS_CACHE_MISS',
+                  cacheProvider:'github_actions_d1',
+                  hint:'Run JRA odds cache refresh'
+                },503,'D1-MISS');
+              }
+            }
+          `;
+
+          src = src.replace(gate, gate + bridge);
+          fs.writeFileSync(file, src);
+
+          const cfgFile = 'wrangler.jsonc';
+          const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+          cfg.vars = cfg.vars || {};
+          cfg.vars.ENABLE_JRA_ODDS_FETCH = 'true';
+          cfg.vars.ENABLE_JRA_ODDS_DIRECT_FETCH = 'false';
+          fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n');
+          NODE
+
+          # ------------------------------------------------------------
+          # 3) Runner-side official odds fetcher.
+          #    It reuses the proven race navigation to obtain sourceUrl,
+          #    then parses JRA win odds from the official card page.
+          # ------------------------------------------------------------
+          cat > scripts/jra-official-odds-refresh.mjs <<'EOF'
+          import { createHash } from 'node:crypto';
+          import fs from 'node:fs';
+          import { createJraRaceService } from '../jra-race-fetch.mjs';
+          import { parseJraWinOdds } from '../jra-odds-fetch.mjs';
+
+          function args() {
+            const out = {};
+            for (const item of process.argv.slice(2)) {
+              const m = /^--([^=]+)=(.*)$/.exec(item);
+              if (m) out[m[1]] = m[2];
+            }
+            return out;
+          }
+
+          function sqlText(value) {
+            if (value === null || value === undefined) return 'NULL';
+            return `CAST(X'${Buffer.from(String(value), 'utf8').toString('hex')}' AS TEXT)`;
+          }
+
+          async function readOfficialText(url) {
+            const response = await fetch(url, {
+              method: 'GET',
+              headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'ja,en-US;q=0.7,en;q=0.5',
+                'Cache-Control': 'no-cache',
+                'Referer': 'https://www.jra.go.jp/'
+              },
+              redirect: 'error'
+            });
+
+            if (!response.ok) throw new Error(response.status === 404 ? 'JRA_RACE_NOT_FOUND' : 'JRA_HTTP_ERROR');
+
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            if (bytes.length > 2_097_152) throw new Error('JRA_ODDS_PARSE_ERROR');
+
+            const hint = new TextDecoder().decode(bytes.slice(0, 4096));
+            const encoding = /shift[_-]?jis|sjis/i.test(
+              (response.headers.get('content-type') || '') + ' ' + hint
+            ) ? 'shift-jis' : 'utf-8';
+
+            return new TextDecoder(encoding).decode(bytes);
+          }
+
+          const a = args();
+          const date = a.date || '';
+          const track = a.track || '';
+          const race = Number(a.race || 0);
+          const sqlOut = a.out || '/tmp/jra-odds-cache.sql';
+          const summaryOut = a.summary || '/tmp/jra-odds-cache-summary.json';
+
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('invalid date');
+          if (!track) throw new Error('invalid track');
+          if (!Number.isInteger(race) || race < 1 || race > 12) throw new Error('invalid race');
+
+          const raceService = createJraRaceService({ timeoutMs: 20000 });
+          const q = new URLSearchParams({ date, track, race: String(race) });
+
+          const raceResponse = await raceService(
+            new Request(`https://runner.invalid/api/jra/race?${q}`),
+            { ENABLE_JRA_AUTO_FETCH: false }
+          );
+          const raceBody = await raceResponse.json();
+
+          if (
+            !raceResponse.ok ||
+            !raceBody?.ok ||
+            !raceBody?.sourceUrl ||
+            raceBody?.dataConfidence !== 'high'
+          ) {
+            throw new Error(raceBody?.error || 'JRA_RACE_SOURCE_UNAVAILABLE');
+          }
+
+          const html = await readOfficialText(raceBody.sourceUrl);
+          const parsed = parseJraWinOdds(html, { date, track, race });
+
+          if (
+            !Array.isArray(parsed?.odds) ||
+            Number(parsed?.quality?.oddsHorseCount) < 1
+          ) {
+            throw new Error('JRA_ODDS_UNAVAILABLE');
+          }
+
+          const acquiredAt = new Date().toISOString();
+          const isFinal = parsed.oddsSnapshotType === 'final';
+          const expiresAt = new Date(
+            Date.parse(acquiredAt) + (isFinal ? 24 * 60 * 60 * 1000 : 20 * 60 * 1000)
+          ).toISOString();
+
+          const body = {
+            ok: true,
+            ...parsed,
+            sourceUrl: raceBody.sourceUrl,
+            acquiredAt
+          };
+
+          const payload = JSON.stringify(body);
+          const hash = createHash('sha256').update(payload).digest('hex');
+          const key = `odds|${date}|${track}|${race}`;
+
+          const sql =
+            `INSERT INTO jra_official_cache ` +
+            `(kind,cache_key,organization,race_date,track,race_no,payload_json,source_url,fetched_at,expires_at,parser_version,content_hash,updated_at) VALUES (` +
+            `'odds',${sqlText(key)},'JRA',${sqlText(date)},${sqlText(track)},${race},` +
+            `${sqlText(payload)},${sqlText(raceBody.sourceUrl)},${sqlText(acquiredAt)},${sqlText(expiresAt)},` +
+            `${sqlText(parsed.parserVersion || null)},${sqlText(hash)},${sqlText(acquiredAt)}) ` +
+            `ON CONFLICT(cache_key) DO UPDATE SET ` +
+            `payload_json=excluded.payload_json,source_url=excluded.source_url,fetched_at=excluded.fetched_at,` +
+            `expires_at=excluded.expires_at,parser_version=excluded.parser_version,` +
+            `content_hash=excluded.content_hash,updated_at=excluded.updated_at;`;
+
+          fs.writeFileSync(sqlOut, sql + '\n');
+
+          const summary = {
+            ok: true,
+            date,
+            track,
+            race,
+            activeHorseCount: Number(parsed.quality?.activeHorseCount || 0),
+            oddsHorseCount: Number(parsed.quality?.oddsHorseCount || 0),
+            oddsCoverage: Number(parsed.quality?.oddsCoverage || 0),
+            complete: parsed.quality?.complete === true,
+            oddsSnapshotType: parsed.oddsSnapshotType,
+            acquiredAt,
+            expiresAt,
+            contentHash: hash,
+            sourceUrl: raceBody.sourceUrl
+          };
+
+          fs.writeFileSync(summaryOut, JSON.stringify(summary, null, 2));
+          console.log(JSON.stringify(summary, null, 2));
+          EOF
+
+          # ------------------------------------------------------------
+          # 4) Regression tests for odds D1 bridge.
+          # ------------------------------------------------------------
+          cat > tests/jra-odds-cache-bridge.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { createJraOddsService } from '../jra-odds-fetch.mjs';
+
+          function fakeDb(row) {
+            return {
+              prepare() {
+                return {
+                  bind() {
+                    return {
+                      async first() {
+                        return row;
+                      }
+                    };
+                  }
+                };
+              }
+            };
+          }
+
+          const cachedBody = {
+            ok: true,
+            organization: 'JRA',
+            date: '2026-09-12',
+            track: '中山',
+            race: 1,
+            odds: [
+              { horseNo: 1, odds: 4.5, popularity: 2 },
+              { horseNo: 2, odds: 3.1, popularity: 1 }
+            ],
+            quality: {
+              activeHorseCount: 2,
+              oddsHorseCount: 2,
+              oddsCoverage: 1,
+              complete: true
+            },
+            oddsSnapshotType: 'live',
+            source: 'JRA_OFFICIAL',
+            marketDataSource: 'JRA_OFFICIAL_WIN_ODDS',
+            parserVersion: 'test'
+          };
+
+          test('JRA odds service returns fresh D1 odds without outbound fetch', async () => {
+            const service = createJraOddsService({
+              fetchImpl: async () => {
+                throw new Error('outbound fetch must not run');
+              },
+              now: () => Date.parse('2026-09-12T04:00:00Z')
+            });
+
+            const response = await service(
+              new Request('https://local.invalid/api/jra/odds?date=2026-09-12&track=%E4%B8%AD%E5%B1%B1&race=1'),
+              {
+                DB: fakeDb({
+                  payload_json: JSON.stringify(cachedBody),
+                  source_url: 'https://www.jra.go.jp/',
+                  fetched_at: '2026-09-12T03:59:00Z',
+                  expires_at: '2026-09-12T04:20:00Z',
+                  parser_version: 'test',
+                  content_hash: 'abc'
+                }),
+                ENABLE_JRA_ODDS_FETCH: 'true',
+                ENABLE_JRA_ODDS_DIRECT_FETCH: 'false'
+              }
+            );
+
+            assert.equal(response.status, 200);
+            assert.equal(response.headers.get('X-CHASS-JRA-Odds-Cache'), 'D1-HIT');
+
+            const body = await response.json();
+            assert.equal(body.ok, true);
+            assert.equal(body.bridgeCache.provider, 'github_actions_d1');
+            assert.equal(body.bridgeCache.kind, 'odds');
+            assert.equal(body.quality.oddsHorseCount, 2);
+          });
+
+          test('JRA odds service fails closed on D1 miss when direct fetch is disabled', async () => {
+            const service = createJraOddsService({
+              fetchImpl: async () => {
+                throw new Error('outbound fetch must not run');
+              },
+              now: () => Date.parse('2026-09-12T04:00:00Z')
+            });
+
+            const response = await service(
+              new Request('https://local.invalid/api/jra/odds?date=2026-09-12&track=%E4%B8%AD%E5%B1%B1&race=1'),
+              {
+                DB: fakeDb(null),
+                ENABLE_JRA_ODDS_FETCH: 'true',
+                ENABLE_JRA_ODDS_DIRECT_FETCH: 'false'
+              }
+            );
+
+            assert.equal(response.status, 503);
+            const body = await response.json();
+            assert.equal(body.error, 'JRA_ODDS_CACHE_MISS');
+          });
+          EOF
+
+          # Exact candidate scope audit.
+          git status --porcelain=v1 -uall
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/odds-actual.txt
+
+          cat > /tmp/odds-allowed.txt <<'EOF'
+          jra-odds-fetch.mjs
+          jra-official-cache.mjs
+          scripts/jra-official-odds-refresh.mjs
+          tests/jra-odds-cache-bridge.test.mjs
+          wrangler.jsonc
+          EOF
+
+          sort -o /tmp/odds-allowed.txt /tmp/odds-allowed.txt
+          if ! diff -u /tmp/odds-allowed.txt /tmp/odds-actual.txt; then
+            echo "::error::Odds bridge candidate scope mismatch. Nothing was applied."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-odds-v10
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Syntax + odds bridge tests + full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-odds-v10
+
+          node --check jra-official-cache.mjs
+          node --check jra-odds-fetch.mjs
+          node --check scripts/jra-official-odds-refresh.mjs
+
+          node --test \
+            tests/jra-odds-cache-bridge.test.mjs \
+            tests/jra-j4.test.mjs
+
+          npm run check
+
+      - name: GitHub Runner official odds bootstrap smoke
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-odds-v10
+
+          node scripts/jra-official-odds-refresh.mjs \
+            --date="$BOOTSTRAP_DATE" \
+            --track="$BOOTSTRAP_TRACK" \
+            --race="$BOOTSTRAP_RACE" \
+            --out=/tmp/jra-odds-bootstrap.sql \
+            --summary=/tmp/jra-odds-bootstrap.json
+
+          if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-odds-bootstrap.sql; then
+            echo "::error::Generated odds SQL contains an explicit transaction statement."
+            exit 1
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-odds-bootstrap.json','utf8'));
+          if (x.ok !== true) throw new Error('odds bootstrap failed');
+          if (x.oddsHorseCount < 2) throw new Error('too few JRA win odds');
+          if (x.activeHorseCount < x.oddsHorseCount) throw new Error('odds count exceeds active horse count');
+          if (x.oddsCoverage <= 0) throw new Error('odds coverage invalid');
+          console.log(JSON.stringify(x, null, 2));
+          NODE
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Odds Bridge v1.0 - VALIDATION SUCCESS"
+            echo
+            echo "- Existing JRA race D1 bridge: KEPT"
+            echo "- GitHub Runner -> JRA official win odds: PASS"
+            echo "- Odds D1 bridge unit tests: PASS"
+            echo "- Full regression: PASS"
+            echo "- Production commit: NOT PERFORMED"
+            echo "- D1 odds write: NOT PERFORMED"
+            echo "- Production deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun this workflow with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced during validation. Nothing will be applied."
+            exit 1
+          fi
+
+      - name: Apply odds bridge source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: odds_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-odds-v10/jra-official-cache.mjs jra-official-cache.mjs
+          cp /tmp/chass-jra-odds-v10/jra-odds-fetch.mjs jra-odds-fetch.mjs
+          cp /tmp/chass-jra-odds-v10/wrangler.jsonc wrangler.jsonc
+          mkdir -p scripts
+          cp /tmp/chass-jra-odds-v10/scripts/jra-official-odds-refresh.mjs scripts/jra-official-odds-refresh.mjs
+          cp /tmp/chass-jra-odds-v10/tests/jra-odds-cache-bridge.test.mjs tests/jra-odds-cache-bridge.test.mjs
+
+          # Protect unrelated surfaces.
+          git diff --quiet -- \
+            worker.js \
+            app.js \
+            jra-race-fetch.mjs \
+            jra-race-client.js \
+            jra-result-fetch.mjs \
+            viewer/ \
+            migrations/ \
+            mcp/ \
+            .github/workflows/ || {
+              echo "::error::Unexpected unrelated surface changed."
+              exit 1
+            }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-official-cache.mjs \
+            jra-odds-fetch.mjs \
+            wrangler.jsonc \
+            scripts/jra-official-odds-refresh.mjs \
+            tests/jra-odds-cache-bridge.test.mjs
+
+          git commit -m "Route JRA win odds through GitHub Runner and D1 cache"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap official JRA odds cache in D1
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          node scripts/jra-official-odds-refresh.mjs \
+            --date="$BOOTSTRAP_DATE" \
+            --track="$BOOTSTRAP_TRACK" \
+            --race="$BOOTSTRAP_RACE" \
+            --out=/tmp/jra-odds-production.sql \
+            --summary=/tmp/jra-odds-production.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-odds-production.sql
+
+      - name: Verify D1 odds row
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          KEY="odds|$BOOTSTRAP_DATE|$BOOTSTRAP_TRACK|$BOOTSTRAP_RACE"
+
+          OUTPUT="$(npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,organization,race_date,track,race_no,fetched_at,expires_at,length(payload_json) AS payload_bytes FROM jra_official_cache WHERE kind='odds' AND cache_key='$KEY';" 2>&1)"
+
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -Fq "\"cache_key\": \"$KEY\""
+          echo "$OUTPUT" | grep -Fq '"organization": "JRA"'
+
+      - name: Deploy odds bridge
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production odds D1-HIT smoke with retry
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          LAST_CODE="000"
+
+          for DELAY in 0 2 5 10 20; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            : > /tmp/jra-odds-api.json
+            : > /tmp/jra-odds-api.headers
+
+            CODE="$(curl -sS --max-time 20 \
+              -D /tmp/jra-odds-api.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/odds" \
+              --data-urlencode "date=$BOOTSTRAP_DATE" \
+              --data-urlencode "track=$BOOTSTRAP_TRACK" \
+              --data-urlencode "race=$BOOTSTRAP_RACE" \
+              -o /tmp/jra-odds-api.json \
+              -w '%{http_code}' || true)"
+
+            LAST_CODE="${CODE:-000}"
+            echo "Odds bridge probe -> HTTP $LAST_CODE"
+            grep -iE '^(HTTP/|x-chass-jra-odds-cache:|cf-ray:|server:)' /tmp/jra-odds-api.headers || true
+            cat /tmp/jra-odds-api.json || true
+            echo
+
+            if [ "$LAST_CODE" != "200" ]; then
+              continue
+            fi
+
+            if node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-odds-api.json','utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (!Array.isArray(x.odds) || x.odds.length < 2) process.exit(1);
+          if (Number(x.quality?.oddsHorseCount) < 2) process.exit(1);
+          if (x.bridgeCache?.provider !== 'github_actions_d1') process.exit(1);
+          if (x.bridgeCache?.kind !== 'odds') process.exit(1);
+          NODE
+            then
+              if grep -qi '^x-chass-jra-odds-cache: D1-HIT' /tmp/jra-odds-api.headers; then
+                PASS=1
+                break
+              fi
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production JRA odds bridge did not become healthy. Last HTTP: $LAST_CODE"
+            exit 1
+          fi
+
+          echo "Production JRA odds D1 bridge: PASS"
+
+      - name: Regression smoke - race bridge and public health remain healthy
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          curl -fsS --max-time 20 --get "$PRODUCTION_BASE_URL/api/jra/race" \
+            --data-urlencode "date=$BOOTSTRAP_DATE" \
+            --data-urlencode "track=$BOOTSTRAP_TRACK" \
+            --data-urlencode "race=$BOOTSTRAP_RACE" \
+            -D /tmp/jra-race-regression.headers \
+            -o /tmp/jra-race-regression.json
+
+          grep -qi '^x-chass-jra-race-cache: D1-HIT' /tmp/jra-race-regression.headers
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-race-regression.json','utf8'));
+          if (x.ok !== true) throw new Error(x.error || 'race bridge regression');
+          if (x.bridgeCache?.provider !== 'github_actions_d1') throw new Error('race D1 bridge provider missing');
+          NODE
+
+          curl -fsS --max-time 15 \
+            "$PRODUCTION_BASE_URL/api/chass/v1/public/health" \
+            -o /tmp/health-odds-v10.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/health-odds-v10.json','utf8'));
+          if (x.ok !== true) throw new Error('public health failed');
+          NODE
+
+          for path in "/.git/config" "/worker.js" "/wrangler.jsonc" "/jra-odds-fetch.mjs" "/scripts/jra-official-odds-refresh.mjs"; do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive internal file became public: $path"
+              exit 1
+            fi
+          done
+
+      - name: Roll back odds bridge on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.odds_commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.odds_commit.outputs.sha }}"
+          STATUS=$?
+
+          if [ "$STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+            if npx -y wrangler@4 deploy; then
+              echo "Odds bridge rollback and redeploy: SUCCESS"
+              exit 0
+            fi
+            echo "::error::Odds source reverted, but baseline redeploy failed."
+            exit 1
+          fi
+
+          echo "::error::Automatic odds bridge revert failed."
+          exit 1
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Odds Bridge v1.0 - PRODUCTION SUCCESS"
+            echo
+            echo "- GitHub Runner -> JRA official win odds: PASS"
+            echo "- JRA odds stored in existing D1 official cache: PASS"
+            echo "- Production /api/jra/odds -> D1-HIT: PASS"
+            echo "- Cloudflare Worker -> JRA direct odds fetch: DISABLED"
+            echo "- Existing JRA race D1 bridge: PASS"
+            echo "- Public health: PASS"
+            echo "- Static-assets security boundary: PASS"
+            echo "- NAR / prediction logic / Viewer: UNCHANGED"
+            echo
+            echo "Next: open the app and press '現在オッズ'. It should populate input odds from the D1-backed JRA odds endpoint."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-jra-odds-v10 2>/dev/null
+          git worktree prune 2>/dev/null
+          exit 0
