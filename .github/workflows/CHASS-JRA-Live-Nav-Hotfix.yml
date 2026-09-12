@@ -1,0 +1,494 @@
+name: CHASS JRA Live Navigation Hotfix
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      require_live_jra:
+        description: "9/12 中山1RのJRA公式ライブ取得が成功した場合だけ適用する"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-live-navigation-hotfix
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $(git rev-parse HEAD)"
+
+      - name: Repository safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test -f worker.js
+          test -f jra-race-fetch.mjs
+          test -f jra-race-client.js
+          test -f tests/jra-j2.test.mjs
+          test -f migrations/0006_jra_background_refresh.sql
+          test -f mcp/server.mjs
+
+          FETCH_SHA="$(git hash-object jra-race-fetch.mjs)"
+          CLIENT_SHA="$(git hash-object jra-race-client.js)"
+
+          case "$FETCH_SHA" in
+            fdb2bfd84d8db7e596b523cb908e19aaad813428|1c15319f4a7a56e835c23a821aeca13cb72dd8e7) ;;
+            *)
+              echo "::error::jra-race-fetch.mjs has changed from the reviewed baseline. Refusing to overwrite."
+              echo "Current blob: $FETCH_SHA"
+              exit 1
+              ;;
+          esac
+
+          case "$CLIENT_SHA" in
+            1818580f5f1b4935d9a99adab63a4ed3a0819468|461f4407244da2c81f960192fe913c3a026e7262) ;;
+            *)
+              echo "::error::jra-race-client.js has changed from the reviewed baseline. Refusing to overwrite."
+              echo "Current blob: $CLIENT_SHA"
+              exit 1
+              ;;
+          esac
+
+          echo "Repository safety guard OK"
+
+      - name: Materialize embedded reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-jra-hotfix
+          mkdir -p /tmp/chass-jra-hotfix
+
+          cat > /tmp/chass-jra-hotfix/payload.b64 <<'CHASS_PAYLOAD'
+          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
+          n8Pn8Dl8Dp9ez/8A2SNOYwB4AAA=
+          CHASS_PAYLOAD
+
+          base64 -d /tmp/chass-jra-hotfix/payload.b64 > /tmp/chass-jra-hotfix/payload.tar.gz
+
+          EXPECTED="004ea70b913e9e1c997c8cb0937c373e2294846b81e9501d0b04132fbaecca3c"
+          ACTUAL="$(sha256sum /tmp/chass-jra-hotfix/payload.tar.gz | awk '{print $1}')"
+          echo "Embedded patch SHA-256: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+          mkdir -p /tmp/chass-jra-hotfix/files
+          tar -xzf /tmp/chass-jra-hotfix/payload.tar.gz -C /tmp/chass-jra-hotfix/files
+
+          find /tmp/chass-jra-hotfix/files -type f -printf '%P\n' | sort > /tmp/actual-files.txt
+          cat > /tmp/expected-files.txt <<'EOF'
+          jra-race-client.js
+          jra-race-fetch.mjs
+          tests/jra-live-navigation-hotfix.test.mjs
+          EOF
+          sort -o /tmp/expected-files.txt /tmp/expected-files.txt
+          diff -u /tmp/expected-files.txt /tmp/actual-files.txt
+
+          echo "Embedded patch whitelist OK"
+
+      - name: Apply patch to temporary worktree state
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0644 /tmp/chass-jra-hotfix/files/jra-race-fetch.mjs jra-race-fetch.mjs
+          install -m 0644 /tmp/chass-jra-hotfix/files/jra-race-client.js jra-race-client.js
+          install -m 0644 /tmp/chass-jra-hotfix/files/tests/jra-live-navigation-hotfix.test.mjs tests/jra-live-navigation-hotfix.test.mjs
+
+          git status --porcelain=v1 | sed -E 's/^.. //' | sort > /tmp/changed-files.txt
+          cat > /tmp/allowed-files.txt <<'EOF'
+          jra-race-client.js
+          jra-race-fetch.mjs
+          tests/jra-live-navigation-hotfix.test.mjs
+          EOF
+          sort -o /tmp/allowed-files.txt /tmp/allowed-files.txt
+
+          echo "Changed files:"
+          cat /tmp/changed-files.txt
+
+          if [ -s /tmp/changed-files.txt ]; then
+            diff -u /tmp/allowed-files.txt /tmp/changed-files.txt
+          fi
+
+          git diff --quiet -- worker.js app.js package.json wrangler.jsonc migrations/ mcp/ viewer/ || {
+            echo "::error::Unrelated critical files changed."
+            exit 1
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Syntax and targeted JRA regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check jra-race-fetch.mjs
+          node --check jra-race-client.js
+          node --test tests/jra-live-navigation-hotfix.test.mjs tests/jra-j2.test.mjs
+
+      - name: Full regression check
+        run: npm run check
+
+      - name: Live JRA smoke test - 2026/09/12 Nakayama 1R
+        if: ${{ inputs.require_live_jra }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const service = createJraRaceService({ timeoutMs: 20000 });
+          const url = new URL('https://local.test/api/jra/race');
+          url.searchParams.set('date', '2026-09-12');
+          url.searchParams.set('track', '中山');
+          url.searchParams.set('race', '1');
+
+          const response = await service(new Request(url), { ENABLE_JRA_AUTO_FETCH: false });
+          const body = await response.json();
+
+          console.log(JSON.stringify({
+            status: response.status,
+            ok: body.ok,
+            error: body.error ?? null,
+            race: body.race ?? null,
+            quality: body.quality ?? null,
+            sourceUrl: body.sourceUrl ?? null,
+            navigation: body.navigation ?? null
+          }, null, 2));
+
+          if (!response.ok || body.ok !== true) {
+            throw new Error(`Live JRA smoke failed: ${body.error || response.status}`);
+          }
+          if (body.race?.date !== '2026-09-12') throw new Error('Live JRA date mismatch');
+          if (body.race?.racecourse !== '中山') throw new Error('Live JRA track mismatch');
+          if (Number(body.race?.raceNo) !== 1) throw new Error('Live JRA race mismatch');
+          if (body.dataConfidence !== 'high') throw new Error('Live JRA dataConfidence is not high');
+          if (!body.quality?.raceParsed || Number(body.quality?.horseCount) < 2) {
+            throw new Error('Live JRA runner quality gate failed');
+          }
+          console.log('Live JRA 2026/09/12 中山1R OK');
+          NODE
+
+      - name: Verify main did not move during validation
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+          echo "Baseline: $BASE"
+          echo "Remote main: $REMOTE"
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced while validation was running. Nothing will be committed."
+            exit 1
+          fi
+
+      - name: Commit tested hotfix to main
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add jra-race-fetch.mjs                   jra-race-client.js                   tests/jra-live-navigation-hotfix.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Hotfix is already applied; no new commit required."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Fix JRA official race-card live navigation"
+            PATCH_SHA="$(git rev-parse HEAD)"
+            git push origin HEAD:main
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$PATCH_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Deploy CHASS Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production health smoke test
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEALTH_URL="https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/health"
+
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 15 "$HEALTH_URL" -o /tmp/health.json; then
+              break
+            fi
+            sleep 3
+          done
+
+          cat /tmp/health.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (body.ok !== true) throw new Error('Production health did not return ok=true');
+          console.log('Production health OK');
+          NODE
+
+      - name: Production JRA smoke test - Nakayama 1R
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev/api/jra/race"
+
+          curl -fsS --max-time 25 --get "$BASE_URL"             --data-urlencode "date=2026-09-12"             --data-urlencode "track=中山"             --data-urlencode "race=1"             -o /tmp/jra-live.json
+
+          cat /tmp/jra-live.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const body = JSON.parse(fs.readFileSync('/tmp/jra-live.json', 'utf8'));
+
+          if (body.ok !== true) throw new Error(`Production JRA failed: ${body.error || 'unknown'}`);
+          if (body.race?.date !== '2026-09-12') throw new Error('Production date mismatch');
+          if (body.race?.racecourse !== '中山') throw new Error('Production track mismatch');
+          if (Number(body.race?.raceNo) !== 1) throw new Error('Production race mismatch');
+          if (body.dataConfidence !== 'high') throw new Error('Production confidence is not high');
+          if (!body.quality?.raceParsed || Number(body.quality?.horseCount) < 2) {
+            throw new Error('Production quality gate failed');
+          }
+          console.log('Production JRA 中山1R OK');
+          NODE
+
+      - name: Automatic source rollback on post-commit failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+          PATCH_SHA="${{ steps.commit.outputs.sha }}"
+          echo "::warning::Post-commit validation/deploy failed. Reverting hotfix commit $PATCH_SHA"
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "$PATCH_SHA"
+          REVERT_STATUS=$?
+          if [ "$REVERT_STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+          else
+            echo "::error::Automatic git revert failed. Manual review required."
+          fi
+
+          if [ "$REVERT_STATUS" -eq 0 ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Attempting to redeploy reverted main..."
+            npx -y wrangler@4 deploy || echo "::warning::Rollback deploy failed; source main was still reverted."
+          fi
+
+          exit 1
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Live Navigation Hotfix"
+            echo ""
+            echo "- Mode: `${{ inputs.mode }}`"
+            echo "- Baseline: `${{ steps.base.outputs.sha }}`"
+            echo "- Patch payload SHA-256: `004ea70b913e9e1c997c8cb0937c373e2294846b81e9501d0b04132fbaecca3c`"
+            echo "- Approved source scope: `jra-race-fetch.mjs`, `jra-race-client.js`, one regression test"
+            echo "- D1 / migrations / NAR / prediction logic / viewer: unchanged"
+            if [ "${{ inputs.mode }}" = "validate_only" ]; then
+              echo "- No commit and no production deploy were requested."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
