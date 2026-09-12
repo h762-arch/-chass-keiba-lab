@@ -1,0 +1,667 @@
+name: Fix JRA Canonical Horse Identity v3.6.6
+
+on:
+  workflow_dispatch:
+    inputs:
+      repair_date:
+        description: "修正対象日 YYYY-MM-DD"
+        required: true
+        default: "2026-09-12"
+      repair_track:
+        description: "修正対象JRA競馬場"
+        required: true
+        default: "阪神"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-canonical-identity-v366
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      REPAIR_DATE: ${{ inputs.repair_date }}
+      REPAIR_TRACK: ${{ inputs.repair_track }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify repository baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app.js
+          test -f worker.js
+          test -f jra-race-fetch.mjs
+          test -f jra-odds-fetch.mjs
+          test -f wrangler.jsonc
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          grep -Fq "horseNo:h.horseNo??h.horseNumber??h.馬番??i+1," app.js || \
+            grep -Fq "horseNo:canonicalInputHorseNo(h,i,r)," app.js
+          echo "Baseline OK"
+
+      - name: Install JRA save-time identity guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/patch-v366.py <<'PY'
+          from pathlib import Path
+
+          path = Path("app.js")
+          text = path.read_text(encoding="utf-8")
+
+          helper = """function canonicalInputHorseNo(h,i,race={}){
+           const raw=h?.horseNo??h?.horseNumber??h?.馬番;
+           const no=Number(raw);
+           if(Number.isInteger(no)&&no>=1&&no<=99)return no;
+           const isJra=String(race?.raceType||'').toUpperCase()==='JRA'||/中央|JRA/.test(String(race?.category||''));
+           if(isJra){
+            const name=String(h?.horseName??h?.horse??h?.name??h?.馬名??'').trim()||`index:${i+1}`;
+            throw new Error(`JRA_HORSE_NO_REQUIRED:${name}`);
+           }
+           return i+1;
+          }
+          """
+
+          if "function canonicalInputHorseNo(h,i,race={})" not in text:
+              anchor = "function transform(root){"
+              if anchor not in text:
+                  raise SystemExit("transform anchor not found")
+              text = text.replace(anchor, helper + anchor, 1)
+
+          old = "horseNo:h.horseNo??h.horseNumber??h.馬番??i+1,"
+          new = "horseNo:canonicalInputHorseNo(h,i,r),"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("horseNo fallback anchor not found")
+
+          path.write_text(text, encoding="utf-8")
+          print("Installed JRA save-time horse-number guard.")
+
+          PY
+          python3 /tmp/patch-v366.py
+
+      - name: Add canonical D1 repair tool and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scripts artifacts/jra-v366
+          cat > scripts/repair-jra-horse-identity.mjs <<'EOF'
+          import fs from 'node:fs';
+          import { createJraRaceService } from '../jra-race-fetch.mjs';
+          import { createJraOddsService } from '../jra-odds-fetch.mjs';
+
+          function arg(name, fallback = '') {
+            const prefix = `--${name}=`;
+            const hit = process.argv.find((value) => value.startsWith(prefix));
+            return hit ? hit.slice(prefix.length) : fallback;
+          }
+
+          const mode = arg('mode', 'plan');
+          const dateFilter = arg('date');
+          const trackFilter = arg('track');
+          const racesFile = arg('races');
+          const predictionsFile = arg('predictions');
+          const cacheFile = arg('cache');
+          const sqlFile = arg('sql', 'artifacts/jra-v366/repair.sql');
+          const reportFile = arg('report', 'artifacts/jra-v366/report.json');
+
+          if (!dateFilter || !trackFilter || !racesFile || !predictionsFile || !cacheFile) {
+            throw new Error('REQUIRED_ARGS_MISSING');
+          }
+
+          function parseJson(value, fallback = null) {
+            try { return value == null || value === '' ? fallback : JSON.parse(value); }
+            catch { return fallback; }
+          }
+
+          function flattenWrangler(file) {
+            const root = parseJson(fs.readFileSync(file, 'utf8'), []);
+            const out = [];
+            const visit = (value) => {
+              if (Array.isArray(value)) {
+                for (const item of value) visit(item);
+                return;
+              }
+              if (!value || typeof value !== 'object') return;
+              if (Array.isArray(value.results)) {
+                out.push(...value.results);
+                return;
+              }
+              if (value.result) visit(value.result);
+            };
+            visit(root);
+            return out;
+          }
+
+          function normalizeName(value) {
+            return String(value || '')
+              .normalize('NFKC')
+              .trim()
+              .replace(/[\s　・･·.．"'’“”`´()（）[\]【】{}「」『』\-‐‑‒–—―]/g, '')
+              .toUpperCase();
+          }
+
+          function distance(left, right) {
+            const a = normalizeName(left);
+            const b = normalizeName(right);
+            if (!a || !b) return Number.POSITIVE_INFINITY;
+            if (a === b) return 0;
+            const rows = a.length + 1;
+            const cols = b.length + 1;
+            const matrix = Array.from({ length: rows }, () => Array(cols).fill(0));
+            for (let i = 0; i < rows; i += 1) matrix[i][0] = i;
+            for (let j = 0; j < cols; j += 1) matrix[0][j] = j;
+            for (let i = 1; i < rows; i += 1) {
+              for (let j = 1; j < cols; j += 1) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                  matrix[i - 1][j] + 1,
+                  matrix[i][j - 1] + 1,
+                  matrix[i - 1][j - 1] + cost,
+                );
+              }
+            }
+            return matrix[a.length][b.length];
+          }
+
+          function officialMatch(savedName, officialHorses, used = new Set()) {
+            const key = normalizeName(savedName);
+            const available = officialHorses.filter((horse) => !used.has(Number(horse.horseNo)));
+            const exact = available.filter((horse) => normalizeName(horse.horseName) === key);
+            if (exact.length === 1) return exact[0];
+
+            if (key.length >= 5) {
+              const fuzzy = available
+                .map((horse) => ({ horse, d: distance(savedName, horse.horseName) }))
+                .filter((item) => item.d <= 1)
+                .sort((a, b) => a.d - b.d || Number(a.horse.horseNo) - Number(b.horse.horseNo));
+              if (fuzzy.length === 1) return fuzzy[0].horse;
+              if (fuzzy.length >= 2 && fuzzy[0].d < fuzzy[1].d) return fuzzy[0].horse;
+            }
+            return null;
+          }
+
+          function sqlString(value) {
+            return `'${String(value ?? '').replaceAll("'", "''")}'`;
+          }
+
+          function numOrNull(value) {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : null;
+          }
+
+          function metaFromRaceRow(row) {
+            const raceJson = parseJson(row.race_json, {}) || {};
+            const prediction = parseJson(row.prediction_json, {}) || {};
+            const race = prediction.race || raceJson.race || raceJson || {};
+            const date = String(race.raceDate || race.date || '').replaceAll('/', '-');
+            const track = String(race.track || race.racecourse || '').trim();
+            const raceNo = Number(race.raceNo || race.race || race.number);
+            return { date, track, raceNo };
+          }
+
+          function rewriteIdentity(value, savedNameMap, oldNoMap) {
+            if (Array.isArray(value)) return value.map((item) => rewriteIdentity(item, savedNameMap, oldNoMap));
+            if (!value || typeof value !== 'object') return value;
+
+            const out = {};
+            for (const [key, child] of Object.entries(value)) {
+              out[key] = rewriteIdentity(child, savedNameMap, oldNoMap);
+            }
+
+            const savedName = String(value.horseName || '');
+            const mappedByName = savedNameMap.get(normalizeName(savedName));
+            if (mappedByName) {
+              out.horseNo = Number(mappedByName.horseNo);
+              out.horseName = mappedByName.horseName;
+            } else if (value.horseNo != null) {
+              const mappedNo = oldNoMap.get(Number(value.horseNo));
+              if (mappedNo != null) out.horseNo = mappedNo;
+            }
+
+            if (value.horse_no != null) {
+              const mappedNo = oldNoMap.get(Number(value.horse_no));
+              if (mappedNo != null) out.horse_no = mappedNo;
+            }
+
+            return out;
+          }
+
+          function applyOfficialOdds(value, oddsByNo) {
+            if (Array.isArray(value)) return value.map((item) => applyOfficialOdds(item, oddsByNo));
+            if (!value || typeof value !== 'object') return value;
+            const out = {};
+            for (const [key, child] of Object.entries(value)) out[key] = applyOfficialOdds(child, oddsByNo);
+
+            const horseNo = numOrNull(out.horseNo ?? out.horse_no);
+            if (horseNo != null && oddsByNo.has(horseNo)) {
+              const market = oddsByNo.get(horseNo);
+              if ('odds' in out || 'popularity' in out || 'ev' in out || 'expectedValue' in out) {
+                out.odds = market.odds ?? null;
+                out.popularity = market.popularity ?? null;
+                if ('ev' in out) out.ev = null;
+                if ('expectedValue' in out) out.expectedValue = null;
+              }
+            }
+            return out;
+          }
+
+          const raceRows = flattenWrangler(racesFile);
+          const predictionRows = flattenWrangler(predictionsFile);
+          const cacheRows = flattenWrangler(cacheFile);
+          const cacheMap = new Map(cacheRows.map((row) => [String(row.cache_key || ''), parseJson(row.payload_json, null)]));
+
+          const raceService = createJraRaceService({ fetchImpl: globalThis.fetch, timeoutMs: 30000 });
+          const oddsService = createJraOddsService({ fetchImpl: globalThis.fetch, timeoutMs: 15000 });
+
+          async function getOfficialCard(date, track, raceNo) {
+            const cached = cacheMap.get(`race|${date}|${track}|${raceNo}`);
+            if (cached?.ok && Array.isArray(cached.horses) && cached.horses.length >= 2) return cached;
+
+            const url = `https://local.invalid/api/jra/race?date=${encodeURIComponent(date)}&track=${encodeURIComponent(track)}&race=${raceNo}`;
+            const response = await raceService(new Request(url), {});
+            const body = await response.json();
+            if (!response.ok || !body?.ok || !Array.isArray(body.horses)) {
+              throw new Error(`OFFICIAL_CARD_UNAVAILABLE:${date}:${track}:${raceNo}:${body?.error || response.status}`);
+            }
+            return body;
+          }
+
+          async function getOfficialOdds(date, track, raceNo) {
+            const cached = cacheMap.get(`odds|${date}|${track}|${raceNo}`);
+            if (cached?.ok && Array.isArray(cached.odds) && cached.odds.length) return cached;
+
+            try {
+              const url = `https://local.invalid/api/jra/odds?date=${encodeURIComponent(date)}&track=${encodeURIComponent(track)}&race=${raceNo}`;
+              const response = await oddsService(
+                new Request(url),
+                { ENABLE_JRA_ODDS_FETCH: 'true', ENABLE_JRA_ODDS_DIRECT_FETCH: 'true' },
+              );
+              const body = await response.json();
+              if (response.ok && body?.ok && Array.isArray(body.odds) && body.odds.length) return body;
+            } catch {}
+            return null;
+          }
+
+          const targetRaceRows = raceRows.filter((row) => {
+            const meta = metaFromRaceRow(row);
+            return meta.date === dateFilter && meta.track === trackFilter && Number.isInteger(meta.raceNo);
+          });
+
+          if (!targetRaceRows.length) throw new Error(`NO_D1_RACES:${dateFilter}:${trackFilter}`);
+
+          const predictionByGroup = new Map();
+          for (const row of predictionRows) {
+            const key = `${row.race_id}|||${row.model_version}`;
+            if (!predictionByGroup.has(key)) predictionByGroup.set(key, []);
+            predictionByGroup.get(key).push(row);
+          }
+
+          const officialByRaceNo = new Map();
+          const report = {
+            schemaVersion: 1,
+            mode,
+            date: dateFilter,
+            track: trackFilter,
+            generatedAt: new Date().toISOString(),
+            races: [],
+          };
+
+          const sql = ['BEGIN TRANSACTION;'];
+          let changedGroups = 0;
+
+          for (const raceRow of targetRaceRows) {
+            const meta = metaFromRaceRow(raceRow);
+            if (!officialByRaceNo.has(meta.raceNo)) {
+              const card = await getOfficialCard(meta.date, meta.track, meta.raceNo);
+              const odds = await getOfficialOdds(meta.date, meta.track, meta.raceNo);
+              officialByRaceNo.set(meta.raceNo, { card, odds });
+            }
+
+            const { card, odds } = officialByRaceNo.get(meta.raceNo);
+            const officialHorses = (card.horses || []).map((horse) => ({
+              horseNo: Number(horse.horseNo),
+              horseName: String(horse.horseName || '').trim(),
+            })).filter((horse) => Number.isInteger(horse.horseNo) && horse.horseName);
+
+            const groupKey = `${raceRow.race_id}|||${raceRow.model_version}`;
+            const preds = predictionByGroup.get(groupKey) || [];
+            const used = new Set();
+            const mapping = [];
+            const savedNameMap = new Map();
+            const oldNoMap = new Map();
+
+            for (const pred of preds) {
+              const match = officialMatch(pred.horse_name, officialHorses, used);
+              if (!match) {
+                mapping.push({ oldNo: Number(pred.horse_no), savedName: pred.horse_name, status: 'unmatched' });
+                continue;
+              }
+              used.add(Number(match.horseNo));
+              savedNameMap.set(normalizeName(pred.horse_name), match);
+              oldNoMap.set(Number(pred.horse_no), Number(match.horseNo));
+              mapping.push({
+                oldNo: Number(pred.horse_no),
+                newNo: Number(match.horseNo),
+                savedName: pred.horse_name,
+                officialName: match.horseName,
+                status: 'matched',
+              });
+            }
+
+            const complete = preds.length >= 2
+              && mapping.length === preds.length
+              && mapping.every((item) => item.status === 'matched')
+              && new Set(mapping.map((item) => item.newNo)).size === mapping.length;
+
+            const oddsByNo = new Map(
+              (odds?.odds || [])
+                .map((item) => [Number(item.horseNo), {
+                  odds: numOrNull(item.odds),
+                  popularity: numOrNull(item.popularity),
+                }])
+                .filter(([no]) => Number.isInteger(no)),
+            );
+
+            const raceReport = {
+              raceNo: meta.raceNo,
+              raceId: raceRow.race_id,
+              modelVersion: raceRow.model_version,
+              predictionRows: preds.length,
+              officialHorseCount: officialHorses.length,
+              officialOddsCount: oddsByNo.size,
+              complete,
+              mapping,
+            };
+            report.races.push(raceReport);
+
+            if (!complete) {
+              if (mode === 'verify') raceReport.verify = 'failed';
+              continue;
+            }
+
+            if (mode === 'verify') {
+              const mismatches = preds.filter((pred) => {
+                const expected = officialMatch(pred.horse_name, officialHorses, new Set());
+                return !expected || Number(pred.horse_no) !== Number(expected.horseNo);
+              });
+              raceReport.verify = mismatches.length ? 'failed' : 'ok';
+              raceReport.verifyMismatches = mismatches.map((pred) => ({
+                horseName: pred.horse_name,
+                horseNo: Number(pred.horse_no),
+              }));
+              continue;
+            }
+
+            const raceJson = rewriteIdentity(parseJson(raceRow.race_json, {}), savedNameMap, oldNoMap);
+            const predictionJson = rewriteIdentity(parseJson(raceRow.prediction_json, {}), savedNameMap, oldNoMap);
+            let marketJson = rewriteIdentity(parseJson(raceRow.market_json, null), savedNameMap, oldNoMap);
+            marketJson = applyOfficialOdds(marketJson, oddsByNo);
+            const finalJson = rewriteIdentity(parseJson(raceRow.final_json, null), savedNameMap, oldNoMap);
+
+            sql.push(
+              `UPDATE races SET race_json=${sqlString(JSON.stringify(raceJson))},`
+              + `prediction_json=${sqlString(JSON.stringify(predictionJson))},`
+              + `market_json=${marketJson == null ? 'NULL' : sqlString(JSON.stringify(marketJson))},`
+              + `final_json=${finalJson == null ? 'NULL' : sqlString(JSON.stringify(finalJson))} `
+              + `WHERE race_id=${sqlString(raceRow.race_id)} AND model_version=${sqlString(raceRow.model_version)};`
+            );
+
+            sql.push(
+              `UPDATE predictions SET horse_no=-(horse_no+1000) `
+              + `WHERE race_id=${sqlString(raceRow.race_id)} AND model_version=${sqlString(raceRow.model_version)};`
+            );
+
+            for (const pred of preds) {
+              const official = savedNameMap.get(normalizeName(pred.horse_name));
+              const officialMarket = oddsByNo.get(Number(official.horseNo)) || null;
+              let snapshot = rewriteIdentity(parseJson(pred.snapshot_json, {}), savedNameMap, oldNoMap);
+              if (snapshot && typeof snapshot === 'object') {
+                snapshot.horseNo = Number(official.horseNo);
+                snapshot.horseName = official.horseName;
+                snapshot.odds = officialMarket?.odds ?? null;
+                snapshot.popularity = officialMarket?.popularity ?? null;
+                if ('ev' in snapshot) snapshot.ev = null;
+                if ('expectedValue' in snapshot) snapshot.expectedValue = null;
+              }
+
+              const oddsSql = officialMarket?.odds == null ? 'NULL' : String(officialMarket.odds);
+              const popSql = officialMarket?.popularity == null ? 'NULL' : String(officialMarket.popularity);
+              const evSql = officialMarket?.odds == null
+                ? 'NULL'
+                : `CASE WHEN ai_win_rate IS NULL THEN NULL ELSE ai_win_rate*${officialMarket.odds} END`;
+
+              sql.push(
+                `UPDATE predictions SET horse_no=${Number(official.horseNo)},`
+                + `horse_name=${sqlString(official.horseName)},`
+                + `odds=${oddsSql},popularity=${popSql},expected_value=${evSql},`
+                + `snapshot_json=${sqlString(JSON.stringify(snapshot))} `
+                + `WHERE race_id=${sqlString(raceRow.race_id)} `
+                + `AND model_version=${sqlString(raceRow.model_version)} `
+                + `AND horse_name=${sqlString(pred.horse_name)};`
+              );
+            }
+
+            changedGroups += 1;
+          }
+
+          if (mode === 'verify') {
+            const failed = report.races.filter((race) => race.complete && race.verify !== 'ok');
+            const incomplete = report.races.filter((race) => !race.complete);
+            report.verifyOk = failed.length === 0 && incomplete.length === 0;
+            fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+            if (!report.verifyOk) throw new Error(`VERIFY_FAILED:failed=${failed.length}:incomplete=${incomplete.length}`);
+            console.log(`Verified ${report.races.length} race/model groups.`);
+            process.exit(0);
+          }
+
+          if (!changedGroups) {
+            fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+            throw new Error('NO_SAFE_REPAIR_GROUPS');
+          }
+
+          sql.push('COMMIT;');
+          fs.writeFileSync(sqlFile, `${sql.join('\n')}\n`);
+          report.changedGroups = changedGroups;
+          report.sqlStatements = sql.length;
+          fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+          console.log(`Prepared ${changedGroups} race/model repair groups.`);
+
+          EOF
+
+          cat > tests/jra-horse-identity-v366.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+          const repair = fs.readFileSync(new URL('../scripts/repair-jra-horse-identity.mjs', import.meta.url), 'utf8');
+
+          test('JRA transform never silently invents horse number from array position', () => {
+            assert.match(app, /function canonicalInputHorseNo\(h,i,race=\{\}\)/);
+            assert.match(app, /JRA_HORSE_NO_REQUIRED/);
+            assert.match(app, /horseNo:canonicalInputHorseNo\(h,i,r\)/);
+          });
+
+          test('NAR/manual fallback remains available outside JRA', () => {
+            assert.match(app, /return i\+1/);
+          });
+
+          test('repair tool uses official identity and official odds', () => {
+            assert.match(repair, /officialMatch/);
+            assert.match(repair, /createJraRaceService/);
+            assert.match(repair, /createJraOddsService/);
+            assert.match(repair, /oddsByNo/);
+          });
+
+          test('repair tool stages prediction primary keys before canonical horse numbers', () => {
+            assert.match(repair, /horse_no=-\(horse_no\+1000\)/);
+            assert.match(repair, /UPDATE predictions SET horse_no=/);
+          });
+
+          EOF
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Static and unit checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check app.js
+          node --check scripts/repair-jra-horse-identity.mjs
+          node --test tests/jra-horse-identity-v366.test.mjs
+          npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Backup affected D1 data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/jra-v366
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote --json \
+            --command "SELECT race_id,model_version,race_json,prediction_json,market_json,final_json FROM races ORDER BY updated_at DESC LIMIT 10000" \
+            > artifacts/jra-v366/before-races.json
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote --json \
+            --command "SELECT race_id,model_version,horse_no,horse_name,ai_win_rate,ai_place_rate,overall,predicted_time,popularity,odds,expected_value,snapshot_json FROM predictions LIMIT 20000" \
+            > artifacts/jra-v366/before-predictions.json
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote --json \
+            --command "SELECT kind,cache_key,payload_json,fetched_at,expires_at FROM jra_official_cache WHERE kind IN ('race','odds') LIMIT 10000" \
+            > artifacts/jra-v366/official-cache.json
+
+      - name: Build safe canonical repair plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/repair-jra-horse-identity.mjs \
+            --mode=plan \
+            --date="$REPAIR_DATE" \
+            --track="$REPAIR_TRACK" \
+            --races=artifacts/jra-v366/before-races.json \
+            --predictions=artifacts/jra-v366/before-predictions.json \
+            --cache=artifacts/jra-v366/official-cache.json \
+            --sql=artifacts/jra-v366/repair.sql \
+            --report=artifacts/jra-v366/plan-report.json
+
+          test -s artifacts/jra-v366/repair.sql
+          grep -Fq "BEGIN TRANSACTION;" artifacts/jra-v366/repair.sql
+          grep -Fq "COMMIT;" artifacts/jra-v366/repair.sql
+
+      - name: Apply canonical identity repair to remote D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote \
+            --file=artifacts/jra-v366/repair.sql
+
+      - name: Query repaired D1 data
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote --json \
+            --command "SELECT race_id,model_version,race_json,prediction_json,market_json,final_json FROM races ORDER BY updated_at DESC LIMIT 10000" \
+            > artifacts/jra-v366/after-races.json
+
+          npx -y wrangler@4 d1 execute chass-keiba-research-db --remote --json \
+            --command "SELECT race_id,model_version,horse_no,horse_name,ai_win_rate,ai_place_rate,overall,predicted_time,popularity,odds,expected_value,snapshot_json FROM predictions LIMIT 20000" \
+            > artifacts/jra-v366/after-predictions.json
+
+      - name: Verify repaired horse identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/repair-jra-horse-identity.mjs \
+            --mode=verify \
+            --date="$REPAIR_DATE" \
+            --track="$REPAIR_TRACK" \
+            --races=artifacts/jra-v366/after-races.json \
+            --predictions=artifacts/jra-v366/after-predictions.json \
+            --cache=artifacts/jra-v366/official-cache.json \
+            --report=artifacts/jra-v366/verify-report.json
+
+      - name: Commit permanent guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js scripts/repair-jra-horse-identity.mjs tests/jra-horse-identity-v366.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "v3.6.6 guard already present."
+          else
+            git commit -m "Canonicalize JRA horse identity before prediction save"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy permanent guard
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -H 'Cache-Control: no-cache' "$BASE_URL/app.js?v=$GITHUB_SHA" -o /tmp/app.js \
+              && grep -Fq "function canonicalInputHorseNo(h,i,race={})" /tmp/app.js \
+              && grep -Fq "JRA_HORSE_NO_REQUIRED" /tmp/app.js; then
+              echo "Production JRA identity guard OK"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Production identity guard smoke test failed."
+          exit 1
+
+      - name: Upload repair audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chass-jra-identity-v366-${{ inputs.repair_date }}-${{ inputs.repair_track }}
+          path: artifacts/jra-v366/
+          retention-days: 14
+
+      - name: Final summary
+        if: success()
+        run: |
+          echo "✅ JRAでは馬番欠落時に配列順(i+1)を馬番として保存しない"
+          echo "✅ JRA公式出馬表の馬名→正式馬番を正本としてD1を修復"
+          echo "✅ 軽微な表記差は一意一致の場合のみ補正"
+          echo "✅ 正式オッズで人気・単勝オッズを再結合"
+          echo "✅ 予想・市場・最終印JSONの馬番を同一馬へ再マッピング"
+          echo "✅ predictions主キーを衝突なく正式馬番へ変更"
+          echo "✅ 修復前後の監査JSONとSQLをArtifactへ保存"
+          echo "✅ 今後のJRA予想で馬番欠落を検知したら保存前に停止"
