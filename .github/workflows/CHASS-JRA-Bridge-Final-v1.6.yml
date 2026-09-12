@@ -1,0 +1,934 @@
+name: CHASS JRA Bridge Final v1.6
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      bootstrap_date:
+        description: "本番確認に使う日付 (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-12"
+        type: string
+      bootstrap_track:
+        description: "本番確認に使う競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      bootstrap_race:
+        description: "本番確認に使うレース番号"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-bridge-final-v16
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+      REVIEWED_NAV_COMMIT: ee201b4343b31d3e877c7e44e5d752dd56443951
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $BASE"
+
+      - name: Verify security boundary already applied
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f .assetsignore
+          test -f worker.js
+          test -f jra-race-fetch.mjs
+          test -f jra-meeting-discovery.mjs
+          test -f wrangler.jsonc
+          test -f migrations/0006_jra_background_refresh.sql
+
+          for marker in ".git" ".github" "worker.js" "wrangler.jsonc" "package.json" "tests" "migrations" "mcp" "scripts" "*.mjs"; do
+            grep -Fq "$marker" .assetsignore || {
+              echo "::error::Existing security boundary is missing $marker"
+              exit 1
+            }
+          done
+
+          test "$(git hash-object jra-race-fetch.mjs)" = "fdb2bfd84d8db7e596b523cb908e19aaad813428"
+          test "$(git hash-object jra-meeting-discovery.mjs)" = "d4252dda617950796eb482c16d370e9488fead09"
+          test "$(git hash-object wrangler.jsonc)" = "2579b7f97972787d59d7eef2af337f3438a460bb"
+          git cat-file -e "${REVIEWED_NAV_COMMIT}^{commit}"
+
+          echo "Existing security boundary and reviewed JRA baseline OK"
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Confirm production security boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for path in "/" "/app.js" "/styles.css" "/jra-race-client.js" "/viewer/"; do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PUBLIC $path -> $code"
+            test "$code" = "200"
+          done
+
+          for path in \
+            "/.git/config" \
+            "/.github/workflows/CHASS-JRA-Live-Nav-Hotfix.yml" \
+            "/worker.js" \
+            "/wrangler.jsonc" \
+            "/package.json" \
+            "/migrations/0006_jra_background_refresh.sql" \
+            "/tests/jra-j2.test.mjs" \
+            "/jra-race-fetch.mjs"
+          do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive path is public: $path"
+              exit 1
+            fi
+          done
+
+      - name: Build isolated bridge candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-bridge-v16
+          git worktree add --detach /tmp/chass-jra-bridge-v16 HEAD
+          cd /tmp/chass-jra-bridge-v16
+
+          git show "${REVIEWED_NAV_COMMIT}:jra-race-fetch.mjs" > jra-race-fetch.mjs
+          git show "${REVIEWED_NAV_COMMIT}:tests/jra-live-navigation-hotfix.test.mjs" > tests/jra-live-navigation-hotfix.test.mjs
+
+          cat > jra-official-cache.mjs <<'EOF'
+          const raceKey = (date, track, race) => `race|${date}|${track}|${Number(race)}`;
+
+          export async function readJraOfficialRaceCache(env, { date, track, race, nowMs = Date.now() } = {}) {
+            const DB = env?.DB;
+            if (!DB?.prepare) return null;
+
+            let row;
+            try {
+              row = await DB.prepare(
+                `SELECT payload_json,source_url,fetched_at,expires_at,parser_version,content_hash
+                   FROM jra_official_cache
+                  WHERE kind='race' AND cache_key=?`
+              ).bind(raceKey(date, track, race)).first();
+            } catch (error) {
+              if (/no such table/i.test(String(error?.message || error))) return null;
+              throw error;
+            }
+
+            if (!row) return null;
+            const expiresMs = Date.parse(row.expires_at || '');
+            if (!Number.isFinite(expiresMs) || expiresMs <= Number(nowMs)) return null;
+
+            let body;
+            try {
+              body = JSON.parse(row.payload_json || '');
+            } catch {
+              throw Object.assign(new Error('JRA_CACHE_CORRUPT'), { code: 'JRA_CACHE_CORRUPT' });
+            }
+
+            if (!body?.ok || body?.organization !== 'JRA') {
+              throw Object.assign(new Error('JRA_CACHE_CORRUPT'), { code: 'JRA_CACHE_CORRUPT' });
+            }
+
+            return {
+              body: {
+                ...body,
+                bridgeCache: {
+                  provider: 'github_actions_d1',
+                  kind: 'race',
+                  fetchedAt: row.fetched_at,
+                  expiresAt: row.expires_at,
+                  contentHash: row.content_hash || null
+                }
+              }
+            };
+          }
+          EOF
+
+          cat > migrations/0007_jra_official_cache.sql <<'EOF'
+          CREATE TABLE IF NOT EXISTS jra_official_cache (
+            kind TEXT NOT NULL,
+            cache_key TEXT PRIMARY KEY,
+            organization TEXT NOT NULL DEFAULT 'JRA',
+            race_date TEXT NOT NULL,
+            track TEXT NOT NULL DEFAULT '',
+            race_no INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL,
+            source_url TEXT,
+            fetched_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            parser_version TEXT,
+            content_hash TEXT,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_jra_official_cache_lookup
+            ON jra_official_cache(kind, race_date, track, race_no);
+
+          CREATE INDEX IF NOT EXISTS idx_jra_official_cache_expiry
+            ON jra_official_cache(expires_at);
+          EOF
+
+          mkdir -p scripts
+
+          cat > scripts/jra-official-refresh.mjs <<'EOF'
+          import { createHash } from 'node:crypto';
+          import fs from 'node:fs';
+          import { createJraMeetingService, JRA_TRACKS } from '../jra-meeting-discovery.mjs';
+          import { createJraRaceService } from '../jra-race-fetch.mjs';
+
+          function args() {
+            const out = {};
+            for (const item of process.argv.slice(2)) {
+              const m = /^--([^=]+)=(.*)$/.exec(item);
+              if (m) out[m[1]] = m[2];
+            }
+            return out;
+          }
+
+          function tokyoDate() {
+            const parts = new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Tokyo',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit'
+            }).formatToParts(new Date());
+            const get = type => parts.find(x => x.type === type)?.value;
+            return `${get('year')}-${get('month')}-${get('day')}`;
+          }
+
+          const a = args();
+          const date = a.date || tokyoDate();
+          const trackInput = a.track || 'ALL';
+          const raceInput = Number(a.race || 0);
+          const sqlOut = a.out || '/tmp/jra-cache.sql';
+          const summaryOut = a.summary || '/tmp/jra-cache-summary.json';
+
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('invalid date');
+          if (trackInput !== 'ALL' && !JRA_TRACKS.includes(trackInput)) throw new Error('invalid track');
+          if (!Number.isInteger(raceInput) || raceInput < 0 || raceInput > 12) throw new Error('invalid race');
+
+          const meetingService = createJraMeetingService({ timeoutMs: 15000 });
+          const raceService = createJraRaceService({ timeoutMs: 20000 });
+
+          const meetingRequest = new Request(`https://runner.invalid/api/jra/meeting?date=${encodeURIComponent(date)}`);
+          const meetingResponse = await meetingService(meetingRequest, { ENABLE_JRA_MEETING_DISCOVERY: true });
+          const meetingBody = await meetingResponse.json();
+
+          const now = new Date();
+          const checkedAt = now.toISOString();
+          const meetingNext = new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString();
+
+          function sqlText(value) {
+            if (value === null || value === undefined) return 'NULL';
+            return `CAST(X'${Buffer.from(String(value), 'utf8').toString('hex')}' AS TEXT)`;
+          }
+
+          // Wrangler remote D1 execute manages statement execution itself.
+          // Do not emit BEGIN/COMMIT/SAVEPOINT because D1 rejects explicit SQL transactions here.
+          const sql = [];
+
+          if (meetingBody?.ok && Array.isArray(meetingBody.meetings)) {
+            sql.push(
+              `INSERT INTO jra_meeting_calendar ` +
+              `(date,status,meetings_json,checked_at,next_refresh_at,source,parser_version,error_code) VALUES (` +
+              `${sqlText(date)},'complete',${sqlText(JSON.stringify(meetingBody.meetings))},${sqlText(checkedAt)},${sqlText(meetingNext)},` +
+              `${sqlText(meetingBody.source || 'JRA_OFFICIAL')},${sqlText(meetingBody.parserVersion || null)},NULL) ` +
+              `ON CONFLICT(date) DO UPDATE SET ` +
+              `status=excluded.status,meetings_json=excluded.meetings_json,checked_at=excluded.checked_at,` +
+              `next_refresh_at=excluded.next_refresh_at,source=excluded.source,parser_version=excluded.parser_version,error_code=NULL;`
+            );
+          }
+
+          let targets = [];
+          if (trackInput !== 'ALL' && raceInput > 0) {
+            targets = [{ track: trackInput, race: raceInput }];
+          } else if (meetingBody?.ok && Array.isArray(meetingBody.meetings)) {
+            for (const meeting of meetingBody.meetings) {
+              if (meeting.status !== 'meeting') continue;
+              if (trackInput !== 'ALL' && meeting.track !== trackInput) continue;
+              for (const race of meeting.raceNumbers || []) {
+                if (raceInput > 0 && Number(race) !== raceInput) continue;
+                targets.push({ track: meeting.track, race: Number(race) });
+              }
+            }
+          }
+
+          const successes = [];
+          const failures = [];
+
+          for (const target of targets) {
+            const q = new URLSearchParams({ date, track: target.track, race: String(target.race) });
+            const request = new Request(`https://runner.invalid/api/jra/race?${q}`);
+            const response = await raceService(request, { ENABLE_JRA_AUTO_FETCH: false });
+            const body = await response.json();
+
+            if (
+              response.ok &&
+              body?.ok &&
+              body?.dataConfidence === 'high' &&
+              body?.quality?.raceParsed &&
+              Number(body?.quality?.horseCount) >= 2
+            ) {
+              const fetchedAt = body.fetchedAt || new Date().toISOString();
+              const expiresAt = new Date(Date.parse(fetchedAt) + 6 * 60 * 60 * 1000).toISOString();
+              const payload = JSON.stringify(body);
+              const hash = createHash('sha256').update(payload).digest('hex');
+              const key = `race|${date}|${target.track}|${target.race}`;
+
+              sql.push(
+                `INSERT INTO jra_official_cache ` +
+                `(kind,cache_key,organization,race_date,track,race_no,payload_json,source_url,fetched_at,expires_at,parser_version,content_hash,updated_at) VALUES (` +
+                `'race',${sqlText(key)},'JRA',${sqlText(date)},${sqlText(target.track)},${Number(target.race)},` +
+                `${sqlText(payload)},${sqlText(body.sourceUrl || null)},${sqlText(fetchedAt)},${sqlText(expiresAt)},` +
+                `${sqlText(body.parserVersion || null)},${sqlText(hash)},${sqlText(new Date().toISOString())}) ` +
+                `ON CONFLICT(cache_key) DO UPDATE SET ` +
+                `payload_json=excluded.payload_json,source_url=excluded.source_url,fetched_at=excluded.fetched_at,` +
+                `expires_at=excluded.expires_at,parser_version=excluded.parser_version,content_hash=excluded.content_hash,updated_at=excluded.updated_at;`
+              );
+
+              successes.push({
+                date,
+                track: target.track,
+                race: target.race,
+                horseCount: Number(body.quality.horseCount),
+                fetchedAt,
+                contentHash: hash
+              });
+            } else {
+              failures.push({
+                date,
+                track: target.track,
+                race: target.race,
+                status: response.status,
+                error: body?.error || 'unknown'
+              });
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 150));
+          }
+
+          fs.writeFileSync(sqlOut, sql.join('\n') + '\n');
+
+          const summary = {
+            ok: true,
+            date,
+            trackInput,
+            raceInput,
+            meetingOk: meetingBody?.ok === true,
+            targetCount: targets.length,
+            successCount: successes.length,
+            failureCount: failures.length,
+            successes,
+            failures,
+            generatedAt: new Date().toISOString()
+          };
+
+          fs.writeFileSync(summaryOut, JSON.stringify(summary, null, 2));
+          console.log(JSON.stringify(summary, null, 2));
+
+          if (trackInput !== 'ALL' && raceInput > 0 && successes.length !== 1) process.exitCode = 1;
+          else if (targets.length > 0 && successes.length === 0) process.exitCode = 1;
+          EOF
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const file = 'jra-race-fetch.mjs';
+          let src = fs.readFileSync(file, 'utf8');
+
+          const importAnchor = "import {JRA_TRACKS,validDate} from './jra-meeting-discovery.mjs';";
+          if (!src.includes(importAnchor)) throw new Error('race import anchor missing');
+
+          src = src.replace(
+            importAnchor,
+            importAnchor + "\nimport {readJraOfficialRaceCache} from './jra-official-cache.mjs';"
+          );
+
+          const validationAnchor =
+            "    if(!validDate(date)||!TRACK_CODES[track]||!Number.isInteger(race)||race<1||race>12)return send({ok:false,error:'JRA_RACE_INVALID_INPUT'},400);";
+
+          if (!src.includes(validationAnchor)) throw new Error('race validation anchor missing');
+
+          const bridge = `
+
+            if(env?.DB){
+              try{
+                const cached=await readJraOfficialRaceCache(env,{date,track,race,nowMs:now()});
+                if(cached)return send(cached.body,200,'D1-HIT');
+              }catch(error){
+                return send({ok:false,organization:'JRA',date,track,race,error:error?.code||'JRA_CACHE_READ_FAILED'},503,'D1-ERROR');
+              }
+
+              const allowDirect=env.ENABLE_JRA_DIRECT_FETCH===true||env.ENABLE_JRA_DIRECT_FETCH==='true';
+              if(!allowDirect){
+                return send({
+                  ok:false,
+                  organization:'JRA',
+                  date,track,race,
+                  status:'unknown',
+                  error:'JRA_CACHE_MISS',
+                  cacheProvider:'github_actions_d1',
+                  hint:'Run CHASS JRA Official Cache Refresh'
+                },503,'D1-MISS');
+              }
+            }
+
+          `;
+
+          src = src.replace(validationAnchor, validationAnchor + bridge);
+          fs.writeFileSync(file, src);
+
+          const cfgFile = 'wrangler.jsonc';
+          const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+          cfg.vars = cfg.vars || {};
+          cfg.vars.ENABLE_JRA_DIRECT_FETCH = 'false';
+          cfg.vars.ENABLE_JRA_BACKGROUND_REFRESH = 'false';
+          fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n');
+          NODE
+
+          cat > tests/jra-external-cache-bridge.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { createJraRaceService } from '../jra-race-fetch.mjs';
+
+          function fakeDb(row) {
+            return {
+              prepare() {
+                return {
+                  bind() {
+                    return {
+                      async first() {
+                        return row;
+                      }
+                    };
+                  }
+                };
+              }
+            };
+          }
+
+          test('fresh D1 cache is returned without outbound fetch', async () => {
+            const body = {
+              ok: true,
+              organization: 'JRA',
+              race: { date: '2026-09-12', racecourse: '中山', raceNo: 1 },
+              horses: [{ horseNo: 1, horseName: 'A' }, { horseNo: 2, horseName: 'B' }],
+              quality: { raceParsed: true, horseCount: 2 },
+              dataConfidence: 'high',
+              source: 'JRA_OFFICIAL'
+            };
+
+            const service = createJraRaceService({
+              fetchImpl: async () => { throw new Error('outbound fetch must not run'); },
+              now: () => Date.parse('2026-09-12T00:00:00Z')
+            });
+
+            const response = await service(
+              new Request('https://local.invalid/api/jra/race?date=2026-09-12&track=%E4%B8%AD%E5%B1%B1&race=1'),
+              {
+                DB: fakeDb({
+                  payload_json: JSON.stringify(body),
+                  source_url: 'https://www.jra.go.jp/',
+                  fetched_at: '2026-09-11T23:55:00Z',
+                  expires_at: '2026-09-12T06:00:00Z',
+                  parser_version: 'test',
+                  content_hash: 'abc'
+                }),
+                ENABLE_JRA_DIRECT_FETCH: 'false'
+              }
+            );
+
+            assert.equal(response.status, 200);
+            const json = await response.json();
+            assert.equal(json.ok, true);
+            assert.equal(json.bridgeCache.provider, 'github_actions_d1');
+          });
+
+          test('cache miss fails closed when direct fetch is disabled', async () => {
+            const service = createJraRaceService({
+              fetchImpl: async () => { throw new Error('outbound fetch must not run'); },
+              now: () => Date.parse('2026-09-12T00:00:00Z')
+            });
+
+            const response = await service(
+              new Request('https://local.invalid/api/jra/race?date=2026-09-12&track=%E4%B8%AD%E5%B1%B1&race=1'),
+              { DB: fakeDb(null), ENABLE_JRA_DIRECT_FETCH: 'false' }
+            );
+
+            assert.equal(response.status, 503);
+            const json = await response.json();
+            assert.equal(json.error, 'JRA_CACHE_MISS');
+          });
+          EOF
+
+          git status --porcelain=v1 -uall
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/v16-actual.txt
+
+          cat > /tmp/v16-allowed.txt <<'EOF'
+          jra-official-cache.mjs
+          jra-race-fetch.mjs
+          migrations/0007_jra_official_cache.sql
+          scripts/jra-official-refresh.mjs
+          tests/jra-external-cache-bridge.test.mjs
+          tests/jra-live-navigation-hotfix.test.mjs
+          wrangler.jsonc
+          EOF
+
+          sort -o /tmp/v16-allowed.txt /tmp/v16-allowed.txt
+          if ! diff -u /tmp/v16-allowed.txt /tmp/v16-actual.txt; then
+            echo "::error::Candidate scope mismatch."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-bridge-v16
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Syntax + full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-bridge-v16
+
+          node --check jra-official-cache.mjs
+          node --check jra-race-fetch.mjs
+          node --check scripts/jra-official-refresh.mjs
+          node --test tests/jra-external-cache-bridge.test.mjs tests/jra-live-navigation-hotfix.test.mjs
+          npm run check
+
+      - name: GitHub Runner official JRA bootstrap smoke
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-bridge-v16
+
+          node scripts/jra-official-refresh.mjs \
+            --date="$BOOTSTRAP_DATE" \
+            --track="$BOOTSTRAP_TRACK" \
+            --race="$BOOTSTRAP_RACE" \
+            --out=/tmp/jra-bootstrap-v16.sql \
+            --summary=/tmp/jra-bootstrap-v16.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-bootstrap-v16.json','utf8'));
+          if (x.successCount !== 1) throw new Error('bootstrap race fetch failed');
+          if (x.successes[0].horseCount < 2) throw new Error('horse count invalid');
+          console.log('Bootstrap OK:', x.successes[0]);
+          NODE
+
+          if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-bootstrap-v16.sql; then
+            echo "::error::Generated D1 cache SQL contains an explicit transaction statement."
+            cat /tmp/jra-bootstrap-v16.sql
+            exit 1
+          fi
+
+          grep -Fq "INSERT INTO jra_official_cache" /tmp/jra-bootstrap-v16.sql
+          echo "Generated D1 cache SQL transaction-safety guard: PASS"
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Bridge Final v1.6 - VALIDATION SUCCESS"
+            echo
+            echo "- Existing static-assets security boundary: PASS"
+            echo "- GitHub Runner -> JRA bootstrap: PASS"
+            echo "- D1 cache bridge unit tests: PASS"
+            echo "- Navigation regression: PASS"
+            echo "- Full regression: PASS"
+            echo "- Production bridge commit: NOT PERFORMED"
+            echo "- D1 migration/write: NOT PERFORMED"
+            echo "- Production bridge deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced during validation. Nothing will be applied."
+            exit 1
+          fi
+
+      - name: Apply bridge source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: bridge_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-bridge-v16/jra-official-cache.mjs jra-official-cache.mjs
+          cp /tmp/chass-jra-bridge-v16/jra-race-fetch.mjs jra-race-fetch.mjs
+          cp /tmp/chass-jra-bridge-v16/wrangler.jsonc wrangler.jsonc
+          cp /tmp/chass-jra-bridge-v16/migrations/0007_jra_official_cache.sql migrations/0007_jra_official_cache.sql
+          cp /tmp/chass-jra-bridge-v16/tests/jra-external-cache-bridge.test.mjs tests/jra-external-cache-bridge.test.mjs
+          cp /tmp/chass-jra-bridge-v16/tests/jra-live-navigation-hotfix.test.mjs tests/jra-live-navigation-hotfix.test.mjs
+          mkdir -p scripts
+          cp /tmp/chass-jra-bridge-v16/scripts/jra-official-refresh.mjs scripts/jra-official-refresh.mjs
+
+          git diff --quiet -- worker.js app.js styles.css index.html viewer/ mcp/ .github/workflows/ || {
+            echo "::error::Unexpected app/viewer/workflow change detected."
+            exit 1
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-official-cache.mjs \
+            jra-race-fetch.mjs \
+            wrangler.jsonc \
+            migrations/0007_jra_official_cache.sql \
+            tests/jra-external-cache-bridge.test.mjs \
+            tests/jra-live-navigation-hotfix.test.mjs \
+            scripts/jra-official-refresh.mjs
+
+          git commit -m "Finalize JRA official race bridge through GitHub Runner and D1 cache"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Apply additive D1 migration
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=migrations/0007_jra_official_cache.sql
+
+      - name: Bootstrap official JRA cache
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          node scripts/jra-official-refresh.mjs \
+            --date="$BOOTSTRAP_DATE" \
+            --track="$BOOTSTRAP_TRACK" \
+            --race="$BOOTSTRAP_RACE" \
+            --out=/tmp/jra-bootstrap-production-v16.sql \
+            --summary=/tmp/jra-bootstrap-production-v16.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-bootstrap-production-v16.sql
+
+      - name: Verify production D1 cache row
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          KEY="race|$BOOTSTRAP_DATE|$BOOTSTRAP_TRACK|$BOOTSTRAP_RACE"
+          echo "Expected cache key: $KEY"
+
+          ROW_OUTPUT="$(npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,organization,race_date,track,race_no,fetched_at,expires_at,length(payload_json) AS payload_bytes FROM jra_official_cache WHERE kind='race' AND cache_key='$KEY';" 2>&1)"
+
+          echo "$ROW_OUTPUT"
+
+          echo "$ROW_OUTPUT" | grep -Fq "\"cache_key\": \"$KEY\""
+          echo "$ROW_OUTPUT" | grep -Fq '"organization": "JRA"'
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-bootstrap-production-v16.json','utf8'));
+          if (x.successCount !== 1) throw new Error('production bootstrap summary is not successful');
+          const first = x.successes?.[0];
+          if (!first || Number(first.horseCount) < 2) throw new Error('production bootstrap horse count invalid');
+          console.log(`Production D1 write summary OK: ${first.horseCount} horses`);
+          NODE
+
+      - name: Deploy JRA bridge
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: deploy_bridge
+        run: npx -y wrangler@4 deploy
+
+      - name: Production bridge smoke with propagation retry
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: production_smoke
+        shell: bash
+        env:
+          BOOTSTRAP_DATE: ${{ inputs.bootstrap_date }}
+          BOOTSTRAP_TRACK: ${{ inputs.bootstrap_track }}
+          BOOTSTRAP_RACE: ${{ inputs.bootstrap_race }}
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          LAST_CODE="000"
+
+          # v1.5 proved the bridge itself works. Retry here only to absorb
+          # short Cloudflare deployment/D1 visibility propagation windows.
+          for DELAY in 0 2 5 10 20; do
+            if [ "$DELAY" -gt 0 ]; then
+              echo "Waiting ${DELAY}s before retry..."
+              sleep "$DELAY"
+            fi
+
+            : > /tmp/jra-race-production-v16.json
+            : > /tmp/jra-race-production-v16.headers
+
+            CODE="$(curl -sS --max-time 20 \
+              -D /tmp/jra-race-production-v16.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/race" \
+              --data-urlencode "date=$BOOTSTRAP_DATE" \
+              --data-urlencode "track=$BOOTSTRAP_TRACK" \
+              --data-urlencode "race=$BOOTSTRAP_RACE" \
+              -o /tmp/jra-race-production-v16.json \
+              -w '%{http_code}' || true)"
+
+            LAST_CODE="${CODE:-000}"
+            echo "Production bridge probe -> HTTP $LAST_CODE"
+            grep -iE '^(HTTP/|x-chass-jra-race-cache:|cf-ray:|server:)' /tmp/jra-race-production-v16.headers || true
+            cat /tmp/jra-race-production-v16.json || true
+            echo
+
+            if [ "$LAST_CODE" != "200" ]; then
+              continue
+            fi
+
+            if node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-race-production-v16.json','utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (x.dataConfidence !== 'high') process.exit(1);
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) process.exit(1);
+          if (x.bridgeCache?.provider !== 'github_actions_d1') process.exit(1);
+          NODE
+            then
+              if grep -qi '^x-chass-jra-race-cache: D1-HIT' /tmp/jra-race-production-v16.headers; then
+                PASS=1
+                break
+              fi
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production JRA D1 bridge did not become healthy after bounded propagation retries. Last HTTP: $LAST_CODE"
+            exit 1
+          fi
+
+          echo "Production JRA D1 bridge: PASS"
+
+          HEALTH_OK=0
+          for DELAY in 0 2 5; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+            CODE="$(curl -sS --max-time 15 \
+              "$PRODUCTION_BASE_URL/api/chass/v1/public/health" \
+              -o /tmp/health-v16.json \
+              -w '%{http_code}' || true)"
+            if [ "$CODE" = "200" ] && node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/health-v16.json','utf8'));
+          if (x.ok !== true) process.exit(1);
+          NODE
+            then
+              HEALTH_OK=1
+              break
+            fi
+          done
+
+          if [ "$HEALTH_OK" -ne 1 ]; then
+            echo "::error::Public health endpoint failed after retry."
+            cat /tmp/health-v16.json || true
+            exit 1
+          fi
+
+          echo "Public health: PASS"
+
+      - name: Confirm production security boundary after bridge deploy
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for path in "/" "/app.js" "/styles.css" "/jra-race-client.js" "/viewer/"; do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PUBLIC $path -> $code"
+            test "$code" = "200"
+          done
+
+          for path in \
+            "/.git/config" \
+            "/worker.js" \
+            "/wrangler.jsonc" \
+            "/package.json" \
+            "/migrations/0007_jra_official_cache.sql" \
+            "/scripts/jra-official-refresh.mjs" \
+            "/jra-official-cache.mjs" \
+            "/jra-race-fetch.mjs"
+          do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive path is public after bridge deploy: $path"
+              exit 1
+            fi
+          done
+
+      - name: Roll back bridge on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.bridge_commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.bridge_commit.outputs.sha }}"
+          STATUS=$?
+
+          if [ "$STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+            if npx -y wrangler@4 deploy; then
+              echo "Bridge source rollback and production redeploy: SUCCESS"
+              exit 0
+            fi
+            echo "::error::Bridge source reverted in Git, but production redeploy failed."
+            exit 1
+          fi
+
+          echo "::error::Automatic bridge revert failed."
+          exit 1
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Bridge Final v1.6 - PRODUCTION SUCCESS"
+            echo
+            echo "- Static-assets security boundary: KEPT"
+            echo "- GitHub Runner -> JRA official fetch: PASS"
+            echo "- D1 migration 0007: APPLIED / idempotent"
+            echo "- Bootstrap race cached in D1: PASS"
+            echo "- Production /api/jra/race -> D1 bridge: PASS (bounded propagation retry enabled)"
+            echo "- Cloudflare Worker -> JRA direct race fetch: DISABLED"
+            echo "- NAR / prediction logic / Viewer: UNCHANGED"
+            echo "- Post-deploy static-assets security boundary: PASS"
+            echo
+            echo "Next manual step: upload CHASS-JRA-Official-Cache-Refresh-v1.1.yml to .github/workflows/, run it once manually, then clean old JRA repair workflows."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-jra-bridge-v16 2>/dev/null
+          git worktree prune 2>/dev/null
+          exit 0
