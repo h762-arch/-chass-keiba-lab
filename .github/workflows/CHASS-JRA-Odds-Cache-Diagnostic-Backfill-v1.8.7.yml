@@ -1,0 +1,563 @@
+name: CHASS JRA Odds Cache Diagnostic + Backfill v1.8.7
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "最初は diagnose_only。D1欠損確認後に backfill_target"
+        required: true
+        default: diagnose_only
+        type: choice
+        options:
+          - diagnose_only
+          - backfill_target
+      date:
+        description: "対象日 YYYY-MM-DD"
+        required: true
+        default: "2026-09-12"
+        type: string
+      track:
+        description: "対象競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "対象レース"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+      production_smoke:
+        description: "backfill後に本番 /api/jra/odds まで確認"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-odds-cache-diagnostic-backfill-v187
+  cancel-in-progress: false
+
+jobs:
+  odds_cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_NAME: chass-keiba-research-db
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_MODE: ${{ inputs.mode }}
+      INPUT_DATE: ${{ inputs.date }}
+      INPUT_TRACK: ${{ inputs.track }}
+      INPUT_RACE: ${{ inputs.race }}
+      INPUT_PRODUCTION_SMOKE: ${{ inputs.production_smoke }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Validate inputs and source baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! printf '%s' "$INPUT_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+            echo "::error::date must be YYYY-MM-DD"
+            exit 11
+          fi
+
+          case "$INPUT_TRACK" in
+            札幌|函館|福島|新潟|東京|中山|中京|京都|阪神|小倉) ;;
+            *)
+              echo "::error::unsupported track: $INPUT_TRACK"
+              exit 12
+              ;;
+          esac
+
+          if ! printf '%s' "$INPUT_RACE" | grep -Eq '^([1-9]|1[0-2])$'; then
+            echo "::error::race must be 1..12"
+            exit 13
+          fi
+
+          test -f wrangler.jsonc
+          test -f migrations/0007_jra_official_cache.sql
+          test -f scripts/jra-official-odds-refresh.mjs
+          test -f jra-official-cache.mjs
+          test -f jra-odds-fetch.mjs
+
+          node --check scripts/jra-official-odds-refresh.mjs
+          node --check jra-official-cache.mjs
+          node --check jra-odds-fetch.mjs
+
+          grep -Fq '"binding": "DB"' wrangler.jsonc
+          grep -Fq '"database_name": "chass-keiba-research-db"' wrangler.jsonc
+          grep -Fq "WHERE kind='odds' AND cache_key=?" jra-official-cache.mjs
+
+          EXPECTED_KEY="odds|${INPUT_DATE}|${INPUT_TRACK}|${INPUT_RACE}"
+
+          {
+            echo "## CHASS JRA Odds Cache Diagnostic + Backfill v1.8.7"
+            echo
+            echo "- Mode: \`$INPUT_MODE\`"
+            echo "- Target: \`$INPUT_DATE $INPUT_TRACK ${INPUT_RACE}R\`"
+            echo "- Expected cache key: \`$EXPECTED_KEY\`"
+            echo "- Repository source modification: NONE"
+            echo "- Production deploy: NONE"
+            echo "- D1 write: only when mode=backfill_target"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured"
+            exit 20
+          }
+
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured"
+            exit 21
+          }
+
+          npx -y wrangler@4 whoami >/tmp/wrangler-whoami.txt
+          cat /tmp/wrangler-whoami.txt
+
+      - name: D1 schema and odds inventory
+        id: inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_KEY="odds|${INPUT_DATE}|${INPUT_TRACK}|${INPUT_RACE}"
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "PRAGMA table_info(jra_official_cache);" \
+            --json > /tmp/d1-schema.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,COUNT(*) AS row_count FROM jra_official_cache GROUP BY kind ORDER BY kind;" \
+            --json > /tmp/d1-kind-counts.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,race_date,track,race_no,fetched_at,expires_at,parser_version,LENGTH(payload_json) AS payload_bytes FROM jra_official_cache WHERE race_date='$INPUT_DATE' AND kind='odds' ORDER BY track,race_no LIMIT 200;" \
+            --json > /tmp/d1-day-odds.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,race_date,track,race_no,fetched_at,expires_at,parser_version,content_hash,LENGTH(payload_json) AS payload_bytes,json_extract(payload_json,'$.ok') AS payload_ok,json_extract(payload_json,'$.organization') AS payload_organization,json_extract(payload_json,'$.quality.oddsHorseCount') AS odds_horse_count,json_extract(payload_json,'$.quality.activeHorseCount') AS active_horse_count,json_extract(payload_json,'$.quality.complete') AS odds_complete,json_extract(payload_json,'$.oddsSnapshotType') AS snapshot_type FROM jra_official_cache WHERE kind='odds' AND cache_key='$EXPECTED_KEY' LIMIT 1;" \
+            --json > /tmp/d1-exact.json
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,race_date,track,race_no,fetched_at,expires_at FROM jra_official_cache WHERE race_date='$INPUT_DATE' AND race_no=$INPUT_RACE ORDER BY kind,track,cache_key LIMIT 100;" \
+            --json > /tmp/d1-same-race.json
+
+          cat > /tmp/d1-inspect.mjs <<'NODE'
+          import fs from 'node:fs';
+
+          function read(path) {
+            return JSON.parse(fs.readFileSync(path, 'utf8'));
+          }
+
+          function collectResults(value, out = []) {
+            if (Array.isArray(value)) {
+              for (const item of value) collectResults(item, out);
+              return out;
+            }
+            if (value && typeof value === 'object') {
+              if (Array.isArray(value.results)) out.push(...value.results);
+              for (const [key, child] of Object.entries(value)) {
+                if (key !== 'results') collectResults(child, out);
+              }
+            }
+            return out;
+          }
+
+          const exact = collectResults(read('/tmp/d1-exact.json'));
+          const dayOdds = collectResults(read('/tmp/d1-day-odds.json'));
+          const kindCounts = collectResults(read('/tmp/d1-kind-counts.json'));
+          const sameRace = collectResults(read('/tmp/d1-same-race.json'));
+
+          const row = exact[0] || null;
+          let state = 'MISSING';
+          let reason = 'exact_cache_key_not_found';
+
+          if (row) {
+            const expires = Date.parse(row.expires_at || '');
+            const expired = !Number.isFinite(expires) || expires <= Date.now();
+            const payloadOk = Number(row.payload_ok) === 1 || row.payload_ok === true || row.payload_ok === 'true';
+            const orgOk = row.payload_organization === 'JRA';
+            const horseCount = Number(row.odds_horse_count || 0);
+
+            if (!payloadOk || !orgOk || horseCount < 1) {
+              state = 'CORRUPT_OR_INVALID';
+              reason = `payload_ok=${row.payload_ok};organization=${row.payload_organization};oddsHorseCount=${horseCount}`;
+            } else if (expired) {
+              state = 'PRESENT_EXPIRED';
+              reason = `expires_at=${row.expires_at}`;
+            } else {
+              state = 'PRESENT_CURRENT';
+              reason = `expires_at=${row.expires_at}`;
+            }
+          }
+
+          const report = {
+            state,
+            reason,
+            exactRow: row,
+            dateOddsCount: dayOdds.length,
+            kindCounts,
+            sameRaceRows: sameRace,
+            trackValuesForDate: [...new Set(dayOdds.map(x => x.track).filter(Boolean))],
+            keysForSameRace: sameRace.map(x => x.cache_key).filter(Boolean)
+          };
+
+          fs.writeFileSync('/tmp/d1-diagnostic-report.json', JSON.stringify(report, null, 2));
+          console.log(JSON.stringify(report, null, 2));
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `cache_state=${state}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `date_odds_count=${dayOdds.length}\n`);
+          NODE
+
+          node /tmp/d1-inspect.mjs
+
+          {
+            echo
+            echo "## D1 diagnosis"
+            echo
+            echo "- Cache state: \`${{ steps.inventory.outputs.cache_state }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add detailed D1 diagnosis to summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/d1-diagnostic-report.json', 'utf8'));
+
+          console.log(`- Reason: \`${x.reason}\``);
+          console.log(`- Odds rows for target date: ${x.dateOddsCount}`);
+          console.log(`- Track values found for target date: ${x.trackValuesForDate.length ? x.trackValuesForDate.join(', ') : 'none'}`);
+          console.log(`- Same date/race cache keys: ${x.keysForSameRace.length ? x.keysForSameRace.join(', ') : 'none'}`);
+
+          if (x.exactRow) {
+            console.log(`- Exact row fetched_at: \`${x.exactRow.fetched_at || ''}\``);
+            console.log(`- Exact row expires_at: \`${x.exactRow.expires_at || ''}\``);
+            console.log(`- Exact row oddsHorseCount: ${Number(x.exactRow.odds_horse_count || 0)}`);
+            console.log(`- Exact row activeHorseCount: ${Number(x.exactRow.active_horse_count || 0)}`);
+            console.log(`- Exact row snapshot type: \`${x.exactRow.snapshot_type || ''}\``);
+            console.log(`- Exact row payload bytes: ${Number(x.exactRow.payload_bytes || 0)}`);
+          }
+          NODE
+
+      - name: Diagnose-only conclusion
+        if: ${{ inputs.mode == 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATE="${{ steps.inventory.outputs.cache_state }}"
+
+          {
+            echo
+            echo "## Diagnose-only conclusion"
+            case "$STATE" in
+              MISSING)
+                echo "- Exact odds cache: MISSING"
+                echo "- Next action: rerun this workflow with mode=backfill_target"
+                ;;
+              PRESENT_EXPIRED)
+                echo "- Exact odds cache: PRESENT but EXPIRED"
+                echo "- Next action: rerun with mode=backfill_target to refresh the snapshot"
+                ;;
+              PRESENT_CURRENT)
+                echo "- Exact odds cache: PRESENT and CURRENT"
+                echo "- D1 itself is not missing. If the app still says JRA_ODDS_CACHE_MISS, inspect Worker route/production binding next."
+                ;;
+              CORRUPT_OR_INVALID)
+                echo "- Exact odds cache: PRESENT but payload validation failed"
+                echo "- Next action: rerun with mode=backfill_target to replace the row with a fresh official snapshot"
+                ;;
+              *)
+                echo "- Unexpected diagnosis state: $STATE"
+                ;;
+            esac
+            echo "- Source code changed: NO"
+            echo "- D1 changed: NO"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch fresh official odds and build D1 upsert
+        if: ${{ inputs.mode == 'backfill_target' }}
+        id: backfill_fetch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f /tmp/jra-odds-v187.sql /tmp/jra-odds-v187-summary.json
+
+          if ! node scripts/jra-official-odds-refresh.mjs \
+            --date="$INPUT_DATE" \
+            --track="$INPUT_TRACK" \
+            --race="$INPUT_RACE" \
+            --out=/tmp/jra-odds-v187.sql \
+            --summary=/tmp/jra-odds-v187-summary.json
+          then
+            echo "::error::Official odds fetch failed. No D1 write was performed."
+            {
+              echo
+              echo "## Backfill fetch FAILED"
+              echo "- Official fetch could not build a valid odds snapshot."
+              echo "- D1 write: NOT PERFORMED"
+              echo "- Existing D1 row: PRESERVED"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 31
+          fi
+
+          test -s /tmp/jra-odds-v187.sql
+          test -s /tmp/jra-odds-v187-summary.json
+
+          if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-odds-v187.sql; then
+            echo "::error::Generated SQL contains explicit transaction control."
+            exit 32
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-odds-v187-summary.json', 'utf8'));
+          if (x.ok !== true) throw new Error('summary_not_ok');
+          if (Number(x.oddsHorseCount || 0) < 1) throw new Error('no_odds_rows');
+          if (!x.date || !x.track || !x.race) throw new Error('target_identity_missing');
+          console.log(JSON.stringify(x, null, 2));
+          NODE
+
+          {
+            echo
+            echo "## Fresh official snapshot"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-odds-v187-summary.json', 'utf8'));
+          console.log(`- Target: \`${x.date} ${x.track} ${x.race}R\``);
+          console.log(`- oddsHorseCount: ${Number(x.oddsHorseCount || 0)}`);
+          console.log(`- activeHorseCount: ${Number(x.activeHorseCount || 0)}`);
+          console.log(`- complete: ${x.complete === true}`);
+          console.log(`- snapshotType: \`${x.oddsSnapshotType || ''}\``);
+          console.log(`- acquiredAt: \`${x.acquiredAt || ''}\``);
+          console.log(`- expiresAt: \`${x.expiresAt || ''}\``);
+          NODE
+
+      - name: Write fresh odds snapshot to remote D1
+        if: ${{ inputs.mode == 'backfill_target' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-odds-v187.sql
+
+      - name: Verify exact D1 row after backfill
+        if: ${{ inputs.mode == 'backfill_target' }}
+        id: post_verify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_KEY="odds|${INPUT_DATE}|${INPUT_TRACK}|${INPUT_RACE}"
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command "SELECT kind,cache_key,race_date,track,race_no,fetched_at,expires_at,LENGTH(payload_json) AS payload_bytes,json_extract(payload_json,'$.ok') AS payload_ok,json_extract(payload_json,'$.organization') AS payload_organization,json_extract(payload_json,'$.quality.oddsHorseCount') AS odds_horse_count,json_extract(payload_json,'$.quality.activeHorseCount') AS active_horse_count,json_extract(payload_json,'$.quality.complete') AS odds_complete,json_extract(payload_json,'$.oddsSnapshotType') AS snapshot_type FROM jra_official_cache WHERE kind='odds' AND cache_key='$EXPECTED_KEY' LIMIT 1;" \
+            --json > /tmp/d1-after.json
+
+          cat > /tmp/d1-after-check.mjs <<'NODE'
+          import fs from 'node:fs';
+
+          const raw = JSON.parse(fs.readFileSync('/tmp/d1-after.json', 'utf8'));
+
+          function collect(value, out = []) {
+            if (Array.isArray(value)) {
+              for (const x of value) collect(x, out);
+            } else if (value && typeof value === 'object') {
+              if (Array.isArray(value.results)) out.push(...value.results);
+              for (const [k, v] of Object.entries(value)) if (k !== 'results') collect(v, out);
+            }
+            return out;
+          }
+
+          const row = collect(raw)[0];
+          if (!row) throw new Error('D1_BACKFILL_ROW_MISSING');
+
+          const payloadOk = Number(row.payload_ok) === 1 || row.payload_ok === true || row.payload_ok === 'true';
+          if (!payloadOk) throw new Error('D1_BACKFILL_PAYLOAD_NOT_OK');
+          if (row.payload_organization !== 'JRA') throw new Error('D1_BACKFILL_ORGANIZATION_INVALID');
+          if (Number(row.odds_horse_count || 0) < 1) throw new Error('D1_BACKFILL_ODDS_EMPTY');
+
+          console.log(JSON.stringify(row, null, 2));
+          NODE
+
+          node /tmp/d1-after-check.mjs
+
+          {
+            echo
+            echo "## D1 backfill verification"
+            echo "- Exact cache key: FOUND"
+            echo "- Payload validation: PASS"
+            echo "- oddsHorseCount >= 1: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Production odds API smoke
+        if: ${{ inputs.mode == 'backfill_target' && inputs.production_smoke == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          LAST_CODE=""
+          LAST_CACHE_HEADER=""
+
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then
+              sleep "$DELAY"
+            fi
+
+            : > /tmp/v187-odds.json
+            : > /tmp/v187-odds.headers
+
+            LAST_CODE="$(curl -sS --max-time 25 \
+              -D /tmp/v187-odds.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/odds" \
+              --data-urlencode "date=$INPUT_DATE" \
+              --data-urlencode "track=$INPUT_TRACK" \
+              --data-urlencode "race=$INPUT_RACE" \
+              -o /tmp/v187-odds.json \
+              -w '%{http_code}' || true)"
+
+            LAST_CACHE_HEADER="$(grep -i '^x-chass-jra-odds-cache:' /tmp/v187-odds.headers | tail -1 | tr -d '\r' || true)"
+
+            if [ "$LAST_CODE" = "200" ] \
+              && printf '%s' "$LAST_CACHE_HEADER" | grep -qi 'D1-HIT' \
+              && node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/v187-odds.json', 'utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (!Array.isArray(x.odds) || x.odds.length < 1) process.exit(1);
+          if (Number(x.quality?.oddsHorseCount || 0) < 1) process.exit(1);
+          NODE
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          {
+            echo
+            echo "## Production API smoke"
+            echo "- HTTP: \`$LAST_CODE\`"
+            echo "- Cache header: \`${LAST_CACHE_HEADER:-none}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::D1 row exists and validates, but production /api/jra/odds did not return D1-HIT."
+            {
+              echo "- Result: FAILED"
+              echo "- Interpretation: D1 storage is now valid; remaining fault is Worker route/binding/read path."
+              echo "- Next target: production Worker odds route, not D1 backfill."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "--- response headers ---"
+            cat /tmp/v187-odds.headers || true
+            echo "--- response body ---"
+            cat /tmp/v187-odds.json || true
+            exit 41
+          fi
+
+          {
+            echo "- Result: PASS"
+            echo "- Production Worker can read the exact D1 odds row."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final success summary
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo
+            echo "## FINAL"
+            if [ "$INPUT_MODE" = "diagnose_only" ]; then
+              echo "- Diagnosis completed safely."
+              echo "- No D1 writes were performed."
+              echo "- Use the diagnosis above to decide whether backfill_target is required."
+            else
+              echo "- Official odds snapshot fetch: PASS"
+              echo "- Remote D1 upsert: PASS"
+              echo "- Exact D1 row verification: PASS"
+              if [ "$INPUT_PRODUCTION_SMOKE" = "true" ]; then
+                echo "- Production /api/jra/odds D1-HIT: PASS"
+              else
+                echo "- Production smoke: SKIPPED by input"
+              fi
+            fi
+            echo "- Repository source changes: NONE"
+            echo "- Production deploy: NONE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failure guidance
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          {
+            echo
+            echo "## FAILURE GUIDANCE"
+            echo "- Auth preflight failure => Cloudflare token/account configuration"
+            echo "- D1 inventory failure => DB binding/table/schema/remote D1 access"
+            echo "- Official fetch failure => JRA source/odds availability/parser; D1 remains untouched"
+            echo "- Post-write D1 verification failure => generated SQL or remote D1 write problem"
+            echo "- Production smoke failure with valid D1 row => Worker route/binding/read-path problem"
+            echo "- This workflow never edits repository source and never deploys Worker code"
+          } >> "$GITHUB_STEP_SUMMARY"
