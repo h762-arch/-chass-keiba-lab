@@ -296,12 +296,12 @@ export function sanitizeViewerMarketPayload(payload = {}) {
             }) || null;
 
             const overlayStatus = textOrNull(overlay?.oddsStatus);
-            const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
+            const overlayDisplayable = ['available', 'final', 'saved'].includes(String(overlayStatus || ''));
             const baseOdds = finiteOrNull(horse.odds);
             const basePopularity = finiteOrNull(horse.popularity);
-            const overlayOdds = overlayUsable ? finiteOrNull(overlay?.odds) : null;
-            const overlayPopularity = overlayUsable ? finiteOrNull(overlay?.popularity) : null;
-            const fallbackToSaved = Boolean(overlay) && !overlayUsable && baseOdds != null;
+            const overlayOdds = overlayDisplayable ? finiteOrNull(overlay?.odds) : null;
+            const overlayPopularity = overlayDisplayable ? finiteOrNull(overlay?.popularity) : null;
+            const fallbackToSaved = Boolean(overlay) && !overlayDisplayable && baseOdds != null;
 
             return {
               horseNo,
@@ -313,11 +313,11 @@ export function sanitizeViewerMarketPayload(payload = {}) {
               expectedValue: finiteOrNull(horse.expectedValue),
               longshotMark: textOrNull(horse.diamond),
               dangerMark: textOrNull(horse.warning),
-              marketStatus: overlayUsable
+              marketStatus: overlayDisplayable
                 ? overlayStatus
                 : (fallbackToSaved ? 'saved' : overlayStatus),
               marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
-              marketDataSource: overlayUsable
+              marketDataSource: overlayDisplayable
                 ? textOrNull(overlay?.marketDataSource)
                 : (fallbackToSaved ? 'saved_snapshot_fallback' : textOrNull(overlay?.marketDataSource)),
             };

@@ -1,6 +1,7 @@
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
 import {handleJraRaceRequest} from './jra-race-fetch.mjs';
 import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
+import {readJraOfficialOddsCacheForViewer} from './jra-official-cache.mjs';
 import {handleJraResultRequest} from './jra-result-fetch.mjs';
 import {handleJraMeetingPersistent,JRA_MEETING_CACHE_SCHEMA,runScheduledJraMeetingRefresh} from './jra-background-refresh.mjs';
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
@@ -526,13 +527,39 @@ function publicDayAiLight(day){
    horses:race.horses.map(horse=>horseColumns.map(key=>horse[key]??null))
   }))};
 }
-function publicViewerMarketOverlay(day,races){
+async function publicViewerMarketOverlay(day,races,env){
  const rawByRaceNo=new Map((races||[]).map(r=>[Number(r?.raceNo),r]));
+ const officialByRaceNo=new Map();
+
+ if(env?.DB){
+  await Promise.all((day?.races||[]).map(async item=>{
+   const raceNo=Number(item?.raceNumber);
+   if(!Number.isInteger(raceNo))return;
+   try{
+    const cached=await readJraOfficialOddsCacheForViewer(env,{
+     date:day?.date,
+     track:day?.track,
+     race:raceNo
+    });
+    if(cached?.body?.ok)officialByRaceNo.set(raceNo,cached.body);
+   }catch(error){
+    console.warn('[CHASS VIEWER MARKET PERSISTENCE]',{
+     raceNo,
+     error:String(error?.code||error?.message||error).slice(0,160)
+    });
+   }
+  }));
+ }
+
  return (day?.races||[]).map(item=>{
   const raw=rawByRaceNo.get(Number(item?.raceNumber))||null,
         resultHorses=Array.isArray(raw?.result?.horses)?raw.result.horses:[],
         resultByNo=new Map(resultHorses.map(h=>[Number(h?.horseNo),h])),
-        resultAt=raw?.resultAcquiredAt||raw?.result?.fetchedAt||raw?.result?.resultAcquiredAt||null;
+        resultAt=raw?.resultAcquiredAt||raw?.result?.fetchedAt||raw?.result?.resultAcquiredAt||null,
+        official=officialByRaceNo.get(Number(item?.raceNumber))||null,
+        officialByNo=new Map((official?.odds||[]).map(h=>[Number(h?.horseNo),h])),
+        officialExpired=official?.bridgeCache?.expired===true;
+
   return {
    raceNumber:item?.raceNumber??null,
    horses:(item?.horses||[]).map(h=>{
@@ -540,17 +567,39 @@ function publicViewerMarketOverlay(day,races){
           resultHorse=resultByNo.get(no)||null,
           finalOdds=publicPositiveNumber(resultHorse?.finalOdds??resultHorse?.odds),
           finalPopularity=publicPositiveInteger(resultHorse?.finalPopularity??resultHorse?.popularity),
-          savedStatus=String(h?.oddsStatus||item?.market?.oddsStatus||'unavailable'),
-          savedUsable=savedStatus==='available',
+          officialHorse=officialByNo.get(no)||null,
+          officialOdds=publicPositiveNumber(officialHorse?.odds),
+          officialPopularity=publicPositiveInteger(officialHorse?.popularity),
+          officialUsable=officialOdds!=null,
+          officialStatus=officialUsable
+            ?(official?.oddsSnapshotType==='final'?'final':(officialExpired?'saved':'available'))
+            :null,
+          baseStatus=String(h?.oddsStatus||item?.market?.oddsStatus||'unavailable'),
+          baseUsable=['available','final','saved'].includes(baseStatus),
           finalUsable=finalOdds!=null;
+
     return {
      horseNumber:Number.isFinite(no)?no:null,
      horseName:h?.horseName??h?.name??'',
-     odds:finalUsable?finalOdds:(savedUsable?publicPositiveNumber(h?.odds):null),
-     popularity:finalUsable?(finalPopularity??publicPositiveInteger(h?.popularity)):(savedUsable?publicPositiveInteger(h?.popularity):null),
-     oddsStatus:finalUsable?'final':savedStatus,
-     oddsFetchedAt:finalUsable?resultAt:(h?.oddsFetchedAt||item?.market?.oddsFetchedAt||null),
-     marketDataSource:finalUsable?'result_final':(item?.market?.marketDataSource||null)
+     odds:finalUsable
+       ?finalOdds
+       :(officialUsable?officialOdds:(baseUsable?publicPositiveNumber(h?.odds):null)),
+     popularity:finalUsable
+       ?(finalPopularity??publicPositiveInteger(h?.popularity))
+       :(officialUsable
+         ?(officialPopularity??publicPositiveInteger(h?.popularity))
+         :(baseUsable?publicPositiveInteger(h?.popularity):null)),
+     oddsStatus:finalUsable?'final':(officialUsable?officialStatus:baseStatus),
+     oddsFetchedAt:finalUsable
+       ?resultAt
+       :(officialUsable
+         ?(official?.bridgeCache?.fetchedAt||official?.acquiredAt||null)
+         :(h?.oddsFetchedAt||item?.market?.oddsFetchedAt||null)),
+     marketDataSource:finalUsable
+       ?'result_final'
+       :(officialUsable
+         ?(officialExpired?'d1_saved_expired':(official?.marketDataSource||'JRA_OFFICIAL_WIN_ODDS'))
+         :(item?.market?.marketDataSource||null))
     };
    })
   };
@@ -629,7 +678,7 @@ export async function handlePublicApi(request,env){
     const payload=publicDayAiLight(day);
     if(u.searchParams.get('viewerMarket')==='1'){
      payload.viewerMarketMode='fresh-final-overlay-v1';
-     payload.viewerMarketOverlay=publicViewerMarketOverlay(day,races);
+     payload.viewerMarketOverlay=await publicViewerMarketOverlay(day,races,env);
     }
     return publicJson(payload,{cache,head});
    }
