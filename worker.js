@@ -1,5 +1,5 @@
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
-import {handleJraRaceRequest} from './jra-race-fetch.mjs';
+import {handleJraRaceRequest} from './jra-drive-prediction-input.mjs';
 import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
 import {readJraOfficialOddsCacheForViewer} from './jra-official-cache.mjs';
 import {handleJraResultRequest} from './jra-result-fetch.mjs';
