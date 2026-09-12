@@ -1,5 +1,6 @@
 import {validDate,JRA_TRACKS} from './jra-meeting-discovery.mjs';
 import {resolveRaceCardUrl,parseJraRaceCard} from './jra-race-fetch.mjs';
+import {readJraOfficialOddsCache} from './jra-official-cache.mjs';
 export const JRA_ODDS_PARSER_VERSION='jra-official-win-odds-v1';
 const TRACK_SET=new Set(JRA_TRACKS);
 const LIST_URL='https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3';
@@ -47,6 +48,35 @@ export function createJraOddsService({fetchImpl=globalThis.fetch,now=Date.now,ti
   if(!['GET','HEAD'].includes(request.method))return send({ok:false,error:'METHOD_NOT_ALLOWED'},405);
   if(!validDate(date)||!TRACK_SET.has(track)||!Number.isInteger(race)||race<1||race>12)return send({ok:false,error:'JRA_RACE_INVALID_INPUT'},400);
   if(!(env.ENABLE_JRA_ODDS_FETCH===true||env.ENABLE_JRA_ODDS_FETCH==='true'))return send({ok:false,error:'JRA_ODDS_FETCH_DISABLED'},503);
+  if(env?.DB){
+    try{
+      const cached=await readJraOfficialOddsCache(env,{date,track,race,nowMs:now()});
+      if(cached)return send(cached.body,200,'D1-HIT');
+    }catch(error){
+      return send({
+        ok:false,
+        organization:'JRA',
+        date,track,race,
+        error:error?.code||'JRA_ODDS_CACHE_READ_FAILED'
+      },503,'D1-ERROR');
+    }
+
+    const allowDirect =
+      env.ENABLE_JRA_ODDS_DIRECT_FETCH===true ||
+      env.ENABLE_JRA_ODDS_DIRECT_FETCH==='true';
+
+    if(!allowDirect){
+      return send({
+        ok:false,
+        organization:'JRA',
+        date,track,race,
+        error:'JRA_ODDS_CACHE_MISS',
+        cacheProvider:'github_actions_d1',
+        hint:'Run JRA odds cache refresh'
+      },503,'D1-MISS');
+    }
+  }
+
   const key=`JRA:${date}:${track}:${race}`,saved=cache.get(key);if(saved?.expires>now())return send(saved.body,saved.status,'HIT');
   const joined=pending.has(key);if(!joined)pending.set(key,(async()=>{const controller=new AbortController();let timer;try{return await Promise.race([(async()=>{const list=await readText(await fetchImpl(LIST_URL,{signal:controller.signal,redirect:'error'}));const sourceUrl=resolveRaceCardUrl(list,{date,track,race});const html=await readText(await fetchImpl(sourceUrl,{signal:controller.signal,redirect:'error'}));const parsed=parseJraWinOdds(html,{date,track,race});return {body:{ok:true,...parsed,sourceUrl,acquiredAt:new Date(now()).toISOString()},status:200};})(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('JRA_FETCH_TIMEOUT'));},timeoutMs)})]);}catch(error){const code=/^JRA_/.test(error.message)?error.message:'JRA_OFFICIAL_UNAVAILABLE';const status=code==='JRA_RACE_NOT_FOUND'?404:code==='JRA_ODDS_UNAVAILABLE'?409:503;return {body:{ok:false,organization:'JRA',date,track,race,error:code},status};}finally{clearTimeout(timer)}})());
   try{const result=await pending.get(key),ttl=result.body.ok?30000:15000;if(cache.size>=128)cache.delete(cache.keys().next().value);cache.set(key,{...result,expires:now()+ttl});return send(result.body,result.status,joined?'COALESCED':'MISS');}finally{pending.delete(key)}
