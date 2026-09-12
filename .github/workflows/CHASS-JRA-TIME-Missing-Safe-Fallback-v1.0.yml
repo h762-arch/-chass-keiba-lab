@@ -1,0 +1,530 @@
+name: CHASS JRA TIME Missing Safe Fallback v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-time-missing-safe-fallback-v10
+  cancel-in-progress: false
+
+jobs:
+  time_fallback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $BASE"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f jra-model.js
+          test -f app.js
+          test -f jra-race-client.js
+          test -f jra-odds-client.js
+          test -f .assetsignore
+
+          # Exact JRA model baseline reviewed before this patch was created.
+          test "$(git hash-object jra-model.js)" = "3250e418b5bc6554690b535f0ffe976d9b7e6699"
+
+          grep -Fq "const individualTimes=rows.map" jra-model.js
+          grep -Fq "predictedTimeType:predTime==null?'':'レース基準補正'" jra-model.js
+          grep -Fq "modelVersion:'10.0.1-jra-calibration1'" jra-model.js
+
+          echo "JRA TIME baseline: PASS"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+
+          npx -y wrangler@4 whoami
+
+      - name: Build isolated TIME fallback candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-time-fallback-v10
+          git worktree add --detach /tmp/chass-jra-time-fallback-v10 HEAD
+          cd /tmp/chass-jra-time-fallback-v10
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const file = 'jra-model.js';
+          let src = fs.readFileSync(file, 'utf8');
+
+          // -----------------------------------------------------------------
+          // Safety principle:
+          // - Existing primary TIME path is unchanged.
+          // - Fallback is used only when the existing primary TIME is missing.
+          // - Only same-surface timed past runs are eligible.
+          // - Wider distance conversion is explicitly marked LOW CONFIDENCE.
+          // - Debut/no-run horses remain blank: no fabricated TIME.
+          // -----------------------------------------------------------------
+
+          const oldTimes =
+            " const individualTimes=rows.map(row=>{const matched=row.runs.filter(x=>x.targetTime!=null&&x.distanceSimilarity>=.5);return weighted(matched.map(x=>({value:x.targetTime,weight:x.recency*(x.distanceSimilarity??0)})))}),raceTimes=individualTimes.filter(Number.isFinite).sort((a,b)=>a-b),raceBaseline=raceTimes.length?raceTimes[Math.floor(raceTimes.length/2)]:null;";
+
+          const newTimes =
+            " const primaryTimes=rows.map(row=>{const matched=row.runs.filter(x=>x.targetTime!=null&&x.distanceSimilarity>=.5);return weighted(matched.map(x=>({value:x.targetTime,weight:x.recency*(x.distanceSimilarity??0)})))}),fallbackTimes=rows.map((row,i)=>{if(Number.isFinite(primaryTimes[i]))return null;const matched=row.runs.filter(x=>x.targetTime!=null&&x.distanceSimilarity>=.25);return weighted(matched.map(x=>({value:x.targetTime,weight:x.recency*Math.max(.25,x.distanceSimilarity??0)*(.6+.4*(x.courseFit??.35))})))}),individualTimes=primaryTimes.map((v,i)=>Number.isFinite(v)?v:fallbackTimes[i]),timeTiers=primaryTimes.map((v,i)=>Number.isFinite(v)?'primary':Number.isFinite(fallbackTimes[i])?'fallback':'missing'),raceTimes=primaryTimes.filter(Number.isFinite).sort((a,b)=>a-b),raceBaseline=raceTimes.length?raceTimes[Math.floor(raceTimes.length/2)]:null;";
+
+          const timesCount = src.split(oldTimes).length - 1;
+          if (timesCount !== 1) {
+            throw new Error(`primary TIME anchor mismatch: ${timesCount}`);
+          }
+          src = src.replace(oldTimes, newTimes);
+
+          const oldHead =
+            " const horses=rows.map((row,i)=>{const h=row.horse,rawTime=individualTimes[i],predTime=rawTime==null?null:raceBaseline==null?rawTime:raceBaseline*.62+rawTime*.38,predictedTime=predTime==null?'':`${Math.floor(predTime/60)}:${(predTime%60).toFixed(1).padStart(4,'0')}`,evidence=";
+
+          const newHead =
+            " const horses=rows.map((row,i)=>{const h=row.horse,rawTime=individualTimes[i],timeTier=timeTiers[i],predTime=rawTime==null?null:raceBaseline==null?rawTime:raceBaseline*.62+rawTime*.38,predictedTime=predTime==null?'':`${Math.floor(predTime/60)}:${(predTime%60).toFixed(1).padStart(4,'0')}`,evidence=";
+
+          const headCount = src.split(oldHead).length - 1;
+          if (headCount !== 1) {
+            throw new Error(`horse TIME head anchor mismatch: ${headCount}`);
+          }
+          src = src.replace(oldHead, newHead);
+
+          const oldFields =
+            "predictedTime,predictedTimeType:predTime==null?'':'レース基準補正',predictedTimeConfidence:confidence,predictedTimeScenarios:predTime==null?null:{standard:predictedTime,paceFavored:null,paceAdverse:null,positionFailure:null},";
+
+          const newFields =
+            "predictedTime,predictedTimeType:predTime==null?'':timeTier==='fallback'?'距離補正・低信頼':'レース基準補正',predictedTimeConfidence:predTime==null?null:timeTier==='fallback'?Math.min(confidence,45):confidence,predictedTimeMissingReason:predTime==null?(row.horse.pastRuns?.length?'no_same_surface_time_evidence':'debut_no_time_evidence'):null,predictedTimeScenarios:predTime==null?null:{standard:predictedTime,paceFavored:null,paceAdverse:null,positionFailure:null},";
+
+          const fieldsCount = src.split(oldFields).length - 1;
+          if (fieldsCount !== 1) {
+            throw new Error(`TIME output anchor mismatch: ${fieldsCount}`);
+          }
+          src = src.replace(oldFields, newFields);
+
+          fs.writeFileSync(file, src);
+          NODE
+
+          cat > tests/jra-time-missing-safe-fallback.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import vm from 'node:vm';
+
+          function loadModel() {
+            const context = { console };
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync('jra-model.js', 'utf8'), context);
+            return context.CHASS_JRA_MODEL;
+          }
+
+          function race(overrides = {}) {
+            return {
+              racecourse: '中山',
+              distance: 1200,
+              surface: 'ダート',
+              trackCondition: '良',
+              raceClass: '1勝',
+              pace: '標準',
+              ...overrides
+            };
+          }
+
+          function run(overrides = {}) {
+            return {
+              distance: 1200,
+              surface: 'ダート',
+              racecourse: '中山',
+              trackCondition: '良',
+              timeSeconds: 72,
+              finish: 4,
+              fieldSize: 16,
+              margin: 0.5,
+              last3F: 36,
+              cornerPositions: [5, 5],
+              weightCarried: 56,
+              raceClass: '1勝',
+              ...overrides
+            };
+          }
+
+          function horse(no, pastRuns, overrides = {}) {
+            return {
+              horseNo: no,
+              horseName: `Horse${no}`,
+              sexAge: '牡3',
+              weightCarried: 56,
+              odds: 5 + no,
+              popularity: no,
+              pastRuns,
+              ...overrides
+            };
+          }
+
+          test('existing primary TIME path stays primary', () => {
+            const model = loadModel();
+            const out = model.calculate({
+              race: race(),
+              horses: [
+                horse(1, [run({ timeSeconds: 71.8 })]),
+                horse(2, [run({ timeSeconds: 72.4 })]),
+                horse(3, [run({ timeSeconds: 73.0 })])
+              ]
+            });
+
+            assert.equal(out.horses.length, 3);
+            for (const h of out.horses) {
+              assert.match(h.predictedTime, /^\d+:\d{2}\.\d$/);
+              assert.equal(h.predictedTimeType, 'レース基準補正');
+              assert.equal(h.predictedTimeMissingReason, null);
+            }
+          });
+
+          test('missing TIME gets same-surface wider-distance fallback only', () => {
+            const model = loadModel();
+            const out = model.calculate({
+              race: race({ distance: 1200 }),
+              horses: [
+                horse(1, [run({ distance: 1200, timeSeconds: 72.0 })]),
+                horse(2, [run({ distance: 1300, timeSeconds: 78.0 })]),
+                // Difference 600m => distanceSimilarity .25.
+                // Old path (>= .5) was missing; safe fallback may use it.
+                horse(3, [run({ distance: 1800, timeSeconds: 112.0 })])
+              ]
+            });
+
+            const h = out.horses.find(x => x.horseNo === 3);
+            assert.ok(h.predictedTime);
+            assert.equal(h.predictedTimeType, '距離補正・低信頼');
+            assert.ok(h.predictedTimeConfidence <= 45);
+            assert.equal(h.predictedTimeMissingReason, null);
+          });
+
+          test('debut horse remains blank instead of fabricating TIME', () => {
+            const model = loadModel();
+            const out = model.calculate({
+              race: race(),
+              horses: [
+                horse(1, [run({ timeSeconds: 72.0 })]),
+                horse(2, [run({ timeSeconds: 72.5 })]),
+                horse(3, [])
+              ]
+            });
+
+            const debut = out.horses.find(x => x.horseNo === 3);
+            assert.equal(debut.predictedTime, '');
+            assert.equal(debut.predictedTimeType, '');
+            assert.equal(debut.predictedTimeConfidence, null);
+            assert.equal(debut.predictedTimeMissingReason, 'debut_no_time_evidence');
+          });
+
+          test('different-surface run is never used as TIME fallback', () => {
+            const model = loadModel();
+            const out = model.calculate({
+              race: race({ surface: '芝' }),
+              horses: [
+                horse(1, [run({ surface: '芝', timeSeconds: 69.5 })]),
+                horse(2, [run({ surface: '芝', timeSeconds: 70.0 })]),
+                horse(3, [run({ surface: 'ダート', distance: 1200, timeSeconds: 72.0 })])
+              ]
+            });
+
+            const h = out.horses.find(x => x.horseNo === 3);
+            assert.equal(h.predictedTime, '');
+            assert.equal(h.predictedTimeMissingReason, 'no_same_surface_time_evidence');
+          });
+
+          test('fallback TIME is market independent', () => {
+            const model = loadModel();
+            const input = {
+              race: race(),
+              horses: [
+                horse(1, [run({ timeSeconds: 72.0 })]),
+                horse(2, [run({ timeSeconds: 72.5 })]),
+                horse(3, [run({ distance: 1800, timeSeconds: 112.0 })], { odds: 3, popularity: 1 })
+              ]
+            };
+
+            const a = model.calculate(input);
+            const changedMarket = structuredClone(input);
+            changedMarket.horses[2].odds = 99.9;
+            changedMarket.horses[2].popularity = 16;
+            const b = model.calculate(changedMarket);
+
+            const ta = a.horses.find(x => x.horseNo === 3).predictedTime;
+            const tb = b.horses.find(x => x.horseNo === 3).predictedTime;
+            assert.equal(ta, tb);
+          });
+          EOF
+
+          git status --porcelain=v1 -uall
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/time-fallback-actual.txt
+
+          cat > /tmp/time-fallback-allowed.txt <<'EOF'
+          jra-model.js
+          tests/jra-time-missing-safe-fallback.test.mjs
+          EOF
+
+          sort -o /tmp/time-fallback-allowed.txt /tmp/time-fallback-allowed.txt
+
+          if ! diff -u /tmp/time-fallback-allowed.txt /tmp/time-fallback-actual.txt; then
+            echo "::error::TIME fallback candidate scope mismatch."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-time-fallback-v10
+          npm ci
+          npm ci --prefix mcp
+
+      - name: TIME fallback tests + full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-time-fallback-v10
+
+          node --check jra-model.js
+          node --test tests/jra-time-missing-safe-fallback.test.mjs
+          npm run check
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA TIME Missing Safe Fallback v1.0 - VALIDATION SUCCESS"
+            echo
+            echo "- Existing primary TIME path: UNCHANGED"
+            echo "- Fallback applies only when primary TIME is missing: PASS"
+            echo "- Same-surface requirement: PASS"
+            echo "- Wider distance threshold: distanceSimilarity >= 0.25"
+            echo "- Fallback label: 距離補正・低信頼"
+            echo "- Fallback confidence cap: 45"
+            echo "- Debut/no-run TIME fabrication: PROHIBITED"
+            echo "- Different-surface TIME fallback: PROHIBITED"
+            echo "- Market independence: PASS"
+            echo "- Full regression: PASS"
+            echo "- Production commit/deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun this workflow with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced during validation. Nothing will be applied."
+            exit 1
+          fi
+
+      - name: Apply TIME fallback source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: time_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-time-fallback-v10/jra-model.js jra-model.js
+          cp /tmp/chass-jra-time-fallback-v10/tests/jra-time-missing-safe-fallback.test.mjs \
+            tests/jra-time-missing-safe-fallback.test.mjs
+
+          # Strictly prevent bridge/data/NAR/viewer/storage changes.
+          git diff --quiet -- \
+            app.js \
+            worker.js \
+            jra-race-client.js \
+            jra-race-fetch.mjs \
+            jra-odds-client.js \
+            jra-odds-fetch.mjs \
+            jra-official-cache.mjs \
+            jra-normalizer.js \
+            jra-adapter.js \
+            wrangler.jsonc \
+            migrations/ \
+            scripts/ \
+            viewer/ \
+            mcp/ \
+            .github/workflows/ || {
+              echo "::error::Unexpected unrelated surface changed."
+              exit 1
+            }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-model.js \
+            tests/jra-time-missing-safe-fallback.test.mjs
+
+          git commit -m "Add safe JRA missing TIME fallback"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy TIME model asset
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production TIME asset smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            CODE="$(curl -sS --max-time 15 \
+              "$PRODUCTION_BASE_URL/jra-model.js" \
+              -o /tmp/prod-jra-model.js \
+              -w '%{http_code}' || true)"
+
+            echo "jra-model.js HTTP=$CODE"
+
+            if [ "$CODE" = "200" ] \
+              && grep -Fq "距離補正・低信頼" /tmp/prod-jra-model.js \
+              && grep -Fq "debut_no_time_evidence" /tmp/prod-jra-model.js \
+              && grep -Fq "distanceSimilarity>=.25" /tmp/prod-jra-model.js
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production JRA TIME fallback asset did not become visible."
+            exit 1
+          fi
+
+          for path in "/.git/config" "/worker.js" "/wrangler.jsonc" "/jra-race-fetch.mjs"; do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive file became public: $path"
+              exit 1
+            fi
+          done
+
+          echo "Production JRA TIME fallback asset: PASS"
+
+      - name: Roll back TIME patch on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.time_commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.time_commit.outputs.sha }}"
+          STATUS=$?
+
+          if [ "$STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+
+            if npx -y wrangler@4 deploy; then
+              echo "TIME fallback rollback and baseline redeploy: SUCCESS"
+              exit 0
+            fi
+
+            echo "::error::TIME source reverted, but baseline redeploy failed."
+            exit 1
+          fi
+
+          echo "::error::Automatic TIME fallback revert failed."
+          exit 1
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA TIME Missing Safe Fallback v1.0 - PRODUCTION SUCCESS"
+            echo
+            echo "- Existing TIME values: PRESERVED"
+            echo "- Missing TIME safe fallback: ENABLED"
+            echo "- Same-surface wider-distance evidence only: ENABLED"
+            echo "- Low-confidence label/cap: ENABLED"
+            echo "- Debut TIME fabrication: DISABLED"
+            echo "- Market-independent TIME: PRESERVED"
+            echo "- Race/Odds Bridge: UNCHANGED"
+            echo "- D1 / NAR / Viewer / result logic: UNCHANGED"
+            echo "- Static-assets security boundary: PASS"
+            echo
+            echo "Reload the app and re-run a normal JRA race that previously showed partial TIME coverage."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-jra-time-fallback-v10 2>/dev/null
+          git worktree prune 2>/dev/null
+          exit 0
