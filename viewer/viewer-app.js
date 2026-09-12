@@ -843,6 +843,29 @@ function resolveHorseIdentity(baseHorse, candidates, used = new Set()) {
   return null;
 }
 
+function normalizeAbilityMarkOrder(race) {
+  if (!race?.horses?.length) return;
+
+  const active = race.horses
+    .filter((horse) => horse.runnerStatus === 'active')
+    .filter((horse) => horse.abilityScore != null && Number.isFinite(Number(horse.abilityScore)))
+    .sort((a, b) =>
+      Number(b.abilityScore) - Number(a.abilityScore)
+      || Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1)
+      || Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999)
+    );
+
+  if (!active.length) return;
+
+  const marks = ['◎', '○', '▲', '△'];
+  for (const horse of race.horses) {
+    if (['◎', '○', '▲', '△'].includes(String(horse.mark || ''))) horse.mark = null;
+  }
+  active.slice(0, marks.length).forEach((horse, index) => {
+    horse.mark = marks[index];
+  });
+}
+
 function normalizeDuplicateMainMarks(race) {
   const mains = race.horses.filter(
     (horse) => horse.runnerStatus === 'active' && horse.mark === '◎',
@@ -910,6 +933,7 @@ function mergeMarket(day, marketDay) {
     });
 
     race.marketAvailable = race.horses.some((horse) => horse.odds != null);
+    normalizeAbilityMarkOrder(race);
     normalizeDuplicateMainMarks(race);
   }
 }
@@ -930,7 +954,7 @@ function mergeRaceDetail(day, detail) {
       ...horse,
       ...full,
       // Current horse identity may already have been corrected from market data.
-      horseNo: horse.horseNo ?? full.horseNo,
+      horseNo: full.horseNo ?? horse.horseNo,
       horseName: horse.horseName || full.horseName,
       odds: horse.odds ?? full.odds,
       popularity: horse.popularity ?? full.popularity,
@@ -945,6 +969,8 @@ function mergeRaceDetail(day, detail) {
   for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
     if (detail[key] != null) target[key] = detail[key];
   }
+  normalizeAbilityMarkOrder(target);
+  normalizeDuplicateMainMarks(target);
 }
 
 function mergeRaceSummaries(day, summaries) {

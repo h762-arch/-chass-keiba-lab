@@ -49,7 +49,7 @@ function isEligibleHorse(h){return !INACTIVE_HORSE_STATUSES.has(normalizeHorseSt
 function originalLayerHorses(record){const market=new Map((record?.marketSnapshot?.horses||[]).map(h=>[Number(h.horseNo),h])),final=new Map((record?.finalSnapshot?.ranking||record?.finalSnapshot?.top3||[]).map(h=>[Number(h.horseNo),h]));return (record?.predictionSnapshot?.horses||record?.horses||[]).map(h=>({...cloneData(h),...cloneData(market.get(Number(h.horseNo))||{}),...cloneData(final.get(Number(h.horseNo))||{}),horseStatus:'active',eligible:true,originalMark:(final.get(Number(h.horseNo))||{}).mark||h.finalMark||h.abilityMark||''}))}
 function scratchImpactScore(original,statusByHorse){const ordered=[...original].sort((a,b)=>(b.overall??0)-(a.overall??0)||(b.win??0)-(a.win??0)),rank=new Map(ordered.map((h,i)=>[Number(h.horseNo),i+1])),activeEscapes=original.filter(h=>/逃/.test(String(h.runningStyle))&&!INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)])),removed=original.filter(h=>INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)]));let score=0;for(const h of removed){const r=rank.get(Number(h.horseNo));score+=r===1?45:r<=3?25:5;if(Number(h.popularity)===1)score+=25;if(h.valueMark)score+=15;if(/逃/.test(String(h.runningStyle))&&activeEscapes.length===0)score+=35}return clamp(score,0,100)}
 function livePaceAdjustment(h,removed,original){const removedEscape=removed.some(x=>/逃/.test(String(x.runningStyle))),removedForward=removed.filter(x=>/逃|先行/.test(String(x.runningStyle))).length,onlyEscapeRemoved=removedEscape&&!original.filter(x=>!removed.includes(x)&&/逃/.test(String(x.runningStyle))).length;if(onlyEscapeRemoved)return /逃|先行/.test(String(h.runningStyle))?.06:-.05;if(removedForward>=2)return /逃|先行/.test(String(h.runningStyle))?.04:-.03;if(removed.some(x=>/差|追/.test(String(x.runningStyle))))return /逃|先行/.test(String(h.runningStyle))?.02:0;return 0}
-function buildLiveAdjustedPrediction(record,statusItems=[],at=new Date().toISOString(),history=[]){const original=originalLayerHorses(record),previous=record?.scratchAudit?.statusByHorse||{},statusByHorse={...previous};for(const item of statusItems||[]){const no=Number(item?.horseNo),status=normalizeHorseStatus(item?.horseStatus||item?.statusText||item?.positionText);if(no&&status!=='active')statusByHorse[no]=status}const removed=original.filter(h=>INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)]));if(!removed.length)return null;const impact=scratchImpactScore(original,statusByHorse),active=original.filter(h=>!INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)])).map(h=>cloneData(h)),winSum=active.reduce((s,h)=>s+(num(h.win)||0),0)||1,placeRaw=active.map(h=>Math.max(1,(num(h.place)||1)*(1+livePaceAdjustment(h,removed,original)))),placeTarget=Math.min(300,active.reduce((s,h)=>s+(num(h.place)||0),0)),placeSum=placeRaw.reduce((s,x)=>s+x,0)||1;active.forEach((h,i)=>{h.horseStatus='active';h.eligible=true;h.win=Number((100*(num(h.win)||0)/winSum).toFixed(2));h.place=Number(clamp(placeRaw[i]*placeTarget/placeSum,1,88).toFixed(2));const paceDelta=livePaceAdjustment(h,removed,original);h.paceFitScore=Number(clamp((num(h.paceFitScore??h.predictionAxes?.paceFitScore)??50)+paceDelta*100,0,100).toFixed(1));if(h.predictionAxes)h.predictionAxes.paceFitScore=h.paceFitScore;h.ev=num(h.odds)==null?null:Number((num(h.odds)*h.win).toFixed(2));h.fair=h.win>0?Number((100/h.win).toFixed(2)):null;h.overall=Math.round(clamp((num(h.overall)||0)+paceDelta*20,0,100))});abilityMarks(active);applyValueFlags(active,record?.race||record?.predictionSnapshot?.race||{});const axis=applyPredictionAxisReinforcement(active,record?.race||record?.predictionSnapshot?.race||{}),ranked=rankFinalFor(active),marks=['◎','○','▲'];ranked.forEach((h,i)=>h.finalMark=i<3?marks[i]:'');const inactive=removed.map(h=>({...h,horseStatus:statusByHorse[Number(h.horseNo)],eligible:false,odds:null,popularity:null,ev:null,valueMark:'',warningMark:'',finalMark:'',statusLabel:horseStatusLabel(statusByHorse[Number(h.horseNo)])})),horses=[...active,...inactive].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo)),race=cloneData(record?.race||record?.predictionSnapshot?.race||{}),soleEscapeRemoved=removed.some(x=>/逃/.test(String(x.runningStyle)))&&!active.some(x=>/逃/.test(String(x.runningStyle)));if(soleEscapeRemoved)race.pace='スロー';const synthetic={race,predictionSnapshot:{createdAt:at,race,horses:active.map(predictionHorse)},marketSnapshot:{horses:active.map(marketHorse)}},volatility=calculateVolatilityIndex(synthetic,history),originalVolatility=record?.predictionSnapshot?.volatility||null,createdAt=record?.liveAdjustedPrediction?.createdAt||at;return {schemaVersion:1,kind:'live_adjustment',adjustedFromModelVersion:record?.predictionSnapshot?.modelVersion||record?.modelVersion||APP_VERSION,createdAt,updatedAt:at,scratchDetectedAt:record?.scratchAudit?.scratchDetectedAt||at,originalPredictionFingerprint:snapshotFingerprint(record?.predictionSnapshot),scratchImpactScore:impact,fullRecalculation:impact>=40,originalPace:record?.predictionSnapshot?.race?.pace||record?.race?.pace||'標準',livePace:race.pace||'標準',originalVolatilityIndex:originalVolatility?.volatilityIndex??record?.race?.volatilityIndex??null,liveVolatilityIndex:volatility.volatilityIndex,volatility,originalRaceConfidence:record?.predictionSnapshot?.axisModel?.raceConfidence??record?.race?.raceConfidence??null,raceConfidence:axis.raceConfidence,statusByHorse,excludedHorseNos:removed.map(h=>Number(h.horseNo)),horses,finalSnapshot:{schemaVersion:1,createdAt:at,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:marks[i],rank:i+1}))}}}
+function buildLiveAdjustedPrediction(record,statusItems=[],at=new Date().toISOString(),history=[]){const original=originalLayerHorses(record),previous=record?.scratchAudit?.statusByHorse||{},statusByHorse={...previous};for(const item of statusItems||[]){const no=Number(item?.horseNo),status=normalizeHorseStatus(item?.horseStatus||item?.statusText||item?.positionText);if(no&&status!=='active')statusByHorse[no]=status}const removed=original.filter(h=>INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)]));if(!removed.length)return null;const impact=scratchImpactScore(original,statusByHorse),active=original.filter(h=>!INACTIVE_HORSE_STATUSES.has(statusByHorse[Number(h.horseNo)])).map(h=>cloneData(h)),winSum=active.reduce((s,h)=>s+(num(h.win)||0),0)||1,placeRaw=active.map(h=>Math.max(1,(num(h.place)||1)*(1+livePaceAdjustment(h,removed,original)))),placeTarget=Math.min(300,active.reduce((s,h)=>s+(num(h.place)||0),0)),placeSum=placeRaw.reduce((s,x)=>s+x,0)||1;active.forEach((h,i)=>{h.horseStatus='active';h.eligible=true;h.win=Number((100*(num(h.win)||0)/winSum).toFixed(2));h.place=Number(clamp(placeRaw[i]*placeTarget/placeSum,1,88).toFixed(2));const paceDelta=livePaceAdjustment(h,removed,original);h.paceFitScore=Number(clamp((num(h.paceFitScore??h.predictionAxes?.paceFitScore)??50)+paceDelta*100,0,100).toFixed(1));if(h.predictionAxes)h.predictionAxes.paceFitScore=h.paceFitScore;h.ev=num(h.odds)==null?null:Number((num(h.odds)*h.win).toFixed(2));h.fair=h.win>0?Number((100/h.win).toFixed(2)):null;h.overall=Math.round(clamp((num(h.overall)||0)+paceDelta*20,0,100))});abilityMarks(active,record?.race||record?.predictionSnapshot?.race||{});applyValueFlags(active,record?.race||record?.predictionSnapshot?.race||{});const axis=applyPredictionAxisReinforcement(active,record?.race||record?.predictionSnapshot?.race||{}),ranked=rankFinalFor(active),marks=['◎','○','▲'];ranked.forEach((h,i)=>h.finalMark=i<3?marks[i]:'');const inactive=removed.map(h=>({...h,horseStatus:statusByHorse[Number(h.horseNo)],eligible:false,odds:null,popularity:null,ev:null,valueMark:'',warningMark:'',finalMark:'',statusLabel:horseStatusLabel(statusByHorse[Number(h.horseNo)])})),horses=[...active,...inactive].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo)),race=cloneData(record?.race||record?.predictionSnapshot?.race||{}),soleEscapeRemoved=removed.some(x=>/逃/.test(String(x.runningStyle)))&&!active.some(x=>/逃/.test(String(x.runningStyle)));if(soleEscapeRemoved)race.pace='スロー';const synthetic={race,predictionSnapshot:{createdAt:at,race,horses:active.map(predictionHorse)},marketSnapshot:{horses:active.map(marketHorse)}},volatility=calculateVolatilityIndex(synthetic,history),originalVolatility=record?.predictionSnapshot?.volatility||null,createdAt=record?.liveAdjustedPrediction?.createdAt||at;return {schemaVersion:1,kind:'live_adjustment',adjustedFromModelVersion:record?.predictionSnapshot?.modelVersion||record?.modelVersion||APP_VERSION,createdAt,updatedAt:at,scratchDetectedAt:record?.scratchAudit?.scratchDetectedAt||at,originalPredictionFingerprint:snapshotFingerprint(record?.predictionSnapshot),scratchImpactScore:impact,fullRecalculation:impact>=40,originalPace:record?.predictionSnapshot?.race?.pace||record?.race?.pace||'標準',livePace:race.pace||'標準',originalVolatilityIndex:originalVolatility?.volatilityIndex??record?.race?.volatilityIndex??null,liveVolatilityIndex:volatility.volatilityIndex,volatility,originalRaceConfidence:record?.predictionSnapshot?.axisModel?.raceConfidence??record?.race?.raceConfidence??null,raceConfidence:axis.raceConfidence,statusByHorse,excludedHorseNos:removed.map(h=>Number(h.horseNo)),horses,finalSnapshot:{schemaVersion:1,createdAt:at,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:marks[i],rank:i+1}))}}}
 // Ver.10.0.1 Phase 1: scratch information is status-only.  The legacy Live
 // Adjusted payload remains readable, but no new probability/mark/EV layer is built.
 function resultParticipantHorseNos(record){const result=record?.resultSnapshot||record?.result||{},out=new Set((result.finishOrder||[]).map(Number).filter(Number.isFinite));for(const no of Object.keys(result.actualTimes||{})){const n=Number(no);if(Number.isFinite(n))out.add(n)}for(const h of result.horses||[]){const no=Number(h?.horseNo),finish=Number(h?.position??h?.finish),market=h?.finalOdds??h?.odds,hasResult=Number.isFinite(finish)&&finish>0||!!h?.time||!!h?.actualTime||!!h?.cornerPositions||market!=null&&market!==''&&Number.isFinite(Number(market));if(Number.isFinite(no)&&hasResult)out.add(no)}return out}
@@ -252,10 +252,26 @@ function derive(horses){
  const place=b.map(v=>300*v/bs).map(v=>clamp(v,1,88));
  return model.map((m,i)=>({...m,win:win[i],place:place[i],kgScore:kgScore[i]}));
 }
-function abilityMarks(horses){
- const sorted=[...horses].sort((a,b)=>b.win-a.win);
- sorted.forEach(h=>h.abilityMark='');
+function abilityMarks(horses,race={}){
+ const jra=chassJraRaceContext(race);
+ const value=(v,fallback=-Infinity)=>Number.isFinite(Number(v))?Number(v):fallback;
+ const sorted=[...(horses||[])].filter(isEligibleHorse).sort((a,b)=>{
+   if(jra){
+     const overall=value(b.overall)-value(a.overall);
+     if(overall)return overall;
+     const win=value(b.win)-value(a.win);
+     if(win)return win;
+   }else{
+     const win=value(b.win)-value(a.win);
+     if(win)return win;
+     const overall=value(b.overall)-value(a.overall);
+     if(overall)return overall;
+   }
+   return Number(a.horseNo||999)-Number(b.horseNo||999);
+ });
+ (horses||[]).forEach(h=>h.abilityMark='');
  sorted.slice(0,4).forEach((h,i)=>h.abilityMark=['◎','○','▲','△'][i]);
+ return sorted;
 }
 function numericFeature(h,...keys){for(const key of keys){const path=key.split('.');let v=h;for(const part of path)v=v?.[part];const n=num(v);if(n!=null)return clamp(key.startsWith('scores.')&&n<=10?n*10:n,0,100)}return null}
 function rankValues(horses,getter,{lower=false}={}){const rows=horses.map((h,i)=>({h,i,v:num(getter(h))})).filter(x=>x.v!=null).sort((a,b)=>lower?a.v-b.v:b.v-a.v),map=new Map();rows.forEach((x,i)=>map.set(x.h,i+1));return {map,count:rows.length,score(h){const rank=map.get(h);return rank==null?null:rows.length===1?100:100*(rows.length-rank)/(rows.length-1)}}}
@@ -332,9 +348,22 @@ function reconcileMarketDerivedValues(horses,race={}){
      h.fair=null;
    }
  });
- abilityMarks(horses||[]);
+ abilityMarks(horses||[],race||{});
  applyValueFlags(horses||[],race||{});
  return horses;
+}
+function chassJraRaceContext(race={}){
+ return String(race?.raceType||'').toUpperCase()==='JRA'||/中央|JRA/.test(String(race?.category||''));
+}
+function canonicalInputHorseNo(h,i,race={}){
+ const raw=h?.horseNo??h?.horseNumber??h?.馬番;
+ const no=Number(raw);
+ if(Number.isInteger(no)&&no>=1&&no<=99)return no;
+ if(chassJraRaceContext(race)){
+   const name=String(h?.horseName??h?.horse??h?.name??h?.馬名??`row${i+1}`).trim();
+   throw new Error(`JRA_HORSE_NO_REQUIRED:${name}`);
+ }
+ return i+1;
 }
 function transform(root){
  const r={...(root.meta||{}),...(root.race||{})};
@@ -344,7 +373,7 @@ function transform(root){
  const horses=src.map((h,i)=>{
    const d=dm[i], win=num(h.aiWinRate??h.winRate??h.win??h.AI勝率)??d.win, place=num(h.aiPlaceRate??h.placeRate??h.place??h.AI複勝率)??d.place;
    return {
-     horseNo:h.horseNo??h.horseNumber??h.馬番??i+1,
+     horseNo:canonicalInputHorseNo(h,i,r),
      horseName:h.horseName??h.horse??h.name??h.馬名??'',
      horseStatus:normalizeHorseStatus(h.horseStatus||h.statusText),eligible:!INACTIVE_HORSE_STATUSES.has(normalizeHorseStatus(h.horseStatus||h.statusText)),
      sourceMark:String(h.sourceMark??h.mark??''),
@@ -399,7 +428,7 @@ function transform(root){
      h.overall=Math.round(clamp(40+ability*6+(h.dataConfidence-50)*.12,0,100));
    }
  });
- abilityMarks(horses);
+ abilityMarks(horses,r);
  if(ot==='実オッズ'){
    horses.forEach(h=>{if(h.odds!=null){h.ev=h.odds*h.win;h.fair=h.win>0?100/h.win:null;}});
    applyValueFlags(horses,r);
@@ -764,7 +793,7 @@ function fillJraRace(race={}){jraMeetingSelector?.manual();if($('jraDate'))$('jr
 function setRaceMode(mode,{announce=true,preserveState=false}={}){const jra=mode==='JRA',changed=raceTypeOf(state)!==mode;if(changed&&!preserveState)beginActiveRaceTransition(mode);else if(changed)activeRaceGeneration++;if($('raceMode'))$('raceMode').value=jra?'JRA':'NAR';if($('narInputPanel'))$('narInputPanel').hidden=jra;if($('jraInputPanel'))$('jraInputPanel').hidden=!jra;if($('jraActualFields'))$('jraActualFields').hidden=!jra;if($('legacyJsonImport'))$('legacyJsonImport').hidden=jra;if($('raceModeStatus'))$('raceModeStatus').textContent=jra?'中央競馬 J5｜公式データ・安全なバックグラウンド更新':'地方競馬 Ver.9.9.35互換モード';if($('category'))$('category').value=jra?'中央競馬':'地方競馬';const marketCard=document.querySelector('.market-card'),autoOddsRow=$('autoOdds')?.closest?.('.switch-row');if(marketCard)marketCard.hidden=false;if(autoOddsRow)autoOddsRow.hidden=jra;if($('liveOddsSync')){$('liveOddsSync').disabled=false;$('liveOddsSync').textContent=jra?'JRA公式から現在オッズを取得':'NAR公式から現在オッズを取得'}if($('narSync')){$('narSync').disabled=false;$('narSync').textContent=jra?'JRA公式から結果取得・自動検証':'NAR公式から結果取得・自動保存'}jraMeetingSelector?.setActive(jra,{discover:!preserveState});jraRaceClient?.setActive(jra);jraOddsClient?.setActive(jra);jraResultClient?.setActive(jra);if(announce&&jra&&$('jraStatus'))$('jraStatus').textContent='JRA公式出馬表・単勝オッズ・発走後結果を利用できます。開催と結果は低頻度でバックグラウンド更新します。';if(changed&&!preserveState)render()}
 function mergeJraRace(normalized){return window.CHASS_JRA_NORMALIZER.normalizeJraData({race:{...normalized.race,...jraRaceInput()},horses:normalized.horses})}
 function registerJraResultQueue(){const rid=raceId(state.race);registerResultWaiting(state,rid)}
-function commitJraNormalized(normalized,provenance=null){const prepared=mergeJraRace(normalized),result=window.CHASS_JRA_ADAPTER.run(prepared);activeRaceGeneration++;state=result.state;if(provenance){state.race.dataMode='JRA公式出馬表・CHASS独自指数';state.race.dataSource='JRA_OFFICIAL / Existing JRA Adapter';state.race.autoGenerated=true;state.race.parserVersion=provenance.parserVersion;state.race.officialFetchedAt=provenance.fetchedAt;state.race.officialSourceUrl=provenance.sourceUrl;state.race.officialQuality=provenance.quality;}clearValidationTransient(state);state.modelVersion=result.prediction.modelVersion;fillRace(state.race);predictionViewMode='original';makeSnapshot();state.predictionSaved=true;registerJraResultQueue();persist(false);render();renderAutoResultQueue();if($('jraStatus')){$('jraStatus').textContent=`JRA ${state.horses.length}頭｜CHASS指数・確率計算完了｜AI勝率合計 ${result.prediction.quality.winProbabilityTotal.toFixed(2)}%｜TIME ${result.prediction.quality.withTime}/${state.horses.length}｜市場 ${result.prediction.quality.withMarket}/${state.horses.length}`}$('quickCard')?.scrollIntoView?.({behavior:'smooth',block:'start'});return result}
+function commitJraNormalized(normalized,provenance=null){const prepared=mergeJraRace(normalized),result=window.CHASS_JRA_ADAPTER.run(prepared);activeRaceGeneration++;state=result.state;abilityMarks(state.horses,state.race);if(provenance){state.race.dataMode='JRA公式出馬表・CHASS独自指数';state.race.dataSource='JRA_OFFICIAL / Existing JRA Adapter';state.race.autoGenerated=true;state.race.parserVersion=provenance.parserVersion;state.race.officialFetchedAt=provenance.fetchedAt;state.race.officialSourceUrl=provenance.sourceUrl;state.race.officialQuality=provenance.quality;}clearValidationTransient(state);state.modelVersion=result.prediction.modelVersion;fillRace(state.race);predictionViewMode='original';makeSnapshot();state.predictionSaved=true;registerJraResultQueue();persist(false);render();renderAutoResultQueue();if($('jraStatus')){$('jraStatus').textContent=`JRA ${state.horses.length}頭｜CHASS指数・確率計算完了｜AI勝率合計 ${result.prediction.quality.winProbabilityTotal.toFixed(2)}%｜TIME ${result.prediction.quality.withTime}/${state.horses.length}｜市場 ${result.prediction.quality.withMarket}/${state.horses.length}`}$('quickCard')?.scrollIntoView?.({behavior:'smooth',block:'start'});return result}
 function commitJraOfficial(data,generation){if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA')return false;fillJraRace(data.race);const horses=(data.horses||[]).filter(h=>h.runningStatus==='active');const normalized=window.CHASS_JRA_NORMALIZER.normalizeJraData({race:data.race,horses});if(!normalized.validation.ok)throw new Error(normalized.validation.errors.join(' / '));jraNormalizedDraft=normalized;commitJraNormalized(normalized,data);return true}
 function commitJraOdds(data,generation){if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA'||!state.predictionSnapshot)return false;const selected=jraRaceInput(),same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);if(!same)return false;const predictionBefore=snapshotFingerprint(state.predictionSnapshot),count=applyMarketOdds(data.odds,data.acquiredAt,{marketDataSource:data.marketDataSource||'JRA_OFFICIAL_WIN_ODDS',oddsSnapshotType:data.oddsSnapshotType||'live'});if(snapshotFingerprint(state.predictionSnapshot)!==predictionBefore)throw new Error('PREDICTION_SNAPSHOT_MUTATED');if(count){render();persist(existingValidated(raceId(state.race)))}return count}
 function commitJraResult(data,generation){if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA'||!state.predictionSnapshot)return false;const selected=jraRaceInput(),same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);if(!same)return false;const predictionBefore=snapshotFingerprint(state.predictionSnapshot),marketBefore=snapshotFingerprint(state.marketSnapshot);state.actualTimes={...state.actualTimes,...(data.actualTimes||{})};state.horses.forEach(h=>{const time=state.actualTimes[String(h.horseNo)];if(time)h.actualTime=time});const ok=saveFetchedResult(data.finishOrder,{silent:true,source:'JRA公式自動結果取得',resultData:data});if(snapshotFingerprint(state.predictionSnapshot)!==predictionBefore||snapshotFingerprint(state.marketSnapshot)!==marketBefore)throw new Error('FROZEN_SNAPSHOT_MUTATED');return ok}
@@ -869,8 +898,24 @@ async function checkPublicApi(){const status=$('publicApiStatus');if(status)stat
 async function copyCurrentPublicApiUrl(){const status=$('publicApiStatus'),url=currentPublicApiUrl();if(!url){if(status)status.textContent='現在レースを特定できません';return false}try{await navigator.clipboard.writeText(url);if(status)status.textContent='現在レースAPI URLをコピーしました';return true}catch{if(status)status.textContent='URLをコピーできませんでした';return false}}
 async function copyCurrentPublicDayApiUrl(){const status=$('publicApiStatus'),url=currentPublicDayApiUrl();if(!url){if(status)status.textContent='現在の開催日・競馬場を特定できません';return false}try{await navigator.clipboard.writeText(url);if(status)status.textContent='1日一括API URLをコピーしました';return true}catch{if(status)status.textContent='URLをコピーできませんでした';return false}}
 function narCode(track){return NAR_TRACKS[track]||null}
+function assertJraMarketIdentity(items=[]){
+ if(raceTypeOf(state)!=='JRA')return true;
+ const active=(state.horses||[]).filter(isEligibleHorse);
+ const stateNos=active.map(h=>Number(h.horseNo));
+ const officialNos=(items||[]).map(x=>Number(x?.horseNo)).filter(Number.isFinite);
+ const duplicateState=stateNos.some((n,i)=>stateNos.indexOf(n)!==i);
+ const duplicateOfficial=officialNos.some((n,i)=>officialNos.indexOf(n)!==i);
+ const missingInState=officialNos.filter(n=>!stateNos.includes(n));
+ if(duplicateState||duplicateOfficial||missingInState.length){
+   const error=new Error(`JRA_HORSE_IDENTITY_MISMATCH:state=${stateNos.join(',')}:official=${officialNos.join(',')}`);
+   error.code='JRA_HORSE_IDENTITY_MISMATCH';
+   throw error;
+ }
+ return true;
+}
 function applyMarketOdds(items, acquiredAt, options={}){
  if(!Array.isArray(items)||!items.length)return 0;
+ assertJraMarketIdentity(items);
  const valid=items.map(x=>({horseNo:String(x.horseNo),odds:num(x.odds),popularity:num(x.popularity)})).filter(x=>x.horseNo&&x.odds!=null);
  const pop=[...valid].sort((a,b)=>a.odds-b.odds),popMap=new Map(pop.map((x,i)=>[x.horseNo,x.popularity??i+1])),map=new Map(valid.map(x=>[x.horseNo,x.odds]));
  const eligible=state.horses.filter(isEligibleHorse),totalHorseCount=eligible.length,oddsHorseCount=valid.filter(x=>eligible.some(h=>String(h.horseNo)===x.horseNo)).length,oddsCoverage=totalHorseCount?Number((oddsHorseCount/totalHorseCount).toFixed(4)):0,evRankStatus=oddsHorseCount===0?'unavailable':oddsHorseCount===totalHorseCount?'complete':'partial';
