@@ -742,6 +742,7 @@ function renderRaceNav(day) {
 function renderDay(day) {
   activeDay = day;
   elements.races.replaceChildren();
+  day.races.forEach(normalizeDuplicateMainMarks);
   day.races.forEach((race) => elements.races.append(raceCard(race)));
   elements.summary.textContent = `${day.date || ''} ${day.track || ''} · ${day.races.length}レース`;
   elements.summary.hidden = false;
@@ -766,53 +767,181 @@ function mutableDay(day) {
   };
 }
 
+
+function horseIdentityKey(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/[\s　・･·.．"'’“”`´()（）[\]【】{}「」『』\-‐‑‒–—―]/g, '')
+    .toUpperCase();
+}
+
+function horseNameDistance(left, right) {
+  const a = horseIdentityKey(left);
+  const b = horseIdentityKey(right);
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  if (a === b) return 0;
+
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  for (let i = 0; i < rows; i += 1) matrix[i][0] = i;
+  for (let j = 0; j < cols; j += 1) matrix[0][j] = j;
+
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  return matrix[a.length][b.length];
+}
+
+function resolveHorseIdentity(baseHorse, candidates, used = new Set()) {
+  const baseName = horseIdentityKey(baseHorse?.horseName);
+  const available = candidates.filter((candidate) => !used.has(candidate));
+
+  if (baseName) {
+    const exact = available.filter(
+      (candidate) => horseIdentityKey(candidate?.horseName) === baseName,
+    );
+    if (exact.length === 1) return exact[0];
+
+    // Minor spelling discrepancy only when one unique candidate is clearly closest.
+    if (baseName.length >= 5) {
+      const fuzzy = available
+        .map((candidate) => ({
+          candidate,
+          distance: horseNameDistance(baseHorse.horseName, candidate?.horseName),
+        }))
+        .filter((item) => item.distance <= 2)
+        .sort((a, b) => a.distance - b.distance);
+
+      if (fuzzy.length === 1) return fuzzy[0].candidate;
+      if (fuzzy.length >= 2 && fuzzy[0].distance < fuzzy[1].distance) {
+        return fuzzy[0].candidate;
+      }
+    }
+
+    // If a name exists but does not agree, do not fall back to horse number.
+    return null;
+  }
+
+  // Number fallback is allowed only when the base name is absent.
+  const number = Number(baseHorse?.horseNo);
+  if (Number.isFinite(number)) {
+    const byNo = available.filter((candidate) => Number(candidate?.horseNo) === number);
+    if (byNo.length === 1) return byNo[0];
+  }
+
+  return null;
+}
+
+function normalizeDuplicateMainMarks(race) {
+  const mains = race.horses.filter(
+    (horse) => horse.runnerStatus === 'active' && horse.mark === '◎',
+  );
+  if (mains.length <= 1) return;
+
+  const keep = [...mains].sort((a, b) => {
+    const winDiff = Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1);
+    if (winDiff) return winDiff;
+
+    const abilityDiff = Number(b.abilityScore ?? -1) - Number(a.abilityScore ?? -1);
+    if (abilityDiff) return abilityDiff;
+
+    return Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999);
+  })[0];
+
+  for (const horse of mains) {
+    if (horse !== keep) horse.mark = null;
+  }
+}
+
 function mergeMarket(day, marketDay) {
   const racesByNo = new Map(marketDay.races.map((race) => [Number(race.raceNo), race]));
+
   for (const race of day.races) {
     const marketRace = racesByNo.get(Number(race.raceNo));
     if (!marketRace) continue;
-    const byNo = new Map(marketRace.horses.map((horse) => [Number(horse.horseNo), horse]));
+
+    const used = new Set();
 
     race.horses = race.horses.map((horse) => {
-      const market = byNo.get(Number(horse.horseNo));
-      if (!market) return horse;
-      const expectedValue = market.expectedValue ?? (
+      const market = resolveHorseIdentity(horse, marketRace.horses, used);
+
+      // If identity cannot be safely resolved, do not attach market values
+      // from a different runner.
+      if (!market) {
+        return {
+          ...horse,
+          odds: null,
+          popularity: null,
+          expectedValue: null,
+        };
+      }
+
+      used.add(market);
+
+      const expectedValue = (
         horse.aiWinRate != null && market.odds != null
           ? Number((horse.aiWinRate * market.odds).toFixed(2))
           : null
       );
+
       return {
         ...horse,
+        horseNo: market.horseNo ?? horse.horseNo,
+        horseName: market.horseName || horse.horseName,
         abilityScore: market.abilityScore ?? horse.abilityScore,
         abilityRank: market.abilityRank ?? horse.abilityRank,
-        odds: market.odds ?? horse.odds,
-        popularity: market.popularity ?? horse.popularity,
-        expectedValue: expectedValue ?? horse.expectedValue,
+        odds: market.odds ?? null,
+        popularity: market.popularity ?? null,
+        expectedValue,
         longshotMark: market.longshotMark ?? horse.longshotMark,
         dangerMark: market.dangerMark ?? horse.dangerMark,
       };
     });
+
     race.marketAvailable = race.horses.some((horse) => horse.odds != null);
+    normalizeDuplicateMainMarks(race);
   }
 }
 
 function mergeRaceDetail(day, detail) {
   const target = day.races.find((race) => Number(race.raceNo) === Number(detail.raceNo));
   if (!target) return;
-  const byNo = new Map(detail.horses.map((horse) => [Number(horse.horseNo), horse]));
+
+  const used = new Set();
+
   target.horses = target.horses.map((horse) => {
-    const full = byNo.get(Number(horse.horseNo));
+    const full = resolveHorseIdentity(horse, detail.horses, used);
     if (!full) return horse;
+
+    used.add(full);
+
     return {
       ...horse,
       ...full,
-      odds: full.odds ?? horse.odds,
-      popularity: full.popularity ?? horse.popularity,
-      expectedValue: full.expectedValue ?? horse.expectedValue,
+      // Current horse identity may already have been corrected from market data.
+      horseNo: horse.horseNo ?? full.horseNo,
+      horseName: horse.horseName || full.horseName,
+      odds: horse.odds ?? full.odds,
+      popularity: horse.popularity ?? full.popularity,
+      expectedValue: horse.expectedValue ?? full.expectedValue,
       longshotMark: full.longshotMark ?? horse.longshotMark,
       dangerMark: full.dangerMark ?? horse.dangerMark,
     };
   });
+
+  normalizeDuplicateMainMarks(target);
+
   for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
     if (detail[key] != null) target[key] = detail[key];
   }
