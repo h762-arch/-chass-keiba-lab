@@ -1,0 +1,199 @@
+name: CHASS JRA Official Cache Refresh v1.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "日付。空欄なら日本時間の今日"
+        required: false
+        default: ""
+        type: string
+      track:
+        description: "競馬場。ALLは開催場すべて"
+        required: true
+        default: "ALL"
+        type: choice
+        options:
+          - ALL
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "0は対象競馬場の全R"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+  schedule:
+    - cron: "15 21,0,3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-official-cache-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Fetch JRA official data on GitHub Runner
+        id: fetch
+        shell: bash
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_TRACK: ${{ inputs.track }}
+          INPUT_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+
+          DATE_ARG="${INPUT_DATE:-}"
+          TRACK_ARG="${INPUT_TRACK:-ALL}"
+          RACE_ARG="${INPUT_RACE:-0}"
+
+          node scripts/jra-official-refresh.mjs \
+            --date="$DATE_ARG" \
+            --track="$TRACK_ARG" \
+            --race="$RACE_ARG" \
+            --out=/tmp/jra-cache.sql \
+            --summary=/tmp/jra-cache-summary.json
+
+          if grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-cache.sql; then
+            echo "::error::Generated JRA cache SQL contains an explicit transaction statement."
+            exit 1
+          fi
+
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-cache-summary.json','utf8'));
+          const first = x.successes?.[0] || null;
+          console.log(`success_count=${x.successCount || 0}`);
+          console.log(`failure_count=${x.failureCount || 0}`);
+          if (first) {
+            console.log(`smoke_date=${first.date}`);
+            console.log(`smoke_track=${first.track}`);
+            console.log(`smoke_race=${first.race}`);
+          }
+          NODE
+
+      - name: Write official cache to D1
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/jra-cache.sql
+
+      - name: Production cache smoke with retry
+        if: ${{ steps.fetch.outputs.success_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            : > /tmp/jra-production-cache.json
+            : > /tmp/jra-production-cache.headers
+
+            CODE="$(curl -sS --max-time 20 \
+              -D /tmp/jra-production-cache.headers \
+              --get "$PRODUCTION_BASE_URL/api/jra/race" \
+              --data-urlencode "date=${{ steps.fetch.outputs.smoke_date }}" \
+              --data-urlencode "track=${{ steps.fetch.outputs.smoke_track }}" \
+              --data-urlencode "race=${{ steps.fetch.outputs.smoke_race }}" \
+              -o /tmp/jra-production-cache.json \
+              -w '%{http_code}' || true)"
+
+            echo "Cache smoke -> HTTP ${CODE:-000}"
+            grep -iE '^(HTTP/|x-chass-jra-race-cache:|cf-ray:|server:)' /tmp/jra-production-cache.headers || true
+
+            if [ "$CODE" != "200" ]; then
+              cat /tmp/jra-production-cache.json || true
+              continue
+            fi
+
+            if node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-production-cache.json','utf8'));
+          if (x.ok !== true) process.exit(1);
+          if (x.organization !== 'JRA') process.exit(1);
+          if (x.dataConfidence !== 'high') process.exit(1);
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) process.exit(1);
+          if (x.bridgeCache?.provider !== 'github_actions_d1') process.exit(1);
+          NODE
+            then
+              if grep -qi '^x-chass-jra-race-cache: D1-HIT' /tmp/jra-production-cache.headers; then
+                PASS=1
+                break
+              fi
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production D1 cache smoke failed after retry."
+            cat /tmp/jra-production-cache.json || true
+            exit 1
+          fi
+
+          echo "Production D1 cache: PASS"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Official Cache Refresh v1.1"
+            echo
+            echo "- GitHub Runner -> JRA official fetch: completed"
+            echo "- Success races: ${{ steps.fetch.outputs.success_count }}"
+            echo "- Failed races: ${{ steps.fetch.outputs.failure_count }}"
+            echo "- Cache destination: Cloudflare D1"
+            echo "- Cloudflare Worker -> JRA direct fetch: not used"
+          } >> "$GITHUB_STEP_SUMMARY"
