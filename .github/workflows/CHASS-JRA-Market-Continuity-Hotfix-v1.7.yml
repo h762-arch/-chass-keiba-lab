@@ -1,0 +1,461 @@
+name: CHASS JRA Market Continuity Hotfix v1.7
+'on':
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 実行モード
+        required: true
+        default: validate_only
+        type: choice
+        options:
+        - validate_only
+        - apply_and_deploy
+permissions:
+  contents: write
+concurrency:
+  group: chass-jra-market-continuity-v17
+  cancel-in-progress: false
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+    steps:
+    - name: Checkout main
+      uses: actions/checkout@v5
+      with:
+        ref: main
+        fetch-depth: 0
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: 24
+    - name: Safety guard - require v1.6 production baseline
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+        test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+        test -f worker.js
+        test -f viewer/viewer-core.js
+        test -f viewer/viewer-app.js
+        test -f mcp/package-lock.json
+
+        grep -Fq "viewerMarket: '1'" viewer/viewer-core.js
+        grep -Fq "savedUsable=savedStatus==='available'" worker.js
+        grep -Fq "payload.viewerMarketMode='fresh-final-overlay-v1'" worker.js
+        grep -Fq "marketStatus: overlayStatus" viewer/viewer-core.js
+        grep -Fq "if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };" viewer/viewer-app.js
+        grep -Fq "horseNo: market.horseNo ?? horse.horseNo" viewer/viewer-app.js
+        grep -Fq "horseName: market.horseName || horse.horseName" viewer/viewer-app.js
+
+        echo "v1.6 baseline anchors: PASS"
+    - name: Install MCP test dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm ci --prefix mcp
+    - name: Apply saved-market continuity patch
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > /tmp/chass_market_continuity_v17.py <<'PY'
+        from pathlib import Path
+
+        def replace_once(text, old, new, label):
+            count = text.count(old)
+            if count != 1:
+                raise SystemExit(f"{label}: expected exactly 1 anchor, got {count}")
+            return text.replace(old, new, 1)
+
+        # ------------------------------------------------------------
+        # viewer/viewer-core.js
+        # v1.7 rule:
+        # final > live/available > saved snapshot fallback > unavailable
+        # Do NOT change horse identity, marks, probability logic or worker schema.
+        # ------------------------------------------------------------
+        core_path = Path("viewer/viewer-core.js")
+        core = core_path.read_text(encoding="utf-8")
+
+        old = """            const overlayStatus = textOrNull(overlay?.oddsStatus);
+                    const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
+                    const baseOdds = finiteOrNull(horse.odds);
+                    const basePopularity = finiteOrNull(horse.popularity);
+
+                    return {
+                      horseNo,
+                      horseName,
+                      abilityRank: finiteOrNull(horse.abilityRank),
+                      abilityScore: finiteOrNull(horse.score),
+                      odds: overlay ? (overlayUsable ? finiteOrNull(overlay.odds) : null) : baseOdds,
+                      popularity: overlay
+                        ? (overlayUsable ? finiteOrNull(overlay.popularity) : null)
+                        : basePopularity,
+                      expectedValue: finiteOrNull(horse.expectedValue),
+                      longshotMark: textOrNull(horse.diamond),
+                      dangerMark: textOrNull(horse.warning),
+                      marketStatus: overlayStatus,
+                      marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
+                      marketDataSource: textOrNull(overlay?.marketDataSource),
+                    };"""
+
+        new = """            const overlayStatus = textOrNull(overlay?.oddsStatus);
+                    const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
+                    const baseOdds = finiteOrNull(horse.odds);
+                    const basePopularity = finiteOrNull(horse.popularity);
+                    const overlayOdds = overlayUsable ? finiteOrNull(overlay?.odds) : null;
+                    const overlayPopularity = overlayUsable ? finiteOrNull(overlay?.popularity) : null;
+                    const fallbackToSaved = Boolean(overlay) && !overlayUsable && baseOdds != null;
+
+                    return {
+                      horseNo,
+                      horseName,
+                      abilityRank: finiteOrNull(horse.abilityRank),
+                      abilityScore: finiteOrNull(horse.score),
+                      odds: overlayOdds ?? baseOdds,
+                      popularity: overlayPopularity ?? basePopularity,
+                      expectedValue: finiteOrNull(horse.expectedValue),
+                      longshotMark: textOrNull(horse.diamond),
+                      dangerMark: textOrNull(horse.warning),
+                      marketStatus: overlayUsable
+                        ? overlayStatus
+                        : (fallbackToSaved ? 'saved' : overlayStatus),
+                      marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
+                      marketDataSource: overlayUsable
+                        ? textOrNull(overlay?.marketDataSource)
+                        : (fallbackToSaved ? 'saved_snapshot_fallback' : textOrNull(overlay?.marketDataSource)),
+                    };"""
+
+        core = replace_once(core, old, new, "viewer-core saved market fallback")
+        core_path.write_text(core, encoding="utf-8")
+
+        # ------------------------------------------------------------
+        # viewer/viewer-app.js
+        # Explicitly label fallback market as saved, never as current/final.
+        # ------------------------------------------------------------
+        app_path = Path("viewer/viewer-app.js")
+        app = app_path.read_text(encoding="utf-8")
+
+        old_status = """function marketStatus(race) {
+          const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+          const withOdds = active.filter((horse) => horse.odds != null).length;
+          const finalCount = active.filter(
+            (horse) => horse.odds != null && horse.marketStatus === 'final',
+          ).length;
+          const staleCount = active.filter((horse) => horse.marketStatus === 'stale').length;
+
+          if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
+          if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+          if (finalCount === active.length && active.length > 0) {
+            return { text: '確定市場 反映済み', state: 'ready' };
+          }
+          if (withOdds < active.length) {
+            return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+          }
+          return { text: '市場データ 反映済み', state: 'ready' };
+        }"""
+
+        new_status = """function marketStatus(race) {
+          const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+          const withOdds = active.filter((horse) => horse.odds != null).length;
+          const finalCount = active.filter(
+            (horse) => horse.odds != null && horse.marketStatus === 'final',
+          ).length;
+          const savedCount = active.filter(
+            (horse) => horse.odds != null && horse.marketStatus === 'saved',
+          ).length;
+          const staleCount = active.filter((horse) => horse.marketStatus === 'stale').length;
+
+          if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
+          if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+          if (finalCount === active.length && active.length > 0) {
+            return { text: '確定市場 反映済み', state: 'ready' };
+          }
+          if (savedCount > 0) {
+            const suffix = withOdds === active.length ? '' : ` ${withOdds}/${active.length}`;
+            return { text: `保存市場${suffix}`, state: 'stale' };
+          }
+          if (withOdds < active.length) {
+            return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+          }
+          return { text: '市場データ 反映済み', state: 'ready' };
+        }"""
+
+        app = replace_once(app, old_status, new_status, "viewer-app saved market status")
+        app_path.write_text(app, encoding="utf-8")
+
+        print("v1.7 patch applied: final > available > saved snapshot fallback > unavailable")
+        PY
+        python3 /tmp/chass_market_continuity_v17.py
+    - name: Add v1.7 regression tests
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > tests/jra-market-continuity-v17.test.mjs <<'EOF'
+        import test from 'node:test';
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+        import { sanitizeViewerMarketPayload } from '../viewer/viewer-core.js';
+
+        const core = fs.readFileSync(new URL('../viewer/viewer-core.js', import.meta.url), 'utf8');
+        const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+        const worker = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+
+        const columns = [
+          'horseNumber','horseName','abilityRank','score','winProb','top3Prob',
+          'odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'
+        ];
+
+        function row({
+          no, name, rank = 1, score = 80, win = 0.2, top3 = 0.5,
+          odds = null, popularity = null, ev = null, diamond = null, warning = null,
+        }) {
+          return [no, name, rank, score, win, top3, odds, popularity, ev, null, null, diamond, warning];
+        }
+
+        test('stale overlay falls back to saved odds/popularity without pretending they are current', () => {
+          const payload = {
+            ok: true,
+            date: '2026-09-12',
+            track: '阪神',
+            organization: 'JRA',
+            horseColumns: columns,
+            races: [{
+              raceNumber: 11,
+              raceName: 'チャレンジカップ',
+              horses: [row({ no: 7, name: 'ジーティーアダマン', odds: 10.8, popularity: 5 })],
+            }],
+            viewerMarketMode: 'fresh-final-overlay-v1',
+            viewerMarketOverlay: [{
+              raceNumber: 11,
+              horses: [{
+                horseNumber: 7,
+                horseName: 'ジーティーアダマン',
+                odds: null,
+                popularity: null,
+                oddsStatus: 'stale',
+                oddsFetchedAt: '2026-09-12T06:30:00.000Z',
+                marketDataSource: 'saved_snapshot',
+              }],
+            }],
+          };
+
+          const out = sanitizeViewerMarketPayload(payload);
+          const horse = out.races[0].horses[0];
+
+          assert.equal(horse.odds, 10.8);
+          assert.equal(horse.popularity, 5);
+          assert.equal(horse.marketStatus, 'saved');
+          assert.equal(horse.marketDataSource, 'saved_snapshot_fallback');
+        });
+
+        test('final overlay still wins over saved snapshot', () => {
+          const payload = {
+            ok: true,
+            date: '2026-09-12',
+            track: '阪神',
+            organization: 'JRA',
+            horseColumns: columns,
+            races: [{
+              raceNumber: 11,
+              raceName: 'チャレンジカップ',
+              horses: [row({ no: 7, name: 'ジーティーアダマン', odds: 10.8, popularity: 5 })],
+            }],
+            viewerMarketMode: 'fresh-final-overlay-v1',
+            viewerMarketOverlay: [{
+              raceNumber: 11,
+              horses: [{
+                horseNumber: 7,
+                horseName: 'ジーティーアダマン',
+                odds: 12.4,
+                popularity: 6,
+                oddsStatus: 'final',
+                oddsFetchedAt: '2026-09-12T07:50:00.000Z',
+                marketDataSource: 'result_final',
+              }],
+            }],
+          };
+
+          const horse = sanitizeViewerMarketPayload(payload).races[0].horses[0];
+          assert.equal(horse.odds, 12.4);
+          assert.equal(horse.popularity, 6);
+          assert.equal(horse.marketStatus, 'final');
+          assert.equal(horse.marketDataSource, 'result_final');
+        });
+
+        test('unavailable overlay with no saved odds stays unavailable', () => {
+          const payload = {
+            ok: true,
+            date: '2026-09-12',
+            track: '阪神',
+            organization: 'JRA',
+            horseColumns: columns,
+            races: [{
+              raceNumber: 12,
+              raceName: '3歳以上1勝クラス',
+              horses: [row({ no: 14, name: 'スターフュージョン' })],
+            }],
+            viewerMarketMode: 'fresh-final-overlay-v1',
+            viewerMarketOverlay: [{
+              raceNumber: 12,
+              horses: [{
+                horseNumber: 14,
+                horseName: 'スターフュージョン',
+                odds: null,
+                popularity: null,
+                oddsStatus: 'unavailable',
+                oddsFetchedAt: null,
+                marketDataSource: null,
+              }],
+            }],
+          };
+
+          const horse = sanitizeViewerMarketPayload(payload).races[0].horses[0];
+          assert.equal(horse.odds, null);
+          assert.equal(horse.popularity, null);
+          assert.equal(horse.marketStatus, 'unavailable');
+        });
+
+        test('horse identity guard remains horseNo + normalized horseName', () => {
+          assert.match(core, /const sameNo = finiteOrNull\(item\?\.horseNumber\) === horseNo/);
+          assert.match(core, /return overlayName === normalizedName/);
+        });
+
+        test('viewer explicitly labels saved market instead of current market', () => {
+          assert.match(app, /marketStatus === 'saved'/);
+          assert.match(app, /保存市場/);
+          assert.match(core, /saved_snapshot_fallback/);
+        });
+
+        test('worker public API contract and v1.6 viewer overlay remain untouched', () => {
+          assert.match(worker, /function publicViewerMarketOverlay\(day,races\)/);
+          assert.match(worker, /payload\.viewerMarketMode='fresh-final-overlay-v1'/);
+          assert.match(worker, /marketEvaluationMode:'saved-snapshot-only'/);
+        });
+        EOF
+    - name: Syntax + v1.7 tests + full regression
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        node --check viewer/viewer-core.js
+        node --check viewer/viewer-app.js
+
+        node --test tests/jra-market-continuity-v17.test.mjs
+        npm run check
+    - name: Validate-only summary
+      if: ${{ inputs.mode == 'validate_only' }}
+      shell: bash
+      run: |
+        {
+          echo "## CHASS JRA Market Continuity Hotfix v1.7"
+          echo
+          echo "- Mode: validate_only"
+          echo "- v1.6 final/current overlay: PRESERVED"
+          echo "- Saved market fallback: ENABLED"
+          echo "- Priority: final > available > saved > unavailable"
+          echo "- Saved market is explicitly labeled: YES"
+          echo "- Horse number/name identity guard: PRESERVED"
+          echo "- Marks / AI probabilities / TIME logic: UNCHANGED"
+          echo "- Standard public API schema: UNCHANGED"
+          echo "- Full repository regression: PASS"
+          echo "- Production deploy: NOT PERFORMED"
+          echo
+          echo "Next: rerun with mode=apply_and_deploy."
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Cloudflare auth preflight
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::CLOUDFLARE_API_TOKEN missing"; exit 1; }
+        test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID missing"; exit 1; }
+        npx -y wrangler@4 whoami
+    - name: Commit source patch
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git add \
+          viewer/viewer-core.js \
+          viewer/viewer-app.js \
+          tests/jra-market-continuity-v17.test.mjs
+
+        ALLOWED="$(
+          printf '%s\n' \
+            viewer/viewer-core.js \
+            viewer/viewer-app.js \
+            tests/jra-market-continuity-v17.test.mjs \
+          | sort
+        )"
+        ACTUAL="$(git diff --cached --name-only | sort)"
+
+        test "$ACTUAL" = "$ALLOWED" || {
+          echo "::error::Unexpected staged files:"
+          echo "$ACTUAL"
+          exit 1
+        }
+
+        git commit -m "fix: preserve saved JRA market when fresh odds are unavailable"
+        git push origin main
+    - name: Deploy production worker and viewer assets
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        npx -y wrangler@4 deploy
+    - name: Production API smoke
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        CODE="$(curl -sS --max-time 25 \
+          -o /tmp/v17-smoke.json \
+          -w '%{http_code}' \
+          --get "$PRODUCTION_BASE_URL/api/chass/v1/public/day-ai" \
+          --data-urlencode "date=2026-09-12" \
+          --data-urlencode "track=阪神" \
+          --data-urlencode "organization=JRA" \
+          --data-urlencode "format=tabular" \
+          --data-urlencode "viewerMarket=1" || true)"
+
+        test "$CODE" = "200" || {
+          echo "::error::Production day-ai smoke HTTP $CODE"
+          cat /tmp/v17-smoke.json || true
+          exit 1
+        }
+
+        node - <<'NODE'
+        const fs = require('fs');
+        const x = JSON.parse(fs.readFileSync('/tmp/v17-smoke.json', 'utf8'));
+        if (x.ok !== true) throw new Error('public day-ai not ok');
+        if (x.viewerMarketMode !== 'fresh-final-overlay-v1') throw new Error('v1.6 overlay missing');
+        if (!Array.isArray(x.viewerMarketOverlay)) throw new Error('viewer market overlay missing');
+        console.log('Production API smoke: PASS');
+        NODE
+    - name: Production success summary
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        {
+          echo "## CHASS JRA Market Continuity Hotfix v1.7 - PRODUCTION SUCCESS"
+          echo
+          echo "- Priority: FINAL > AVAILABLE > SAVED > UNAVAILABLE"
+          echo "- Saved odds disappearing after refresh: FIXED"
+          echo "- Saved market label: ENABLED"
+          echo "- Horse identity: UNCHANGED"
+          echo "- Marks/order/probability/TIME: UNCHANGED"
+          echo "- v1.6 overlay: PRESERVED"
+          echo "- Full repository regression: PASS"
+          echo "- Production deploy: PASS"
+        } >> "$GITHUB_STEP_SUMMARY"
