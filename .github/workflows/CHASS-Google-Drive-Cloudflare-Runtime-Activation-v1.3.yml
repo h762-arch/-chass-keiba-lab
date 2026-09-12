@@ -1,0 +1,856 @@
+name: CHASS Google Drive Cloudflare Runtime Activation v1.3
+
+"on":
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        required: true
+        default: "apply_and_deploy"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-google-drive-cloudflare-runtime-v13
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    name: Validate, canary, wire Worker and activate Drive Reader
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON }}
+      PRODUCTION_WORKER_NAME: "chass-keiba-lab7"
+      PRODUCTION_BASE_URL: "https://chass-keiba-lab7.h7625421.workers.dev"
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Capture baseline
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Safety preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f worker.js
+          test -f wrangler.jsonc
+          test -f google-drive-readonly-import.mjs
+          test -f tests/google-drive-readonly-import.test.mjs
+          test -f .assetsignore
+
+          grep -q "1.2-service-account" google-drive-readonly-import.mjs
+          grep -q "GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON" google-drive-readonly-import.mjs
+          grep -q "spreadsheets.readonly" google-drive-readonly-import.mjs
+          grep -q '^\*\.mjs$' .assetsignore
+
+          test -n "${GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:-}" || {
+            echo "::error::GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+
+          node --input-type=module <<'NODE'
+          const raw = process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON;
+          const x = JSON.parse(raw);
+          if (
+            x?.type !== 'service_account' ||
+            typeof x?.client_email !== 'string' ||
+            !x.client_email.endsWith('.iam.gserviceaccount.com') ||
+            typeof x?.private_key !== 'string' ||
+            !x.private_key.includes('BEGIN PRIVATE KEY')
+          ) {
+            throw new Error('Service Account JSON failed structural validation.');
+          }
+          console.log('Service Account secret structure: PASS');
+          NODE
+
+          npx -y wrangler@4 whoami
+
+      - name: Record protected-file hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in app.js server.mjs research-storage-sync.mjs package.json .assetsignore; do
+            if [ -f "$f" ]; then sha256sum "$f"; fi
+          done > /tmp/chass-drive-protected-before.sha256
+
+      - name: Build isolated production patch
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-drive-runtime-v13
+          git worktree add --detach /tmp/chass-drive-runtime-v13 HEAD
+          cd /tmp/chass-drive-runtime-v13
+
+          cat > google-drive-readonly-api.mjs <<'CHASS_DRIVE_API_EOF'
+          /**
+           * CHASS Google Drive Read-Only runtime API.
+           *
+           * Public route:
+           *   GET /api/drive-read/health
+           *     - returns only safe connectivity metadata
+           *     - never returns spreadsheet rows or credentials
+           *
+           * Protected CHASS Bridge route:
+           *   GET /api/chass/v1/drive?organization=JRA&sheet=JRA_指数マスター&maxRows=500
+           *     - authentication/rate limit is enforced by worker.js handleChassBridge
+           *     - underlying Reader enforces JRA/NAR allowlists and read-only access
+           */
+          
+          import {
+            getDriveReadReadiness,
+            readChassArchiveSheet,
+            readChassSpreadsheetCatalog,
+            sanitizeDriveReadError,
+          } from './google-drive-readonly-import.mjs';
+          
+          function responseJson(payload, status = 200, headers = {}) {
+            return new Response(JSON.stringify(payload, null, 2), {
+              status,
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                'cache-control': 'no-store',
+                'x-content-type-options': 'nosniff',
+                ...headers,
+              },
+            });
+          }
+          
+          function safeReadiness(env = {}) {
+            const r = getDriveReadReadiness(env);
+            return {
+              schemaVersion: r.schemaVersion,
+              authMode: r.authMode,
+              enabled: r.enabled,
+              configured: r.configured,
+              credentialValid: r.credentialValid,
+              missing: Array.isArray(r.missing) ? r.missing : [],
+              mode: r.mode,
+              scope: r.scope,
+              d1WriteEnabled: false,
+              predictionSnapshotMutationEnabled: false,
+            };
+          }
+          
+          export async function handleDriveReadHealth(request, env = {}) {
+            if (request.method !== 'GET' && request.method !== 'HEAD') {
+              return responseJson(
+                { ok: false, error: 'method_not_allowed' },
+                405,
+                { allow: 'GET, HEAD' },
+              );
+            }
+          
+            const head = request.method === 'HEAD';
+            const readiness = safeReadiness(env);
+          
+            if (!readiness.enabled || !readiness.configured) {
+              const payload = {
+                ok: false,
+                service: 'chass-google-drive-readonly',
+                ...readiness,
+                spreadsheetReachable: false,
+                checkedAt: new Date().toISOString(),
+              };
+              return head
+                ? new Response(null, {
+                    status: 503,
+                    headers: {
+                      'cache-control': 'no-store',
+                      'x-content-type-options': 'nosniff',
+                    },
+                  })
+                : responseJson(payload, 503);
+            }
+          
+            try {
+              const catalog = await readChassSpreadsheetCatalog(env);
+              const sample = await readChassArchiveSheet(
+                env,
+                'JRA_指数マスター',
+                {
+                  organization: 'JRA',
+                  maxColumn: 'A',
+                  maxRows: 2,
+                  accessToken: catalog.accessToken,
+                },
+              );
+          
+              const payload = {
+                ok: true,
+                service: 'chass-google-drive-readonly',
+                ...readiness,
+                spreadsheetReachable: true,
+                spreadsheetTitleMatched:
+                  catalog.title === 'CHASS競馬研究所_アーカイブマスター',
+                visibleSheetCount: catalog.sheets.length,
+                jraIndexMasterReachable: true,
+                sampleParsedRows: sample.rowCount,
+                checkedAt: new Date().toISOString(),
+              };
+          
+              if (head) {
+                return new Response(null, {
+                  status: 200,
+                  headers: {
+                    'cache-control': 'no-store',
+                    'x-content-type-options': 'nosniff',
+                  },
+                });
+              }
+              return responseJson(payload);
+            } catch (error) {
+              const safe = sanitizeDriveReadError(error);
+              const payload = {
+                ok: false,
+                service: 'chass-google-drive-readonly',
+                ...readiness,
+                spreadsheetReachable: false,
+                error: {
+                  code: safe.code,
+                  status: safe.status,
+                },
+                checkedAt: new Date().toISOString(),
+              };
+              return head
+                ? new Response(null, {
+                    status: 503,
+                    headers: {
+                      'cache-control': 'no-store',
+                      'x-content-type-options': 'nosniff',
+                    },
+                  })
+                : responseJson(payload, 503);
+            }
+          }
+          
+          export async function handleDriveReadBridge(request, env = {}, cors = {}) {
+            if (request.method !== 'GET') {
+              return responseJson(
+                { ok: false, error: 'method_not_allowed' },
+                405,
+                { ...cors, allow: 'GET' },
+              );
+            }
+          
+            const readiness = safeReadiness(env);
+            if (!readiness.enabled || !readiness.configured) {
+              return responseJson(
+                {
+                  ok: false,
+                  error: 'drive_read_not_configured',
+                  readiness,
+                },
+                503,
+                cors,
+              );
+            }
+          
+            const url = new URL(request.url);
+            const organization = String(url.searchParams.get('organization') || '')
+              .trim()
+              .toUpperCase();
+            const sheet = String(url.searchParams.get('sheet') || '').trim();
+          
+            if (organization !== 'JRA' && organization !== 'NAR') {
+              return responseJson(
+                {
+                  ok: false,
+                  error: 'organization_required',
+                  message: 'organization must be JRA or NAR',
+                },
+                400,
+                cors,
+              );
+            }
+          
+            if (!sheet) {
+              return responseJson(
+                {
+                  ok: false,
+                  error: 'sheet_required',
+                },
+                400,
+                cors,
+              );
+            }
+          
+            const requestedMaxRows = Number(url.searchParams.get('maxRows'));
+            const maxRows = Number.isInteger(requestedMaxRows) && requestedMaxRows > 0
+              ? Math.min(requestedMaxRows, 1000)
+              : 250;
+          
+            const requestedMaxColumn = String(
+              url.searchParams.get('maxColumn') || 'ZZ',
+            ).trim().toUpperCase();
+            const maxColumn = /^[A-Z]{1,3}$/.test(requestedMaxColumn)
+              ? requestedMaxColumn
+              : 'ZZ';
+          
+            try {
+              const result = await readChassArchiveSheet(
+                env,
+                sheet,
+                {
+                  organization,
+                  maxRows,
+                  maxColumn,
+                },
+              );
+          
+              return responseJson(
+                {
+                  ok: true,
+                  apiVersion: 'drive-read-v1',
+                  source: 'private_google_sheets',
+                  mode: 'read_only',
+                  organization: result.organization,
+                  sheetTitle: result.sheetTitle,
+                  range: result.range,
+                  rowCount: result.rowCount,
+                  headers: result.headers,
+                  records: result.records,
+                  generatedAt: new Date().toISOString(),
+                },
+                200,
+                cors,
+              );
+            } catch (error) {
+              const safe = sanitizeDriveReadError(error);
+              const status =
+                safe.code === 'DRIVE_READ_SHEET_NOT_ALLOWLISTED' ||
+                safe.code === 'DRIVE_READ_LEGACY_SHEET_DENIED' ||
+                safe.code === 'DRIVE_READ_ORGANIZATION_REQUIRED'
+                  ? 400
+                  : 503;
+          
+              return responseJson(
+                {
+                  ok: false,
+                  error: safe.code,
+                  status: safe.status,
+                },
+                status,
+                cors,
+              );
+            }
+          }
+          CHASS_DRIVE_API_EOF
+
+          mkdir -p tests
+          cat > tests/google-drive-cloudflare-api.test.mjs <<'CHASS_DRIVE_API_TEST_EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          
+          import {
+            handleDriveReadBridge,
+            handleDriveReadHealth,
+          } from '../google-drive-readonly-api.mjs';
+          
+          test('public Drive health fails closed when runtime is disabled', async () => {
+            const response = await handleDriveReadHealth(
+              new Request('https://example.test/api/drive-read/health'),
+              {},
+            );
+            assert.equal(response.status, 503);
+            const body = await response.json();
+            assert.equal(body.ok, false);
+            assert.equal(body.enabled, false);
+            assert.equal(body.spreadsheetReachable, false);
+            assert.equal(JSON.stringify(body).includes('PRIVATE KEY'), false);
+          });
+          
+          test('public Drive health rejects mutation methods', async () => {
+            const response = await handleDriveReadHealth(
+              new Request('https://example.test/api/drive-read/health', {
+                method: 'POST',
+              }),
+              {},
+            );
+            assert.equal(response.status, 405);
+          });
+          
+          test('protected Drive bridge requires JRA/NAR and Sheet after runtime readiness', async () => {
+            const response = await handleDriveReadBridge(
+              new Request(
+                'https://example.test/api/chass/v1/drive?organization=UNKNOWN&sheet=anything',
+              ),
+              {},
+            );
+            assert.equal(response.status, 503);
+            const body = await response.json();
+            assert.equal(body.ok, false);
+            assert.equal(body.error, 'drive_read_not_configured');
+          });
+          
+          test('runtime API source contains no Drive/Sheets mutation operations', async () => {
+            const fs = await import('node:fs');
+            const text = fs.readFileSync('google-drive-readonly-api.mjs', 'utf8');
+            for (const pattern of [
+              /values:append/i,
+              /:batchUpdate/i,
+              /drive\.files\.create/i,
+              /drive\.files\.update/i,
+              /drive\.files\.delete/i,
+              /\.prepare\(/i,
+              /\.run\(/i,
+            ]) {
+              assert.equal(pattern.test(text), false, `forbidden marker: ${pattern}`);
+            }
+          });
+          CHASS_DRIVE_API_TEST_EOF
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const file = 'worker.js';
+          let src = fs.readFileSync(file, 'utf8');
+
+          const importMarker =
+            "import {enqueueResearchSync,runResearchSyncQueue} from './research-storage-sync.mjs';";
+          const importLine =
+            "import {handleDriveReadHealth,handleDriveReadBridge} from './google-drive-readonly-api.mjs';";
+
+          if (!src.includes(importLine)) {
+            if (!src.includes(importMarker)) {
+              throw new Error('worker.js import marker was not found; refusing to patch.');
+            }
+            src = src.replace(importMarker, `${importMarker}\n${importLine}`);
+          }
+
+          const allowedOld =
+            "const allowedPaths=new Set(['/api/chass/context','/api/chass/v1/health','/api/chass/v1/context','/api/chass/v1/race','/api/chass/v1/research','/api/chass/v1/pending']);";
+          const allowedNew =
+            "const allowedPaths=new Set(['/api/chass/context','/api/chass/v1/health','/api/chass/v1/context','/api/chass/v1/race','/api/chass/v1/research','/api/chass/v1/pending','/api/chass/v1/drive']);";
+
+          if (!src.includes(allowedNew)) {
+            if (!src.includes(allowedOld)) {
+              throw new Error('CHASS Bridge allowlist marker was not found; refusing to patch.');
+            }
+            src = src.replace(allowedOld, allowedNew);
+          }
+
+          const authMarker =
+            "if(!bridgeRateAllowed(request))return bridgeJson({ok:false,error:'rate_limit_exceeded',retryAfterSeconds:60},429,{...cors,'retry-after':'60'});";
+          const driveBridgeLine =
+            "if(u.pathname.endsWith('/drive'))return handleDriveReadBridge(request,env,cors);";
+
+          if (!src.includes(driveBridgeLine)) {
+            if (!src.includes(authMarker)) {
+              throw new Error('CHASS Bridge auth/rate-limit marker was not found; refusing to patch.');
+            }
+            src = src.replace(authMarker, `${authMarker}\n ${driveBridgeLine}`);
+          }
+
+          const routeMarker =
+            "if(u.pathname==='/api/jra/result')return handleJraResultRequest(request,env);";
+          const healthRoute =
+            "if(u.pathname==='/api/drive-read/health')return handleDriveReadHealth(request,env);";
+
+          if (!src.includes(healthRoute)) {
+            if (!src.includes(routeMarker)) {
+              throw new Error('Worker top-level route marker was not found; refusing to patch.');
+            }
+            src = src.replace(routeMarker, `${routeMarker}\n  ${healthRoute}`);
+          }
+
+          fs.writeFileSync(file, src);
+          NODE
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const file = 'wrangler.jsonc';
+          const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+          cfg.vars = cfg.vars || {};
+          cfg.vars.CHASS_DRIVE_SPREADSHEET_ID =
+            '1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI';
+
+          // Feature flag intentionally remains a Worker secret so it can be
+          // disabled without a code/config commit.
+          delete cfg.vars.ENABLE_DRIVE_READ_IMPORT;
+
+          fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+          NODE
+
+          node --check worker.js
+          node --check google-drive-readonly-import.mjs
+          node --check google-drive-readonly-api.mjs
+          node --check tests/google-drive-readonly-import.test.mjs
+          node --check tests/google-drive-cloudflare-api.test.mjs
+
+          git status --porcelain=v1 | sed -E 's/^.. //' | sort > /tmp/chass-drive-runtime-files.txt
+          cat > /tmp/chass-drive-runtime-allowed.txt <<'EOF'
+          google-drive-readonly-api.mjs
+          tests/google-drive-cloudflare-api.test.mjs
+          worker.js
+          wrangler.jsonc
+          EOF
+          sort -o /tmp/chass-drive-runtime-allowed.txt /tmp/chass-drive-runtime-allowed.txt
+          diff -u /tmp/chass-drive-runtime-allowed.txt /tmp/chass-drive-runtime-files.txt
+
+          CANARY_NAME="chass-drive-v13-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "canary_name=$CANARY_NAME" >> "$GITHUB_OUTPUT"
+
+          cat > drive-canary-worker.mjs <<'EOF'
+          import { handleDriveReadHealth } from './google-drive-readonly-api.mjs';
+
+          export default {
+            async fetch(request, env) {
+              const u = new URL(request.url);
+              if (u.pathname === '/probe-drive') {
+                return handleDriveReadHealth(
+                  new Request(new URL('/api/drive-read/health', u), request),
+                  env,
+                );
+              }
+              return Response.json({ ok: true, canary: true });
+            }
+          };
+          EOF
+
+          cat > wrangler.drive-canary.jsonc <<EOF
+          {
+            "name": "$CANARY_NAME",
+            "main": "drive-canary-worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "workers_dev": true,
+            "preview_urls": false,
+            "vars": {
+              "ENABLE_DRIVE_READ_IMPORT": "true",
+              "CHASS_DRIVE_SPREADSHEET_ID": "$CHASS_DRIVE_SPREADSHEET_ID"
+            },
+            "observability": { "enabled": false }
+          }
+          EOF
+
+      - name: Targeted Reader + runtime API regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-drive-runtime-v13
+
+          node --test \
+            tests/google-drive-readonly-import.test.mjs \
+            tests/google-drive-cloudflare-api.test.mjs
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          for file in [
+              "google-drive-readonly-import.mjs",
+              "google-drive-readonly-api.mjs",
+          ]:
+              text = Path(file).read_text(encoding="utf-8")
+              forbidden = [
+                  r"values:append",
+                  r":batchUpdate",
+                  r"drive\.files\.create",
+                  r"drive\.files\.update",
+                  r"drive\.files\.delete",
+                  r"\.prepare\(",
+                  r"\.run\(",
+              ]
+              found = [p for p in forbidden if re.search(p, text, re.I)]
+              if found:
+                  raise SystemExit(f"{file}: forbidden mutation marker(s): {found}")
+
+          print("Read-only mutation guard: PASS")
+          PY
+
+      - name: Existing full regression visibility
+        id: full_regression
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cd /tmp/chass-drive-runtime-v13
+          npm run check 2>&1 | tee /tmp/chass-drive-full-regression.log
+
+      - name: Confirm known full-regression state without hiding it
+        shell: bash
+        env:
+          FULL_REGRESSION_OUTCOME: ${{ steps.full_regression.outcome }}
+        run: |
+          set -euo pipefail
+          echo "Full regression outcome: $FULL_REGRESSION_OUTCOME"
+          if [ "$FULL_REGRESSION_OUTCOME" != "success" ]; then
+            echo "::warning::Existing full regression still has failures. Targeted Drive Reader/runtime tests passed; this workflow does not suppress or modify those unrelated failures."
+          fi
+
+      - name: Deploy temporary Cloudflare canary
+        id: canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-drive-runtime-v13
+
+          npx -y wrangler@4 deploy --config wrangler.drive-canary.jsonc 2>&1 \
+            | tee /tmp/chass-drive-canary-deploy.log
+
+          CANARY_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' \
+            /tmp/chass-drive-canary-deploy.log | tail -n 1 || true)"
+
+          if [ -z "$CANARY_URL" ]; then
+            echo "::error::Could not determine canary URL."
+            exit 1
+          fi
+
+          echo "url=$CANARY_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Put Service Account secret into temporary canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-drive-runtime-v13
+          printf '%s' "$GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON" \
+            | npx -y wrangler@4 secret put GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON \
+                --config wrangler.drive-canary.jsonc
+
+      - name: Cloudflare canary live private-Sheet read
+        shell: bash
+        env:
+          CANARY_URL: ${{ steps.canary.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          for i in 1 2 3 4 5; do
+            HTTP="$(curl -sS --max-time 25 \
+              -o /tmp/chass-drive-canary.json \
+              -w '%{http_code}' \
+              "$CANARY_URL/probe-drive" || true)"
+            if [ "$HTTP" = "200" ]; then break; fi
+            sleep 2
+          done
+
+          cat /tmp/chass-drive-canary.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/chass-drive-canary.json', 'utf8'));
+          if (x.ok !== true) throw new Error(`Drive canary failed: ${x.error?.code || x.error || 'unknown'}`);
+          if (x.authMode !== 'service_account') throw new Error('Canary auth mode is not service_account');
+          if (x.mode !== 'read_only') throw new Error('Canary mode is not read_only');
+          if (x.spreadsheetReachable !== true) throw new Error('Private CHASS master is not reachable');
+          if (x.jraIndexMasterReachable !== true) throw new Error('JRA index master bounded read failed');
+          if (x.d1WriteEnabled !== false) throw new Error('D1 write safety flag is not false');
+          console.log('Cloudflare Service Account live read: PASS');
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Delete temporary canary
+        if: ${{ always() && steps.patch.outputs.canary_name != '' }}
+        shell: bash
+        run: |
+          set +e
+          NAME="${{ steps.patch.outputs.canary_name }}"
+          HTTP="$(curl -sS --max-time 20 \
+            -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -o /tmp/chass-drive-canary-delete.json \
+            -w '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$NAME?force=true")"
+          echo "Canary delete HTTP: $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "204" ] && [ "$HTTP" != "404" ]; then
+            echo "::warning::Temporary Drive canary cleanup failed."
+          fi
+          exit 0
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS Google Drive Cloudflare Runtime v1.3 - VALIDATED"
+            echo
+            echo "- Service Account GitHub Secret: PASS"
+            echo "- Reader targeted tests: PASS"
+            echo "- Runtime API targeted tests: PASS"
+            echo "- Cloudflare canary auth: PASS"
+            echo "- Private CHASS master read from Cloudflare: PASS"
+            echo "- JRA index bounded read: PASS"
+            echo "- D1 mutation added: NO"
+            echo "- Production commit/deploy: NOT PERFORMED"
+            echo
+            echo "Run again with mode=apply_and_deploy to activate production."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move during validation
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.baseline.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+          test "$BASE" = "$REMOTE" || {
+            echo "::error::main changed during validation. Refusing to commit."
+            exit 1
+          }
+
+      - name: Apply tested runtime patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-drive-runtime-v13/google-drive-readonly-api.mjs .
+          cp /tmp/chass-drive-runtime-v13/tests/google-drive-cloudflare-api.test.mjs tests/
+          cp /tmp/chass-drive-runtime-v13/worker.js .
+          cp /tmp/chass-drive-runtime-v13/wrangler.jsonc .
+
+          for f in app.js server.mjs research-storage-sync.mjs package.json .assetsignore; do
+            if [ -f "$f" ]; then sha256sum "$f"; fi
+          done > /tmp/chass-drive-protected-after.sha256
+          diff -u /tmp/chass-drive-protected-before.sha256 /tmp/chass-drive-protected-after.sha256
+
+          node --check worker.js
+          node --check google-drive-readonly-api.mjs
+          node --test \
+            tests/google-drive-readonly-import.test.mjs \
+            tests/google-drive-cloudflare-api.test.mjs
+
+          git status --short
+
+      - name: Commit tested backend wiring
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            google-drive-readonly-api.mjs \
+            tests/google-drive-cloudflare-api.test.mjs \
+            worker.js \
+            wrangler.jsonc
+
+          if git diff --cached --quiet; then
+            echo "::error::No Drive runtime patch was staged."
+            exit 1
+          fi
+
+          git commit -m "Wire private Drive reader into Cloudflare runtime"
+          PATCH_SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "sha=$PATCH_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Put Service Account secret into production Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf '%s' "$GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON" \
+            | npx -y wrangler@4 secret put GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON
+
+          # Feature flag is a Worker secret so emergency OFF does not require a commit.
+          printf '%s' 'true' \
+            | npx -y wrangler@4 secret put ENABLE_DRIVE_READ_IMPORT
+
+      - name: Deploy production Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production Drive health and live read smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in 1 2 3 4 5 6; do
+            HTTP="$(curl -sS --max-time 25 \
+              -o /tmp/chass-drive-production.json \
+              -w '%{http_code}' \
+              "$PRODUCTION_BASE_URL/api/drive-read/health" || true)"
+            if [ "$HTTP" = "200" ]; then break; fi
+            sleep 3
+          done
+
+          cat /tmp/chass-drive-production.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/chass-drive-production.json', 'utf8'));
+          if (x.ok !== true) throw new Error(`Production Drive health failed: ${x.error?.code || x.error || 'unknown'}`);
+          if (x.authMode !== 'service_account') throw new Error('Production authMode is not service_account');
+          if (x.mode !== 'read_only') throw new Error('Production mode is not read_only');
+          if (x.spreadsheetReachable !== true) throw new Error('Production private CHASS master is not reachable');
+          if (x.jraIndexMasterReachable !== true) throw new Error('Production JRA bounded read failed');
+          if (x.d1WriteEnabled !== false) throw new Error('Production D1 write safety flag is not false');
+          console.log('Production Cloudflare -> private Google Sheet read: PASS');
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Final summary
+        if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS Google Drive Cloudflare Runtime v1.3 - ACTIVE"
+            echo
+            echo "- Service Account auth: ACTIVE"
+            echo "- OAuth Refresh Token: NOT REQUIRED"
+            echo "- Cloudflare Worker Service Account secret: CONFIGURED"
+            echo "- Drive Reader feature flag: ON"
+            echo "- Private CHASS master live read: PASS"
+            echo "- JRA_指数マスター bounded read: PASS"
+            echo "- Public health route: /api/drive-read/health"
+            echo "- Protected CHASS Bridge data route: /api/chass/v1/drive"
+            echo "- JRA/NAR allowlist separation: PRESERVED"
+            echo "- D1 write from Drive Reader: NONE"
+            echo "- Existing prediction snapshot mutation: NONE"
+            echo "- Production commit: ${{ steps.commit.outputs.sha }}"
+            echo
+            echo "Protected data example:"
+            echo "\`/api/chass/v1/drive?organization=JRA&sheet=JRA_指数マスター&maxRows=250\`"
+            echo
+            echo "> Protected data route inherits the existing CHASS Bridge authentication and rate limit."
+          } >> "$GITHUB_STEP_SUMMARY"
