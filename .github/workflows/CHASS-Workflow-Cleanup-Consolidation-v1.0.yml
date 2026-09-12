@@ -1,0 +1,273 @@
+name: CHASS Workflow Cleanup + Consolidation v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード。まず audit_only 推奨"
+        required: true
+        default: "audit_only"
+        type: choice
+        options:
+          - audit_only
+          - archive_superseded
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-workflow-cleanup-consolidation-v10
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test -d .github/workflows
+          test -f .github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.0.yml
+          git diff --quiet
+
+      - name: Build cleanup audit plan
+        id: audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ---------------------------------------------------------------
+          # 方針
+          # - 本番運用系・定期実行系は自動整理しない。
+          # - 過去に適用済みの one-shot hotfix / installer のみ候補化。
+          # - 削除せず archive/workflows/superseded/ へ git mv。
+          # - schedule / workflow_call 等を持つ候補は自動で BLOCKED。
+          # ---------------------------------------------------------------
+
+          PROTECTED=(
+            ".github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.0.yml"
+            ".github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
+            ".github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml"
+            ".github/workflows/publish-ai-snapshot.yml"
+            ".github/workflows/finalize-deploy.yml"
+            ".github/workflows/apply-nar-stabilization.yml"
+            ".github/workflows/repair-layout.yml"
+          )
+
+          CANDIDATES=(
+            # JRA bridge evolution / one-shot installers
+            ".github/workflows/CHASS-JRA-Bridge-Continuation-v1.2.yml"
+            ".github/workflows/CHASS-JRA-Bridge-Continuation-v1.3.yml"
+            ".github/workflows/CHASS-JRA-Bridge-Continuation-v1.4.yml"
+            ".github/workflows/CHASS-JRA-Bridge-Diagnostic-v1.5.yml"
+            ".github/workflows/CHASS-JRA-Bridge-Final-v1.6.yml"
+
+            # Horse identity / market / mark hotfix chain
+            ".github/workflows/CHASS-JRA-Horse-Identity-Market-Mark-Hotfix-v1.0.yml"
+            ".github/workflows/CHASS-JRA-Horse-Identity-Market-Mark-Hotfix-v1.1.yml"
+            ".github/workflows/CHASS-JRA-Horse-Identity-Market-Mark-Hotfix-v1.2.yml"
+
+            # EV / market hotfix chain
+            ".github/workflows/CHASS-JRA-Market-EV-Consistency-Hotfix-v1.0.yml"
+            ".github/workflows/CHASS-JRA-Market-EV-Consistency-Hotfix-v1.1.yml"
+            ".github/workflows/CHASS-JRA-Market-Freshness-Final-Odds-Hotfix-v1.2.yml"
+            ".github/workflows/CHASS-JRA-Market-Freshness-Final-Odds-Hotfix-v1.3.yml"
+            ".github/workflows/CHASS-JRA-Market-Freshness-Final-Odds-Hotfix-v1.4.yml"
+            ".github/workflows/CHASS-JRA-Market-Freshness-Final-Odds-Hotfix-v1.5.yml"
+            ".github/workflows/CHASS-JRA-Market-Freshness-Final-Odds-Hotfix-v1.6.yml"
+            ".github/workflows/CHASS-JRA-Market-Continuity-Hotfix-v1.7.yml"
+
+            # Legacy odds bridge / cache wiring
+            ".github/workflows/CHASS-JRA-Odds-Bridge-v1.0.yml"
+            ".github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.1.yml"
+            ".github/workflows/CHASS-JRA-Race-Odds-Auto-Link-v1.0.yml"
+            ".github/workflows/CHASS-JRA-Race-Odds-Auto-Link-v1.1.yml"
+            ".github/workflows/CHASS-JRA-Race-Odds-Auto-Link-v1.2.yml"
+
+            # Applied TIME fallback installer
+            ".github/workflows/CHASS-JRA-TIME-Missing-Safe-Fallback-v1.0.yml"
+
+            # Viewer one-shot upgrade chain
+            ".github/workflows/CHASS-Viewer-Market-UI-v3.1.yml"
+            ".github/workflows/CHASS-Viewer-Compact-Nav-UI-v3.2.yml"
+            ".github/workflows/CHASS-Viewer-Market-TIME-UI-v3.3.yml"
+            ".github/workflows/CHASS-Viewer-Date-Availability-v3.4.yml"
+            ".github/workflows/CHASS-Viewer-Empty-Date-UI-v3.5.yml"
+            ".github/workflows/CHASS-Viewer-Hidden-Bar-Hotfix-v3.5.1.yml"
+            ".github/workflows/CHASS-Viewer-Ability-Comment-UI-v3.6.yml"
+            ".github/workflows/CHASS-Viewer-Ability-Comment-UI-v3.6.1.yml"
+            ".github/workflows/CHASS-Viewer-Ability-Mark-Order-UI-v3.6.2.yml"
+            ".github/workflows/CHASS-Viewer-Ability-Mark-Order-UI-v3.6.3.yml"
+            ".github/workflows/CHASS-Viewer-Ability-Rank-EV-v3.6.4.yml"
+            ".github/workflows/CHASS-Viewer-Horse-Identity-Merge-v3.6.5.yml"
+            ".github/workflows/CHASS-JRA-Canonical-Horse-Identity-v3.6.6.yml"
+            ".github/workflows/CHASS-JRA-Canonical-Horse-Identity-v3.6.6.1.yml"
+          )
+
+          is_protected() {
+            local target="$1"
+            local x
+            for x in "${PROTECTED[@]}"; do
+              [ "$x" = "$target" ] && return 0
+            done
+            return 1
+          }
+
+          mkdir -p /tmp/chass-workflow-cleanup
+          PLAN=/tmp/chass-workflow-cleanup/plan.tsv
+          : > "$PLAN"
+
+          archive_count=0
+          blocked_count=0
+          missing_count=0
+
+          for file in "${CANDIDATES[@]}"; do
+            if [ ! -f "$file" ]; then
+              printf 'MISSING\t%s\t%s\n' "$file" "candidate_not_present" >> "$PLAN"
+              missing_count=$((missing_count + 1))
+              continue
+            fi
+
+            if is_protected "$file"; then
+              printf 'PROTECTED\t%s\t%s\n' "$file" "explicit_protection" >> "$PLAN"
+              blocked_count=$((blocked_count + 1))
+              continue
+            fi
+
+            # 定期運用・再利用可能 workflow を誤って止めない。
+            if grep -Eq '^[[:space:]]+(schedule|workflow_call|workflow_run|repository_dispatch|push|pull_request):' "$file"; then
+              printf 'BLOCKED_ACTIVE_TRIGGER\t%s\t%s\n' "$file" "non_manual_trigger_detected" >> "$PLAN"
+              blocked_count=$((blocked_count + 1))
+              continue
+            fi
+
+            if ! grep -Eq 'workflow_dispatch:' "$file"; then
+              printf 'BLOCKED_UNKNOWN\t%s\t%s\n' "$file" "workflow_dispatch_not_detected" >> "$PLAN"
+              blocked_count=$((blocked_count + 1))
+              continue
+            fi
+
+            printf 'ARCHIVE\t%s\t%s\n' "$file" "superseded_one_shot_workflow" >> "$PLAN"
+            archive_count=$((archive_count + 1))
+          done
+
+          total_workflows="$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l | tr -d ' ')"
+
+          echo "archive_count=$archive_count" >> "$GITHUB_OUTPUT"
+          echo "blocked_count=$blocked_count" >> "$GITHUB_OUTPUT"
+          echo "missing_count=$missing_count" >> "$GITHUB_OUTPUT"
+          echo "total_workflows=$total_workflows" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## CHASS Workflow Cleanup + Consolidation v1.0"
+            echo
+            echo "### 結論"
+            echo "- Mode: ${{ inputs.mode }}"
+            echo "- 現在の workflow 数: $total_workflows"
+            echo "- 安全に archive 可能: $archive_count"
+            echo "- 保護 / 自動整理禁止: $blocked_count"
+            echo "- 候補だが現在存在しない: $missing_count"
+            echo
+            echo "### 正本として維持する系統"
+            echo "- JRA 出馬表 + 単勝オッズ: CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
+            echo "- JRA 結果キャッシュ: CHASS-JRA-Result-Cache-Bridge-v1.0.yml"
+            echo "- AI snapshot: publish-ai-snapshot.yml"
+            echo "- NAR / deploy / repair utility: 今回は触らない"
+            echo
+            echo "### 自動整理の対象"
+            echo "過去の one-shot hotfix / installer のみ archive へ移動します。削除しません。"
+            echo
+            echo '|判定|ファイル|理由|'
+            echo '|---|---|---|'
+            while IFS=$'\t' read -r status file reason; do
+              echo "|$status|\`$file\`|$reason|"
+            done < "$PLAN"
+            echo
+            echo "### 今回あえて統合しない領域"
+            echo "Cloudflare診断・Security系、NAR系、一般deploy/repair系は個別確認後に次段階で整理します。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive superseded one-shot workflows
+        if: ${{ inputs.mode == 'archive_superseded' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PLAN=/tmp/chass-workflow-cleanup/plan.tsv
+          STAMP="$(date -u +'%Y%m%d-%H%M%S')"
+          ARCHIVE_DIR="archive/workflows/superseded/$STAMP"
+          mkdir -p "$ARCHIVE_DIR"
+
+          moved=0
+          while IFS=$'\t' read -r status file reason; do
+            [ "$status" = "ARCHIVE" ] || continue
+            [ -f "$file" ] || {
+              echo "::error::Planned archive file disappeared: $file"
+              exit 1
+            }
+            git mv "$file" "$ARCHIVE_DIR/$(basename "$file")"
+            moved=$((moved + 1))
+          done < "$PLAN"
+
+          if [ "$moved" -eq 0 ]; then
+            echo "No superseded one-shot workflows to archive."
+            exit 0
+          fi
+
+          # 本番正本が残っていることを最終確認。
+          test -f .github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.0.yml
+          test -f .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml
+          test -f .github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml
+          test -f .github/workflows/publish-ai-snapshot.yml
+
+          {
+            echo "# CHASS Workflow Archive Manifest"
+            echo
+            echo "Archived at (UTC): $STAMP"
+            echo
+            echo "## Purpose"
+            echo "過去に適用済みの one-shot hotfix / installer workflow を Actions 一覧から外し、"
+            echo "本番運用 workflow と今後の改善 workflow を見分けやすくするための可逆整理。"
+            echo
+            echo "## Canonical active workflows kept"
+            echo "- .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
+            echo "- .github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml"
+            echo "- .github/workflows/publish-ai-snapshot.yml"
+            echo "- .github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.0.yml"
+            echo
+            echo "## Archived files"
+            while IFS=$'\t' read -r status file reason; do
+              [ "$status" = "ARCHIVE" ] || continue
+              echo "- $(basename "$file")"
+            done < "$PLAN"
+            echo
+            echo "## Restore"
+            echo "必要になった場合は対象 yml を .github/workflows/ に戻せば再度 Actions から実行できます。"
+          } > "$ARCHIVE_DIR/MANIFEST.md"
+
+          git diff --check
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: archive superseded one-shot workflows"
+          git push origin HEAD:main
+
+          {
+            echo
+            echo "### archive_superseded 完了"
+            echo "- 移動数: $moved"
+            echo "- Archive: \`$ARCHIVE_DIR\`"
+            echo "- 削除: 0"
+            echo "- 正本 workflow: 維持"
+          } >> "$GITHUB_STEP_SUMMARY"
