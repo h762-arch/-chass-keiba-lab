@@ -1,0 +1,491 @@
+name: CHASS JRA Market Freshness + Final Odds Hotfix v1.6
+'on':
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 実行モード
+        required: true
+        default: validate_only
+        type: choice
+        options:
+        - validate_only
+        - apply_and_deploy
+permissions:
+  contents: write
+concurrency:
+  group: chass-jra-market-freshness-final-odds-v16
+  cancel-in-progress: false
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+    steps:
+    - name: Checkout main
+      uses: actions/checkout@v5
+      with:
+        ref: main
+        fetch-depth: 0
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: 24
+    - name: Safety guard
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+        test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+        test -f worker.js
+        test -f viewer/viewer-core.js
+        test -f viewer/viewer-app.js
+        test -f mcp/package.json
+        test -f mcp/package-lock.json
+
+        grep -Fq "function publicDayAiLight" worker.js
+        grep -Fq "function publicDayAiCompact" worker.js
+        grep -Fq "if(output==='tabular')return publicJson(publicDayAiLight(day),{cache,head});" worker.js
+        grep -Fq "export function buildViewerMarketDayUrl" viewer/viewer-core.js
+        grep -Fq "export function sanitizeViewerMarketPayload" viewer/viewer-core.js
+        grep -Fq "function mergeMarket(day, marketDay)" viewer/viewer-app.js
+        grep -Fq "horseNo: market.horseNo ?? horse.horseNo" viewer/viewer-app.js
+        grep -Fq "horseName: market.horseName || horse.horseName" viewer/viewer-app.js
+        grep -Fq "function marketStatus(race)" viewer/viewer-app.js
+
+        echo "Baseline compatibility anchors: PASS"
+    - name: Install MCP test dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm ci --prefix mcp
+    - name: Patch viewer-only fresh/final market overlay
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > /tmp/chass_market_freshness_v16.py <<'PY'
+        from pathlib import Path
+        import textwrap
+
+        def replace_once(text, old, new, label):
+            count = text.count(old)
+            if count != 1:
+                raise SystemExit(f"{label}: expected exactly 1 anchor, got {count}")
+            return text.replace(old, new, 1)
+
+        # worker.js: preserve the normal public day-ai contract.
+        worker_path = Path("worker.js")
+        worker = worker_path.read_text(encoding="utf-8")
+
+        helper_anchor = "function publicDayAiCompact(day){"
+        if worker.count(helper_anchor) != 1:
+            raise SystemExit(
+                f"worker overlay insertion anchor: expected exactly 1, got {worker.count(helper_anchor)}"
+            )
+
+        overlay_helper = textwrap.dedent(r"""
+        function publicViewerMarketOverlay(day,races){
+         const rawByRaceNo=new Map((races||[]).map(r=>[Number(r?.raceNo),r]));
+         return (day?.races||[]).map(item=>{
+          const raw=rawByRaceNo.get(Number(item?.raceNumber))||null,
+                resultHorses=Array.isArray(raw?.result?.horses)?raw.result.horses:[],
+                resultByNo=new Map(resultHorses.map(h=>[Number(h?.horseNo),h])),
+                resultAt=raw?.resultAcquiredAt||raw?.result?.fetchedAt||raw?.result?.resultAcquiredAt||null;
+          return {
+           raceNumber:item?.raceNumber??null,
+           horses:(item?.horses||[]).map(h=>{
+            const no=Number(h?.horseNumber??h?.no),
+                  resultHorse=resultByNo.get(no)||null,
+                  finalOdds=publicPositiveNumber(resultHorse?.finalOdds??resultHorse?.odds),
+                  finalPopularity=publicPositiveInteger(resultHorse?.finalPopularity??resultHorse?.popularity),
+                  savedStatus=String(h?.oddsStatus||item?.market?.oddsStatus||'unavailable'),
+                  savedUsable=savedStatus==='available',
+                  finalUsable=finalOdds!=null;
+            return {
+             horseNumber:Number.isFinite(no)?no:null,
+             horseName:h?.horseName??h?.name??'',
+             odds:finalUsable?finalOdds:(savedUsable?publicPositiveNumber(h?.odds):null),
+             popularity:finalUsable?(finalPopularity??publicPositiveInteger(h?.popularity)):(savedUsable?publicPositiveInteger(h?.popularity):null),
+             oddsStatus:finalUsable?'final':savedStatus,
+             oddsFetchedAt:finalUsable?resultAt:(h?.oddsFetchedAt||item?.market?.oddsFetchedAt||null),
+             marketDataSource:finalUsable?'result_final':(item?.market?.marketDataSource||null)
+            };
+           })
+          };
+         });
+        }
+        """).lstrip()
+        worker = worker.replace(helper_anchor, overlay_helper + helper_anchor, 1)
+
+        old_tabular = (
+            "   const day=publicDayAi(races,{date,track});\n"
+            "   if(output==='tabular')return publicJson(publicDayAiLight(day),{cache,head});"
+        )
+        new_tabular = (
+            "   const day=publicDayAi(races,{date,track});\n"
+            "   if(output==='tabular'){\n"
+            "    const payload=publicDayAiLight(day);\n"
+            "    if(u.searchParams.get('viewerMarket')==='1'){\n"
+            "     payload.viewerMarketMode='fresh-final-overlay-v1';\n"
+            "     payload.viewerMarketOverlay=publicViewerMarketOverlay(day,races);\n"
+            "    }\n"
+            "    return publicJson(payload,{cache,head});\n"
+            "   }"
+        )
+        worker = replace_once(worker, old_tabular, new_tabular, "worker viewerMarket branch")
+        worker_path.write_text(worker, encoding="utf-8")
+
+        # viewer-core: Viewer explicitly opts into the separate overlay.
+        core_path = Path("viewer/viewer-core.js")
+        core = core_path.read_text(encoding="utf-8")
+
+        old_url = textwrap.dedent("""\
+        export function buildViewerMarketDayUrl({ date, track, organization, origin = '' } = {}) {
+          const context = validatedContext({ date, track, organization });
+          const params = new URLSearchParams({
+            date: context.date,
+            track: context.track,
+            organization: context.organization,
+            format: 'tabular',
+          });
+          return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day-ai?${params.toString()}`;
+        }""")
+        new_url = textwrap.dedent("""\
+        export function buildViewerMarketDayUrl({ date, track, organization, origin = '' } = {}) {
+          const context = validatedContext({ date, track, organization });
+          const params = new URLSearchParams({
+            date: context.date,
+            track: context.track,
+            organization: context.organization,
+            format: 'tabular',
+            viewerMarket: '1',
+          });
+          return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day-ai?${params.toString()}`;
+        }""")
+        core = replace_once(core, old_url, new_url, "viewer-core market URL")
+
+        start = core.find("export function sanitizeViewerMarketPayload(payload = {}) {")
+        end = core.find("\nexport function formatViewerPercent", start)
+        if start < 0 or end < 0:
+            raise SystemExit("viewer-core sanitizeViewerMarketPayload block not found")
+
+        new_sanitizer = textwrap.dedent(r"""
+        export function sanitizeViewerMarketPayload(payload = {}) {
+          if (payload?.ok !== true || !Array.isArray(payload?.races) || !Array.isArray(payload?.horseColumns)) {
+            throw new Error('viewer_invalid_market_payload');
+          }
+
+          const columns = payload.horseColumns.map(String);
+          const toObject = (row) => {
+            if (!Array.isArray(row)) return {};
+            return Object.fromEntries(columns.map((key, index) => [key, row[index] ?? null]));
+          };
+
+          const normalizeMarketName = (value) => String(value ?? '')
+            .normalize('NFKC')
+            .replace(/\s+/g, '')
+            .trim();
+
+          const overlayByRace = new Map(
+            (Array.isArray(payload.viewerMarketOverlay) ? payload.viewerMarketOverlay : [])
+              .map((race) => [Number(race?.raceNumber), race])
+              .filter(([raceNo]) => Number.isFinite(raceNo)),
+          );
+
+          const races = payload.races.map((race) => {
+            const raceNo = finiteOrNull(race?.raceNumber);
+            const overlayRace = overlayByRace.get(Number(raceNo)) || null;
+            const overlayHorses = Array.isArray(overlayRace?.horses) ? overlayRace.horses : [];
+
+            return {
+              raceNo,
+              raceName: textOrNull(race?.raceName),
+              horses: Array.isArray(race?.horses)
+                ? race.horses.map((row) => {
+                    const horse = toObject(row);
+                    const horseNo = finiteOrNull(horse.horseNumber);
+                    const horseName = textOrNull(horse.horseName) || '';
+                    const normalizedName = normalizeMarketName(horseName);
+
+                    const overlay = overlayHorses.find((item) => {
+                      const sameNo = finiteOrNull(item?.horseNumber) === horseNo;
+                      if (!sameNo) return false;
+
+                      const overlayName = normalizeMarketName(item?.horseName);
+                      if (!overlayName || !normalizedName) return true;
+                      return overlayName === normalizedName;
+                    }) || null;
+
+                    const overlayStatus = textOrNull(overlay?.oddsStatus);
+                    const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
+                    const baseOdds = finiteOrNull(horse.odds);
+                    const basePopularity = finiteOrNull(horse.popularity);
+
+                    return {
+                      horseNo,
+                      horseName,
+                      abilityRank: finiteOrNull(horse.abilityRank),
+                      abilityScore: finiteOrNull(horse.score),
+                      odds: overlay ? (overlayUsable ? finiteOrNull(overlay.odds) : null) : baseOdds,
+                      popularity: overlay
+                        ? (overlayUsable ? finiteOrNull(overlay.popularity) : null)
+                        : basePopularity,
+                      expectedValue: finiteOrNull(horse.expectedValue),
+                      longshotMark: textOrNull(horse.diamond),
+                      dangerMark: textOrNull(horse.warning),
+                      marketStatus: overlayStatus,
+                      marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
+                      marketDataSource: textOrNull(overlay?.marketDataSource),
+                    };
+                  })
+                : [],
+            };
+          });
+
+          return Object.freeze({
+            ok: true,
+            date: textOrNull(payload.date),
+            track: textOrNull(payload.track),
+            organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
+            viewerMarketMode: textOrNull(payload.viewerMarketMode),
+            races: Object.freeze(races.map((race) => Object.freeze({
+              ...race,
+              horses: Object.freeze(race.horses.map((horse) => Object.freeze(horse))),
+            }))),
+          });
+        }
+        """).lstrip()
+        core = core[:start] + new_sanitizer + core[end:]
+        core_path.write_text(core, encoding="utf-8")
+
+        # viewer-app: keep existing identity resolution; add only market-state metadata.
+        app_path = Path("viewer/viewer-app.js")
+        app = app_path.read_text(encoding="utf-8")
+
+        old_merge_fields = """        odds: market.odds ?? null,
+                popularity: market.popularity ?? null,
+                expectedValue,"""
+        new_merge_fields = """        odds: market.odds ?? null,
+                popularity: market.popularity ?? null,
+                expectedValue,
+                marketStatus: market.marketStatus ?? null,
+                marketFetchedAt: market.marketFetchedAt ?? null,
+                marketDataSource: market.marketDataSource ?? null,"""
+        app = replace_once(app, old_merge_fields, new_merge_fields, "viewer-app market metadata")
+
+        old_status = textwrap.dedent("""\
+        function marketStatus(race) {
+          const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+          const withOdds = active.filter((horse) => horse.odds != null).length;
+          if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+          if (withOdds < active.length) return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+          return { text: '市場データ 反映済み', state: 'ready' };
+        }""")
+        new_status = textwrap.dedent("""\
+        function marketStatus(race) {
+          const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+          const withOdds = active.filter((horse) => horse.odds != null).length;
+          const finalCount = active.filter(
+            (horse) => horse.odds != null && horse.marketStatus === 'final',
+          ).length;
+          const staleCount = active.filter((horse) => horse.marketStatus === 'stale').length;
+
+          if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
+          if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+          if (finalCount === active.length && active.length > 0) {
+            return { text: '確定市場 反映済み', state: 'ready' };
+          }
+          if (withOdds < active.length) {
+            return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+          }
+          return { text: '市場データ 反映済み', state: 'ready' };
+        }""")
+        app = replace_once(app, old_status, new_status, "viewer-app market status")
+        app_path.write_text(app, encoding="utf-8")
+
+        print("Patched viewer-only market overlay without changing standard day-ai schema.")
+        PY
+        python3 /tmp/chass_market_freshness_v16.py
+    - name: Add v1.6 compatibility regression tests
+      shell: bash
+      run: |
+        set -euo pipefail
+        cat > tests/jra-market-freshness-final-odds-v16.test.mjs <<'EOF'
+        import test from 'node:test';
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+
+        const worker = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+        const core = fs.readFileSync(new URL('../viewer/viewer-core.js', import.meta.url), 'utf8');
+        const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+
+        test('stable public tabular horseColumns contract is unchanged', () => {
+          assert.match(
+            worker,
+            /const horseColumns=\['horseNumber','horseName','abilityRank','score','winProb','top3Prob','odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'\]/,
+          );
+          assert.doesNotMatch(
+            worker,
+            /const horseColumns=\[[^\]]*'oddsStatus'[^\]]*\]/,
+          );
+        });
+
+        test('viewer opts into a separate market overlay', () => {
+          assert.match(core, /viewerMarket: '1'/);
+          assert.match(worker, /function publicViewerMarketOverlay\(day,races\)/);
+          assert.match(worker, /u\.searchParams\.get\('viewerMarket'\)==='1'/);
+          assert.match(worker, /payload\.viewerMarketOverlay=publicViewerMarketOverlay\(day,races\)/);
+        });
+
+        test('normal day-ai saved-snapshot semantics remain present', () => {
+          assert.match(worker, /marketEvaluationMode:'saved-snapshot-only'/);
+          assert.match(worker, /expectedValue:'winProb × savedOdds'/);
+          assert.match(worker, /const pop=popularity\.map\.get\(h\.no\)\?\?null,odds=publicPositiveNumber\(h\.odds\)/);
+        });
+
+        test('viewer overlay is fail-closed for stale market data', () => {
+          assert.match(worker, /savedUsable=savedStatus==='available'/);
+          assert.match(
+            worker,
+            /odds:finalUsable\?finalOdds:\(savedUsable\?publicPositiveNumber\(h\?\.odds\):null\)/,
+          );
+          assert.match(core, /overlayUsable = overlayStatus === 'available' \|\| overlayStatus === 'final'/);
+        });
+
+        test('viewer horse identity contract is preserved', () => {
+          assert.match(app, /horseNo: market\.horseNo \?\? horse\.horseNo/);
+          assert.match(app, /horseName: market\.horseName \|\| horse\.horseName/);
+          assert.match(app, /const market = resolveHorseIdentity\(horse, marketRace\.horses, used\)/);
+          assert.match(core, /return overlayName === normalizedName/);
+        });
+
+        test('viewer can distinguish stale and final market states', () => {
+          assert.match(app, /市場データ 古い/);
+          assert.match(app, /確定市場 反映済み/);
+          assert.match(app, /marketStatus: market\.marketStatus \?\? null/);
+        });
+        EOF
+    - name: Syntax and full regression checks
+      shell: bash
+      run: |
+        set -euo pipefail
+        node --check worker.js
+        node --check viewer/viewer-core.js
+        node --check viewer/viewer-app.js
+        node --test tests/jra-market-freshness-final-odds-v16.test.mjs
+        npm run check
+    - name: Validate-only summary
+      if: ${{ inputs.mode == 'validate_only' }}
+      shell: bash
+      run: |
+        {
+          echo "## CHASS JRA Market Freshness + Final Odds Hotfix v1.6"
+          echo
+          echo "- Mode: validate_only"
+          echo "- Standard public day-ai schema: PRESERVED"
+          echo "- Saved-snapshot market semantics: PRESERVED"
+          echo "- Viewer market overlay: VALIDATED"
+          echo "- Viewer identity-first merge: PRESERVED"
+          echo "- Stale market is fail-closed in Viewer: VALIDATED"
+          echo "- Result/final market overlay is Viewer-only: VALIDATED"
+          echo "- MCP dependencies installed before full regression: YES"
+          echo "- Production source commit: NOT PERFORMED"
+          echo "- Production deploy: NOT PERFORMED"
+          echo
+          echo "Next: rerun with mode=apply_and_deploy only after this run is green."
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Cloudflare auth preflight
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -n "${CLOUDFLARE_API_TOKEN:-}" || { echo "::error::CLOUDFLARE_API_TOKEN is not configured."; exit 1; }
+        test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || { echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."; exit 1; }
+        npx -y wrangler@4 whoami
+    - name: Commit source patch
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git add worker.js viewer/viewer-core.js viewer/viewer-app.js tests/jra-market-freshness-final-odds-v16.test.mjs
+
+        ALLOWED="$(
+          printf '%s\n' \
+            worker.js \
+            viewer/viewer-core.js \
+            viewer/viewer-app.js \
+            tests/jra-market-freshness-final-odds-v16.test.mjs \
+          | sort
+        )"
+        ACTUAL="$(git diff --cached --name-only | sort)"
+        test "$ACTUAL" = "$ALLOWED" || {
+          echo "::error::Unexpected staged files:"
+          echo "$ACTUAL"
+          exit 1
+        }
+
+        git commit -m "fix: add viewer-only fresh/final JRA market overlay"
+        git push origin main
+    - name: Deploy production worker and assets
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        npx -y wrangler@4 deploy
+    - name: Production smoke
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        CODE="$(curl -sS --max-time 25 \
+          -o /tmp/viewer-market-smoke.json \
+          -w '%{http_code}' \
+          --get "$PRODUCTION_BASE_URL/api/chass/v1/public/day-ai" \
+          --data-urlencode "date=2026-09-12" \
+          --data-urlencode "track=阪神" \
+          --data-urlencode "organization=JRA" \
+          --data-urlencode "format=tabular" \
+          --data-urlencode "viewerMarket=1" || true)"
+
+        test "$CODE" = "200" || {
+          echo "::error::Viewer market smoke HTTP $CODE"
+          cat /tmp/viewer-market-smoke.json || true
+          exit 1
+        }
+
+        node - <<'NODE'
+        const fs = require('fs');
+        const x = JSON.parse(fs.readFileSync('/tmp/viewer-market-smoke.json', 'utf8'));
+        const expectedColumns = [
+          'horseNumber','horseName','abilityRank','score','winProb','top3Prob',
+          'odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'
+        ];
+        if (JSON.stringify(x.horseColumns) !== JSON.stringify(expectedColumns)) throw new Error('stable horseColumns contract changed');
+        if (x.viewerMarketMode !== 'fresh-final-overlay-v1') throw new Error('viewer market mode missing');
+        if (!Array.isArray(x.viewerMarketOverlay)) throw new Error('viewer market overlay missing');
+        console.log('Production viewer-market overlay smoke: PASS');
+        NODE
+    - name: Apply summary
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        {
+          echo "## CHASS JRA Market Freshness + Final Odds Hotfix v1.6 - PRODUCTION SUCCESS"
+          echo
+          echo "- Standard public day-ai schema: KEPT"
+          echo "- Standard saved-snapshot semantics: KEPT"
+          echo "- Viewer-only fresh/final overlay: ENABLED"
+          echo "- Stale odds used for Viewer EV: BLOCKED"
+          echo "- Final/result odds overlay: ENABLED when official result market exists"
+          echo "- Horse identity-first merge: KEPT"
+          echo "- Full repository regression: PASS"
+          echo "- Production deploy: PASS"
+        } >> "$GITHUB_STEP_SUMMARY"
