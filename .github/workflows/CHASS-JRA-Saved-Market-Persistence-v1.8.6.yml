@@ -1,0 +1,505 @@
+name: CHASS JRA Saved Market Persistence v1.8.6
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "最初は validate_only。成功後 apply_and_deploy"
+        required: true
+        default: validate_only
+        type: choice
+        options:
+          - diagnose_only
+          - validate_only
+          - apply_and_deploy
+      full_regression:
+        description: "MCP依存を含む全回帰テストを実行する。最初はfalse推奨"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-saved-market-persistence-v186
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      DONOR_WORKFLOW: .github/workflows/CHASS-JRA-Saved-Market-Persistence-v1.8.2.yml
+      PATCH_SCRIPT: /tmp/chass_saved_market_v186.py
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Baseline validation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          HEAD_SHA="$(git rev-parse HEAD)"
+
+          printf 'HEAD=%s\n' "$HEAD_SHA"
+          printf 'PACKAGE=%s\n' "$PACKAGE_NAME"
+          printf 'VERSION=%s\n' "$PACKAGE_VERSION"
+
+          test "$PACKAGE_NAME" = "chass-keiba-lab"
+          test "$PACKAGE_VERSION" = "10.0.1"
+
+          for f in \
+            "$DONOR_WORKFLOW" \
+            jra-official-cache.mjs \
+            jra-odds-fetch.mjs \
+            worker.js \
+            viewer/viewer-core.js \
+            viewer/viewer-app.js
+          do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              exit 1
+            fi
+          done
+
+          grep -Fq "cat > /tmp/chass_saved_market_v182.py <<'PY'" "$DONOR_WORKFLOW"
+          grep -Fq "export async function readJraOfficialOddsCache" jra-official-cache.mjs
+          grep -Fq "export function sanitizeViewerMarketPayload(payload = {})" viewer/viewer-core.js
+
+          {
+            echo "### CHASS JRA Saved Market Persistence v1.8.6"
+            echo
+            printf '%s\n' "- HEAD: \`$HEAD_SHA\`"
+            echo "- v1.8.5 failure reproduced from logs: viewer-core.js syntax break after function replacement"
+            echo "- Root fix: function body brace is searched AFTER the full signature"
+            echo "- Default-argument braces like payload = {} are no longer treated as the function body"
+            echo "- Donor: v1.8.2"
+            echo "- Patch compile gate: ENABLED"
+            echo "- JS syntax gates: ENABLED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose only
+        if: ${{ inputs.mode == 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## DIAGNOSE ONLY"
+            echo "- No source modification"
+            echo "- No commit"
+            echo "- No deploy"
+            echo "- Next: validate_only"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract donor patch and repair function-boundary parser
+        if: ${{ inputs.mode != 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const donor = process.env.DONOR_WORKFLOW;
+          const out = process.env.PATCH_SCRIPT;
+          const source = fs.readFileSync(donor, 'utf8');
+          const lines = source.split(/\r?\n/);
+          const marker = "cat > /tmp/chass_saved_market_v182.py <<'PY'";
+
+          const markerIndex = lines.findIndex((line) => line.includes(marker));
+          if (markerIndex < 0) throw new Error('donor_python_start_marker_missing');
+
+          const markerLine = lines[markerIndex];
+          const prefix = markerLine.slice(0, markerLine.indexOf('cat >'));
+          if (!prefix.length) throw new Error('donor_yaml_indent_not_detected');
+
+          const extracted = [];
+          let foundEnd = false;
+
+          for (let i = markerIndex + 1; i < lines.length; i += 1) {
+            const line = lines[i];
+            if (line.trim() === 'PY') {
+              foundEnd = true;
+              break;
+            }
+            if (!line.startsWith(prefix) && line.trim() !== '') {
+              throw new Error(`donor_indent_mismatch_at_line_${i + 1}`);
+            }
+            extracted.push(line.startsWith(prefix) ? line.slice(prefix.length) : '');
+          }
+
+          if (!foundEnd) throw new Error('donor_python_end_marker_missing');
+
+          let patch = extracted.join('\n') + '\n';
+
+          const replaceExactOnce = (text, oldText, newText, label) => {
+            const count = text.split(oldText).length - 1;
+            if (count !== 1) throw new Error(`${label}_count_${count}`);
+            return text.replace(oldText, newText);
+          };
+
+          patch = replaceExactOnce(
+            patch,
+            'def find_js_function_end(text, start):\n    open_brace = text.find("{", start)\n',
+            'def find_js_function_end(text, open_brace):\n',
+            'find_js_function_end_header',
+          );
+
+          patch = replaceExactOnce(
+            patch,
+            '    end = find_js_function_end(text, start)\n',
+            '    body_search_start = start + len(signature)\n    open_brace = text.find("{", body_search_start)\n    if open_brace < 0:\n        fail(f"{label}: function body opening brace not found")\n    end = find_js_function_end(text, open_brace)\n',
+            'replace_js_function_body_search',
+          );
+
+          patch = replaceExactOnce(
+            patch,
+            '        "export async function readJraOfficialOddsCacheForViewer",\n',
+            '        "export async function readJraOfficialOddsCacheForViewer(env, { date, track, race, nowMs = Date.now() } = {})",\n',
+            'cache_reader_full_signature',
+          );
+
+          const legacyWorkerBlock = `worker = replace_js_function(
+              worker,
+              "function publicViewerMarketOverlay(day,races)",
+              WORKER_OVERLAY_FN,
+              "public viewer market overlay",
+          )`;
+
+          const idempotentWorkerBlock = `if "async function publicViewerMarketOverlay(day,races,env)" in worker:
+              worker = replace_js_function(
+                  worker,
+                  "async function publicViewerMarketOverlay(day,races,env)",
+                  WORKER_OVERLAY_FN,
+                  "public viewer market overlay refresh",
+              )
+          else:
+              worker = replace_js_function(
+                  worker,
+                  "function publicViewerMarketOverlay(day,races)",
+                  WORKER_OVERLAY_FN,
+                  "public viewer market overlay",
+              )`;
+
+          const workerCount = patch.split(legacyWorkerBlock).length - 1;
+          if (workerCount === 1) {
+            patch = patch.replace(legacyWorkerBlock, idempotentWorkerBlock);
+          } else if (!patch.includes('public viewer market overlay refresh')) {
+            throw new Error(`worker_idempotency_anchor_count_${workerCount}`);
+          }
+
+          if (/sed\s+-i/.test(patch)) {
+            throw new Error('unexpected_sed_inside_extracted_python');
+          }
+
+          if (!patch.includes('body_search_start = start + len(signature)')) {
+            throw new Error('body_search_fix_missing');
+          }
+
+          fs.writeFileSync(out, patch, 'utf8');
+          console.log(`Extracted + repaired ${patch.split(/\n/).length} Python lines to ${out}`);
+          NODE
+
+          python3 -m py_compile "$PATCH_SCRIPT"
+          echo "Python precompile: PASS"
+
+          {
+            echo
+            echo "## Patch extraction"
+            echo "- Donor extraction: PASS"
+            echo "- Default-argument brace bug repair: PASS"
+            echo "- Python compile: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply structural persistence patch
+        if: ${{ inputs.mode != 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$PATCH_SCRIPT"
+          git diff --check
+          git status --short
+
+      - name: Source integrity gates
+        if: ${{ inputs.mode != 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --check jra-official-cache.mjs
+          node --check worker.js
+          node --check viewer/viewer-core.js
+
+          grep -Fq "export async function readJraOfficialOddsCacheForViewer" jra-official-cache.mjs
+          grep -Fq "readJraOfficialOddsCacheForViewer" worker.js
+          grep -Fq "async function publicViewerMarketOverlay(day,races,env)" worker.js
+          grep -Fq "await publicViewerMarketOverlay(day,races,env)" worker.js
+          grep -Fq "['available', 'final', 'saved']" viewer/viewer-core.js
+
+          # The strict current-odds endpoint must stay strict.
+          grep -Fq "readJraOfficialOddsCache(env,{date,track,race,nowMs:now()})" jra-odds-fetch.mjs
+          if grep -Fq "readJraOfficialOddsCacheForViewer" jra-odds-fetch.mjs; then
+            echo "::error::Strict current-odds fetcher was contaminated by saved-market reader"
+            exit 1
+          fi
+
+          # Only the three intended source files may change.
+          ALLOWED='^(jra-official-cache\.mjs|worker\.js|viewer/viewer-core\.js)$'
+          BAD="$(git status --short | sed -E 's/^.. //' | grep -Ev "$ALLOWED" || true)"
+          if [ -n "$BAD" ]; then
+            echo "::error::Unexpected changed files:"
+            echo "$BAD"
+            exit 1
+          fi
+
+          {
+            echo
+            echo "## Source integrity"
+            echo "- jra-official-cache.mjs syntax: PASS"
+            echo "- worker.js syntax: PASS"
+            echo "- viewer/viewer-core.js syntax: PASS"
+            echo "- Strict current-odds isolation: PASS"
+            echo "- Changed-file allowlist: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Focused saved-market regression
+        if: ${{ inputs.mode != 'diagnose_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {
+            readJraOfficialOddsCache,
+            readJraOfficialOddsCacheForViewer,
+          } from './jra-official-cache.mjs';
+          import { sanitizeViewerMarketPayload } from './viewer/viewer-core.js';
+
+          const expiredRow = {
+            payload_json: JSON.stringify({
+              ok: true,
+              organization: 'JRA',
+              date: '2026-09-12',
+              track: '阪神',
+              race: 11,
+              oddsSnapshotType: 'current',
+              quality: { oddsHorseCount: 2 },
+              odds: [
+                { horseNo: 7, horseName: 'ジーティーアダマン', odds: 10.8, popularity: 5 },
+                { horseNo: 13, horseName: 'グランヴィノス', odds: 26.0, popularity: 11 },
+              ],
+            }),
+            source_url: 'test',
+            fetched_at: '2026-09-12T06:50:00.000Z',
+            expires_at: '2026-09-12T07:00:00.000Z',
+            parser_version: 'test',
+            content_hash: 'test',
+          };
+
+          const DB = {
+            prepare() {
+              return {
+                bind() {
+                  return { first: async () => expiredRow };
+                },
+              };
+            },
+          };
+
+          const nowMs = Date.parse('2026-09-12T12:00:00.000Z');
+
+          const strict = await readJraOfficialOddsCache(
+            { DB },
+            { date: '2026-09-12', track: '阪神', race: 11, nowMs },
+          );
+          assert.equal(strict, null, 'strict current-odds reader must reject expired rows');
+
+          const viewer = await readJraOfficialOddsCacheForViewer(
+            { DB },
+            { date: '2026-09-12', track: '阪神', race: 11, nowMs },
+          );
+          assert.equal(viewer?.body?.bridgeCache?.expired, true);
+          assert.equal(viewer?.body?.bridgeCache?.freshness, 'saved');
+          assert.equal(viewer?.body?.odds?.[0]?.horseNo, 7);
+
+          const sanitized = sanitizeViewerMarketPayload({
+            ok: true,
+            organization: 'JRA',
+            date: '2026-09-12',
+            track: '阪神',
+            viewerMarketMode: 'test',
+            horseColumns: [
+              'horseNumber',
+              'horseName',
+              'abilityRank',
+              'score',
+              'odds',
+              'popularity',
+              'expectedValue',
+              'diamond',
+              'warning',
+            ],
+            races: [{
+              raceNumber: 11,
+              raceName: 'チャレンジカップ',
+              horses: [
+                [7, 'ジーティーアダマン', 1, 77.8, null, null, null, null, null],
+                [13, 'グランヴィノス', 2, 74.9, null, null, null, null, null],
+              ],
+            }],
+            viewerMarketOverlay: [{
+              raceNumber: 11,
+              horses: [
+                {
+                  horseNumber: 7,
+                  horseName: 'ジーティーアダマン',
+                  odds: 10.8,
+                  popularity: 5,
+                  oddsStatus: 'saved',
+                  oddsFetchedAt: '2026-09-12T06:50:00.000Z',
+                  marketDataSource: 'd1_saved_expired',
+                },
+                {
+                  horseNumber: 13,
+                  horseName: 'グランヴィノス',
+                  odds: 26.0,
+                  popularity: 11,
+                  oddsStatus: 'saved',
+                  oddsFetchedAt: '2026-09-12T06:50:00.000Z',
+                  marketDataSource: 'd1_saved_expired',
+                },
+              ],
+            }],
+          });
+
+          const race = sanitized.races[0];
+          assert.equal(race.horses[0].horseNo, 7);
+          assert.equal(race.horses[0].odds, 10.8);
+          assert.equal(race.horses[0].popularity, 5);
+          assert.equal(race.horses[0].marketStatus, 'saved');
+          assert.equal(race.horses[1].horseNo, 13);
+          assert.equal(race.horses[1].odds, 26.0);
+          assert.equal(race.horses[1].popularity, 11);
+
+          console.log('Focused saved-market regression: PASS');
+          NODE
+
+          {
+            echo
+            echo "## Focused regression"
+            echo "- Strict current odds rejects expired cache: PASS"
+            echo "- Viewer reader accepts saved expired cache: PASS"
+            echo "- horseNo identity preserved: PASS"
+            echo "- saved odds/popularity rendered: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Optional full regression
+        if: ${{ inputs.mode != 'diagnose_only' && inputs.full_regression == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix mcp --ignore-scripts --no-audit --no-fund
+          npm run check
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## VALIDATE ONLY SUCCESS"
+            echo "- Source patch: PASS"
+            echo "- JS syntax: PASS"
+            echo "- Focused saved-market regression: PASS"
+            echo "- Commit/deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun this workflow with apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit source patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jra-official-cache.mjs worker.js viewer/viewer-core.js
+
+          if git diff --cached --quiet; then
+            echo "No source changes to commit (already applied)."
+          else
+            git commit -m "fix: persist saved JRA market for viewer v1.8.6"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy production
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production reachability check
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            code="$(curl -sS -o /tmp/chass_root.html -w '%{http_code}' "$PRODUCTION_BASE_URL/" || true)"
+            if [ "$code" = "200" ]; then
+              echo "Production reachability: PASS"
+              exit 0
+            fi
+            echo "Production attempt $attempt/5 -> HTTP $code"
+            sleep 5
+          done
+          echo "::error::Production root did not return HTTP 200"
+          exit 1
+
+      - name: Production summary
+        if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## PRODUCTION SUCCESS v1.8.6"
+            echo "- Commit/push: DONE or already applied"
+            echo "- Deploy: PASS"
+            echo "- Root reachability: PASS"
+            echo "- Saved-market patch source gates: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failure guidance
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          {
+            echo
+            echo "## FAILURE GUIDANCE v1.8.6"
+            echo "- Extract step failure: donor shape changed or repair anchor mismatch."
+            echo "- Apply step failure: current source no longer matches donor patch assumptions."
+            echo "- Source integrity failure: JS syntax or intended-file boundary failed."
+            echo "- Focused regression failure: saved-market behavior itself is incorrect."
+            echo "- Deploy failure: Cloudflare auth/network/deploy issue, separate from source patch logic."
+          } >> "$GITHUB_STEP_SUMMARY"
