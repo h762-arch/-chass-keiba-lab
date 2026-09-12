@@ -1,311 +1,204 @@
-# CHASS KEIBA LAB
-# Google Drive Read-Only Import Configuration / Implementation Spec
-# Version: 1.0
-# Created: 2026-09-12
-#
-# PURPOSE
-# - Read research/master data written to the private Google Sheet by CHASS/ChatGPT.
-# - Keep Google Drive sharing unchanged (private / owner only).
-# - NEVER allow this read path to edit Google Drive.
-# - NEVER overwrite Original Prediction snapshots or existing operational D1 records.
-#
-# IMPORTANT
-# - This is an implementation/configuration specification for Work / CHASS KEIBA LAB.
-# - Do NOT place this file directly under .github/workflows as-is.
-# - The app must implement the reader according to this contract.
-# - Existing D1 -> Drive archive sync remains independent and must not be changed.
+name: CHASS Google Drive Read-Only Import Readiness
 
-schema_version: "1.0"
+"on":
+  workflow_dispatch:
 
-feature:
-  name: "google_drive_readonly_import"
-  enabled: true
-  mode: "read_only"
-  fail_open_for_core_app: true
-  browser_direct_google_access: false
-  preserve_existing_drive_sync: true
-  preserve_existing_prediction_snapshots: true
+permissions:
+  contents: read
 
-source:
-  provider: "google_sheets"
-  spreadsheet_id: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
-  spreadsheet_title: "CHASS競馬研究所_アーカイブマスター"
-  expected_locale: "ja_JP"
-  expected_timezone: "Asia/Tokyo"
+concurrency:
+  group: chass-drive-readonly-readiness
+  cancel-in-progress: false
 
-  # Drive-side sharing must stay unchanged.
-  sharing_policy:
-    require_public_link: false
-    require_anyone_permission: false
-    allow_drive_permission_changes: false
+jobs:
+  validate:
+    name: Validate read-only import prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
-authentication:
-  type: "google_oauth2_offline"
-  server_side_only: true
+    env:
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+      ENABLE_DRIVE_READ_IMPORT: "false"
+      GOOGLE_DRIVE_READ_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_READ_CLIENT_ID }}
+      GOOGLE_DRIVE_READ_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_READ_CLIENT_SECRET }}
+      GOOGLE_DRIVE_READ_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_READ_REFRESH_TOKEN }}
 
-  # Use a separate read-only credential profile when possible.
-  # Never expose these values to browser/UI/logs.
-  secrets:
-    client_id: "GOOGLE_DRIVE_READ_CLIENT_ID"
-    client_secret: "GOOGLE_DRIVE_READ_CLIENT_SECRET"
-    refresh_token: "GOOGLE_DRIVE_READ_REFRESH_TOKEN"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # Read Google Sheets only.
-  # Do not request drive.readonly unless a future implementation truly needs
-  # arbitrary non-Sheets Drive files.
-  scopes:
-    - "https://www.googleapis.com/auth/spreadsheets.readonly"
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-  forbidden_scopes_for_this_reader:
-    - "https://www.googleapis.com/auth/spreadsheets"
-    - "https://www.googleapis.com/auth/drive"
-    - "https://www.googleapis.com/auth/drive.readonly"
+      - name: Confirm repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f package.json
+          node -e "const p=require('./package.json'); console.log('repo:',p.name,'version:',p.version)"
 
-read_policy:
-  api: "Google Sheets API v4"
-  access_method: "spreadsheet_id_and_explicit_tab_allowlist"
-  allow_sheet_discovery: true
-  allow_value_reads: true
-  allow_formula_writes: false
-  allow_value_writes: false
-  allow_format_writes: false
-  allow_file_create: false
-  allow_file_update: false
-  allow_file_delete: false
-  allow_permission_change: false
+      - name: Check existing application regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
 
-  # Prevent one accidental malformed sheet from affecting the live app.
-  on_auth_error: "report_and_skip_import"
-  on_missing_sheet: "report_and_continue"
-  on_schema_mismatch: "quarantine_and_report"
-  on_rate_limit: "retry_with_backoff"
-  on_network_error: "retry_with_backoff"
+      - name: Check read-only credential presence without exposing values
+        id: secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
 
-sheet_allowlist:
+          if [ -z "${GOOGLE_DRIVE_READ_CLIENT_ID:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_CLIENT_ID is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_CLIENT_ID: configured"
+          fi
 
-  JRA:
-    required:
-      - "JRA_予想アーカイブ"
-      - "JRA_レース結果"
-      - "JRA_レース後検証"
-      - "JRA_指数マスター"
-      - "JRA_改善履歴"
-      - "JRA_指数隣接研究"
+          if [ -z "${GOOGLE_DRIVE_READ_CLIENT_SECRET:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_CLIENT_SECRET is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_CLIENT_SECRET: configured"
+          fi
 
-    optional:
-      - "JRA_指数クラスター事前検証"
+          if [ -z "${GOOGLE_DRIVE_READ_REFRESH_TOKEN:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_REFRESH_TOKEN is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_REFRESH_TOKEN: configured"
+          fi
 
-  NAR:
-    required:
-      - "NAR_予想アーカイブ"
-      - "NAR_レース結果"
-      - "NAR_レース後検証"
-      - "NAR_指数マスター"
-      - "NAR_改善履歴"
-      - "NAR_指数隣接研究"
+          echo "missing=${missing}" >> "$GITHUB_OUTPUT"
 
-    optional:
-      # Add only after this tab actually exists in the master.
-      - "NAR_指数クラスター事前検証"
+      - name: Detect Drive read implementation
+        id: reader
+        shell: bash
+        run: |
+          set -euo pipefail
 
-  shared_reference:
-    optional:
-      - "CHASS_ロジックルーター"
-      - "CHASS_研究設定"
-      - "CHASS_保存監査"
-      - "データ辞書"
+          if grep -R \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude='*.md' \
+            --exclude='*.yml' \
+            --exclude='*.yaml' \
+            -E 'ENABLE_DRIVE_READ_IMPORT|GOOGLE_DRIVE_READ_CLIENT_ID|spreadsheets\.readonly' \
+            . >/dev/null 2>&1; then
+            echo "implemented=true" >> "$GITHUB_OUTPUT"
+            echo "Drive read implementation marker: found"
+          else
+            echo "implemented=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Drive -> app read implementation is not present yet. This workflow does not modify application code."
+          fi
 
-sheet_denylist:
-  # Legacy/common tabs are retained for history but must not be mixed
-  # into new JRA/NAR operational imports by default.
-  - "予想アーカイブ"
-  - "レース結果"
-  - "レース後検証"
-  - "CHASS指数マスター"
-  - "モデル改善履歴"
+      - name: Generate safe read-only configuration artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p chass-drive-readonly-artifact
 
-organization_rules:
-  require_explicit_organization: true
-  do_not_default_unknown_to_nar: true
-  jra_prefix: "JRA_"
-  nar_prefix: "NAR_"
-  cross_org_merge: false
+          cat > chass-drive-readonly-artifact/drive-readonly-import.config.yml <<'EOF'
+          schema_version: "1.0"
 
-import_safety:
-  # Read path is NOT allowed to mutate canonical prediction snapshots.
-  original_prediction_immutable: true
-  drive_data_may_override_original_prediction: false
-  drive_data_may_delete_d1_rows: false
-  drive_data_may_update_existing_d1_rows: false
+          feature:
+            name: "google_drive_readonly_import"
+            enabled_after_reader_implementation: true
+            mode: "read_only"
+            fail_open_for_core_app: true
+            browser_direct_google_access: false
+            preserve_existing_drive_sync: true
+            preserve_existing_prediction_snapshots: true
 
-  # First implementation should stage/normalize before any operational merge.
-  destination_mode: "staging_or_read_model_only"
-  require_schema_validation_before_use: true
-  require_primary_key_validation: true
-  reject_duplicate_primary_keys: true
+          source:
+            provider: "google_sheets"
+            spreadsheet_id: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+            spreadsheet_title: "CHASS競馬研究所_アーカイブマスター"
+            expected_locale: "ja_JP"
+            expected_timezone: "Asia/Tokyo"
 
-  recommended_primary_key:
-    - "開催日"
-    - "主催"
-    - "競馬場"
-    - "R"
-    - "馬番"
-    - "馬名"
+          authentication:
+            type: "google_oauth2_offline"
+            server_side_only: true
+            secret_names:
+              client_id: "GOOGLE_DRIVE_READ_CLIENT_ID"
+              client_secret: "GOOGLE_DRIVE_READ_CLIENT_SECRET"
+              refresh_token: "GOOGLE_DRIVE_READ_REFRESH_TOKEN"
+            scopes:
+              - "https://www.googleapis.com/auth/spreadsheets.readonly"
 
-  null_policy: "preserve_null_do_not_guess"
-  unknown_column_policy: "ignore_and_report"
-  missing_required_column_policy: "reject_sheet_import"
+          write_protection:
+            drive_write: false
+            sheets_write: false
+            permission_change: false
+            d1_overwrite_from_drive: false
+            prediction_snapshot_overwrite: false
 
-cluster_research:
-  enabled: true
-  pre_race_snapshot_required: true
-  post_race_backfill_into_pre_race_snapshot: false
+          organization:
+            explicit_only: true
+            unknown_defaults_to_nar: false
+            cross_org_merge: false
 
-  target_sheets:
-    JRA:
-      - "JRA_指数隣接研究"
-      - "JRA_指数クラスター事前検証"
-    NAR:
-      - "NAR_指数隣接研究"
-      # NAR pre-cluster sheet is optional until actually created.
+          sheet_allowlist:
+            JRA:
+              - "JRA_予想アーカイブ"
+              - "JRA_レース結果"
+              - "JRA_レース後検証"
+              - "JRA_指数マスター"
+              - "JRA_改善履歴"
+              - "JRA_指数隣接研究"
+              - "JRA_指数クラスター事前検証"
+            NAR:
+              - "NAR_予想アーカイブ"
+              - "NAR_レース結果"
+              - "NAR_レース後検証"
+              - "NAR_指数マスター"
+              - "NAR_改善履歴"
+              - "NAR_指数隣接研究"
 
-  preserve_fields_if_present:
-    - "cluster_type"
-    - "cluster_strength"
-    - "market_gap"
-    - "recent_form_shape"
-    - "pre_race_flag"
-    - "result_flag"
-    - "validation_status"
+          legacy_sheet_denylist:
+            - "予想アーカイブ"
+            - "レース結果"
+            - "レース後検証"
+            - "CHASS指数マスター"
+            - "モデル改善履歴"
 
-runtime:
-  cache:
-    enabled: true
-    ttl_seconds: 300
-    cache_key_include:
-      - "spreadsheet_id"
-      - "sheet_name"
-      - "range"
-      - "source_modified_marker"
+          rollout:
+            initial_destination: "staging_or_read_model_only"
+            automatic_d1_merge: false
+            require_schema_validation: true
+            require_regression_test: true
+            rollback_flag: "ENABLE_DRIVE_READ_IMPORT=false"
+          EOF
 
-  retry:
-    enabled: true
-    max_attempts: 3
-    base_delay_ms: 1000
-    exponential_backoff: true
+      - name: Write readiness summary
+        shell: bash
+        env:
+          SECRETS_MISSING: ${{ steps.secrets.outputs.missing }}
+          READER_IMPLEMENTED: ${{ steps.reader.outputs.implemented }}
+        run: |
+          {
+            echo "## CHASS Google Drive Read-Only Import"
+            echo
+            echo "- Existing app regression check: passed"
+            echo "- Private Sheet ID: configured in artifact"
+            echo "- Drive sharing change: not required"
+            echo "- Read credential set complete: $([ "$SECRETS_MISSING" = "0" ] && echo yes || echo no)"
+            echo "- Drive -> app reader implementation detected: $READER_IMPLEMENTED"
+            echo
+            if [ "$READER_IMPLEMENTED" != "true" ]; then
+              echo "> This workflow is a safe readiness/validation workflow. It does not implement Drive -> D1/app reading by itself."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  limits:
-    max_rows_per_sheet_per_read: 5000
-    max_concurrent_sheet_reads: 3
-    request_timeout_ms: 8000
-
-diagnostics:
-  expose_secret_values: false
-  expose_authorization_header: false
-  expose_google_raw_error_body: false
-
-  safe_status_fields:
-    - "configured"
-    - "authenticated"
-    - "spreadsheet_reachable"
-    - "last_success_at"
-    - "last_error_code"
-    - "jra_sheet_count"
-    - "nar_sheet_count"
-    - "schema_valid"
-
-  error_codes:
-    - "DRIVE_READ_CONFIG_INCOMPLETE"
-    - "DRIVE_READ_AUTH_FAILED"
-    - "DRIVE_READ_TOKEN_REFRESH_FAILED"
-    - "DRIVE_READ_SPREADSHEET_NOT_FOUND"
-    - "DRIVE_READ_PERMISSION_DENIED"
-    - "DRIVE_READ_SHEET_NOT_FOUND"
-    - "DRIVE_READ_SCHEMA_MISMATCH"
-    - "DRIVE_READ_DUPLICATE_KEY"
-    - "DRIVE_READ_RATE_LIMITED"
-    - "DRIVE_READ_NETWORK_ERROR"
-    - "DRIVE_READ_RESPONSE_INVALID"
-
-workflow_contract:
-  # Work may build a separate GitHub Actions workflow from this specification.
-  recommended_workflow_name: "CHASS-Google-Drive-ReadOnly-Import-v1"
-  trigger:
-    manual: true
-    push_to_main: false
-
-  required_github_or_worker_secrets:
-    - "GOOGLE_DRIVE_READ_CLIENT_ID"
-    - "GOOGLE_DRIVE_READ_CLIENT_SECRET"
-    - "GOOGLE_DRIVE_READ_REFRESH_TOKEN"
-
-  required_checks_before_deploy:
-    - "existing_full_regression_pass"
-    - "drive_write_sync_regression_pass"
-    - "read_only_scope_check_pass"
-    - "no_google_write_method_in_reader_pass"
-    - "jra_nar_isolation_pass"
-    - "prediction_snapshot_immutability_pass"
-    - "secret_non_exposure_pass"
-    - "missing_sheet_fail_open_pass"
-    - "schema_mismatch_quarantine_pass"
-
-acceptance_tests:
-
-  - id: "RO-001"
-    description: "Reader can authenticate and read the configured private spreadsheet without changing Drive sharing."
-    expected: "PASS"
-
-  - id: "RO-002"
-    description: "Reader cannot call Sheets update/append/batchUpdate or Drive create/update/delete."
-    expected: "PASS"
-
-  - id: "RO-003"
-    description: "JRA read path never imports NAR-prefixed operational tabs."
-    expected: "PASS"
-
-  - id: "RO-004"
-    description: "NAR read path never imports JRA-prefixed operational tabs."
-    expected: "PASS"
-
-  - id: "RO-005"
-    description: "Legacy common tabs are not mixed into current JRA/NAR imports."
-    expected: "PASS"
-
-  - id: "RO-006"
-    description: "Drive read failure does not stop prediction/result/validation core operations."
-    expected: "PASS"
-
-  - id: "RO-007"
-    description: "Original Prediction snapshot remains byte-equivalent before/after Drive read."
-    expected: "PASS"
-
-  - id: "RO-008"
-    description: "Schema mismatch is quarantined and shown in diagnostics instead of guessed."
-    expected: "PASS"
-
-  - id: "RO-009"
-    description: "Optional missing NAR pre-cluster sheet does not fail the import."
-    expected: "PASS"
-
-  - id: "RO-010"
-    description: "No OAuth secret or raw authorization data is returned to browser/API diagnostics."
-    expected: "PASS"
-
-rollback:
-  feature_flag: "ENABLE_DRIVE_READ_IMPORT"
-  disable_value: "false"
-  behavior_when_disabled:
-    - "zero Google Sheets read I/O from the new reader"
-    - "existing D1 operations continue"
-    - "existing D1 to Drive archive sync remains unchanged"
-    - "no staging data is deleted"
-
-implementation_notes:
-  - "Do not reuse the existing Drive write path as the read path."
-  - "Prefer a separate read-only OAuth token/secret set."
-  - "Use explicit spreadsheet ID; do not search by title at runtime."
-  - "Never infer missing values from unrelated sheets."
-  - "Do not classify organization=unknown as NAR."
-  - "Do not enable automatic D1 overwrite in v1."
-  - "After v1 read-only verification, a separate reviewed migration may add controlled staging-to-D1 merge."
+      - name: Upload configuration artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHASS-Google-Drive-ReadOnly-Import-v1-config
+          path: chass-drive-readonly-artifact/drive-readonly-import.config.yml
+          if-no-files-found: error
+          retention-days: 30
