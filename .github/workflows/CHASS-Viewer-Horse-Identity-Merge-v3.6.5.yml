@@ -1,0 +1,434 @@
+name: Fix CHASS Viewer Horse Identity Merge v3.6.5
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-horse-identity-v365
+  cancel-in-progress: false
+
+jobs:
+  fix-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify v3.6.4 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer-app.js
+          test -f viewer/viewer-core.js
+          grep -Fq "function liveExpectedValue(horse)" viewer/viewer-app.js
+          grep -Fq "resolvedAbilityRank(horse, ranks)" viewer/viewer-app.js
+          grep -Fq "function mergeMarket(day, marketDay)" viewer/viewer-app.js
+          grep -Fq "function mergeRaceDetail(day, detail)" viewer/viewer-app.js
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "v3.6.4 baseline OK"
+
+      - name: Apply v3.6.5 identity-safe merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/chass-viewer-v365.py <<'PY'
+          from pathlib import Path
+
+          app_path = Path("viewer/viewer-app.js")
+          app = app_path.read_text(encoding="utf-8")
+
+          def replace_between(text, start, end, replacement, label):
+              start_i = text.find(start)
+              if start_i < 0:
+                  raise SystemExit(f"{label} start not found")
+              end_i = text.find(end, start_i)
+              if end_i < 0:
+                  raise SystemExit(f"{label} end not found")
+              return text[:start_i] + replacement + text[end_i:]
+
+          # ------------------------------------------------------------------
+          # Identity helpers:
+          # - horse name is primary identity
+          # - horse number is never trusted when a conflicting name exists
+          # - unique small typo tolerance only
+          # ------------------------------------------------------------------
+          helpers = r"""
+          function horseIdentityKey(value) {
+            return String(value || '')
+              .normalize('NFKC')
+              .trim()
+              .replace(/[\s　・･·.．"'’“”`´()（）[\]【】{}「」『』\-‐‑‒–—―]/g, '')
+              .toUpperCase();
+          }
+
+          function horseNameDistance(left, right) {
+            const a = horseIdentityKey(left);
+            const b = horseIdentityKey(right);
+            if (!a || !b) return Number.POSITIVE_INFINITY;
+            if (a === b) return 0;
+
+            const rows = a.length + 1;
+            const cols = b.length + 1;
+            const matrix = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+            for (let i = 0; i < rows; i += 1) matrix[i][0] = i;
+            for (let j = 0; j < cols; j += 1) matrix[0][j] = j;
+
+            for (let i = 1; i < rows; i += 1) {
+              for (let j = 1; j < cols; j += 1) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                  matrix[i - 1][j] + 1,
+                  matrix[i][j - 1] + 1,
+                  matrix[i - 1][j - 1] + cost,
+                );
+              }
+            }
+
+            return matrix[a.length][b.length];
+          }
+
+          function resolveHorseIdentity(baseHorse, candidates, used = new Set()) {
+            const baseName = horseIdentityKey(baseHorse?.horseName);
+            const available = candidates.filter((candidate) => !used.has(candidate));
+
+            if (baseName) {
+              const exact = available.filter(
+                (candidate) => horseIdentityKey(candidate?.horseName) === baseName,
+              );
+              if (exact.length === 1) return exact[0];
+
+              // Minor spelling discrepancy only when one unique candidate is clearly closest.
+              if (baseName.length >= 5) {
+                const fuzzy = available
+                  .map((candidate) => ({
+                    candidate,
+                    distance: horseNameDistance(baseHorse.horseName, candidate?.horseName),
+                  }))
+                  .filter((item) => item.distance <= 2)
+                  .sort((a, b) => a.distance - b.distance);
+
+                if (fuzzy.length === 1) return fuzzy[0].candidate;
+                if (fuzzy.length >= 2 && fuzzy[0].distance < fuzzy[1].distance) {
+                  return fuzzy[0].candidate;
+                }
+              }
+
+              // If a name exists but does not agree, do not fall back to horse number.
+              return null;
+            }
+
+            // Number fallback is allowed only when the base name is absent.
+            const number = Number(baseHorse?.horseNo);
+            if (Number.isFinite(number)) {
+              const byNo = available.filter((candidate) => Number(candidate?.horseNo) === number);
+              if (byNo.length === 1) return byNo[0];
+            }
+
+            return null;
+          }
+
+          function normalizeDuplicateMainMarks(race) {
+            const mains = race.horses.filter(
+              (horse) => horse.runnerStatus === 'active' && horse.mark === '◎',
+            );
+            if (mains.length <= 1) return;
+
+            const keep = [...mains].sort((a, b) => {
+              const winDiff = Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1);
+              if (winDiff) return winDiff;
+
+              const abilityDiff = Number(b.abilityScore ?? -1) - Number(a.abilityScore ?? -1);
+              if (abilityDiff) return abilityDiff;
+
+              return Number(a.horseNo ?? 999) - Number(b.horseNo ?? 999);
+            })[0];
+
+            for (const horse of mains) {
+              if (horse !== keep) horse.mark = null;
+            }
+          }
+          """
+
+          anchor = "function mergeMarket(day, marketDay) {"
+          if "function horseIdentityKey(value)" not in app:
+              if anchor not in app:
+                  raise SystemExit("mergeMarket anchor not found for identity helpers")
+              app = app.replace(anchor, helpers + "\n" + anchor, 1)
+
+          # ------------------------------------------------------------------
+          # Market merge: identity-first, never horse-number-only when names exist.
+          # Also replace displayed number/name with the market identity after a safe match.
+          # ------------------------------------------------------------------
+          new_merge_market = r"""function mergeMarket(day, marketDay) {
+            const racesByNo = new Map(marketDay.races.map((race) => [Number(race.raceNo), race]));
+
+            for (const race of day.races) {
+              const marketRace = racesByNo.get(Number(race.raceNo));
+              if (!marketRace) continue;
+
+              const used = new Set();
+
+              race.horses = race.horses.map((horse) => {
+                const market = resolveHorseIdentity(horse, marketRace.horses, used);
+
+                // If identity cannot be safely resolved, do not attach market values
+                // from a different runner.
+                if (!market) {
+                  return {
+                    ...horse,
+                    odds: null,
+                    popularity: null,
+                    expectedValue: null,
+                  };
+                }
+
+                used.add(market);
+
+                const expectedValue = (
+                  horse.aiWinRate != null && market.odds != null
+                    ? Number((horse.aiWinRate * market.odds).toFixed(2))
+                    : null
+                );
+
+                return {
+                  ...horse,
+                  horseNo: market.horseNo ?? horse.horseNo,
+                  horseName: market.horseName || horse.horseName,
+                  abilityScore: market.abilityScore ?? horse.abilityScore,
+                  abilityRank: market.abilityRank ?? horse.abilityRank,
+                  odds: market.odds ?? null,
+                  popularity: market.popularity ?? null,
+                  expectedValue,
+                  longshotMark: market.longshotMark ?? horse.longshotMark,
+                  dangerMark: market.dangerMark ?? horse.dangerMark,
+                };
+              });
+
+              race.marketAvailable = race.horses.some((horse) => horse.odds != null);
+              normalizeDuplicateMainMarks(race);
+            }
+          }"""
+          app = replace_between(
+              app,
+              "function mergeMarket(day, marketDay) {",
+              "\n\nfunction mergeRaceDetail(day, detail) {",
+              new_merge_market,
+              "mergeMarket",
+          )
+
+          # ------------------------------------------------------------------
+          # Race-detail merge: same identity resolver.
+          # Preserve the identity already corrected by market data.
+          # ------------------------------------------------------------------
+          new_merge_detail = r"""function mergeRaceDetail(day, detail) {
+            const target = day.races.find((race) => Number(race.raceNo) === Number(detail.raceNo));
+            if (!target) return;
+
+            const used = new Set();
+
+            target.horses = target.horses.map((horse) => {
+              const full = resolveHorseIdentity(horse, detail.horses, used);
+              if (!full) return horse;
+
+              used.add(full);
+
+              return {
+                ...horse,
+                ...full,
+                // Current horse identity may already have been corrected from market data.
+                horseNo: horse.horseNo ?? full.horseNo,
+                horseName: horse.horseName || full.horseName,
+                odds: horse.odds ?? full.odds,
+                popularity: horse.popularity ?? full.popularity,
+                expectedValue: horse.expectedValue ?? full.expectedValue,
+                longshotMark: full.longshotMark ?? horse.longshotMark,
+                dangerMark: full.dangerMark ?? horse.dangerMark,
+              };
+            });
+
+            normalizeDuplicateMainMarks(target);
+
+            for (const key of ['raceName', 'surface', 'distance', 'going', 'startTime', 'fieldSize']) {
+              if (detail[key] != null) target[key] = detail[key];
+            }
+          }"""
+          app = replace_between(
+              app,
+              "function mergeRaceDetail(day, detail) {",
+              "\n\nfunction mergeRaceSummaries(day, summaries) {",
+              new_merge_detail,
+              "mergeRaceDetail",
+          )
+
+          # ------------------------------------------------------------------
+          # Render guard: even old saved predictions with duplicate ◎ cannot show
+          # two main marks in the Viewer.
+          # ------------------------------------------------------------------
+          old = """function renderDay(day) {
+            activeDay = day;
+            elements.races.replaceChildren();
+            day.races.forEach((race) => elements.races.append(raceCard(race)));"""
+          new = """function renderDay(day) {
+            activeDay = day;
+            elements.races.replaceChildren();
+            day.races.forEach(normalizeDuplicateMainMarks);
+            day.races.forEach((race) => elements.races.append(raceCard(race)));"""
+          if old not in app:
+              raise SystemExit("renderDay anchor not found")
+          app = app.replace(old, new, 1)
+
+          app_path.write_text(app, encoding="utf-8")
+          print("Applied CHASS Viewer v3.6.5 identity-safe merge.")
+
+          PY
+          python3 /tmp/chass-viewer-v365.py
+
+          cat > tests/viewer-horse-identity-v365.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+
+          test('v3.6.5 market/detail merge is identity-first', () => {
+            assert.match(app, /function horseIdentityKey\(value\)/);
+            assert.match(app, /function resolveHorseIdentity\(baseHorse, candidates, used = new Set\(\)\)/);
+            assert.match(app, /If a name exists but does not agree, do not fall back to horse number/);
+            assert.doesNotMatch(app, /new Map\(marketRace\.horses\.map\(\(horse\) => \[Number\(horse\.horseNo\), horse\]\)\)/);
+          });
+
+          test('v3.6.5 safely updates official horse number/name after identity match', () => {
+            assert.match(app, /horseNo: market\.horseNo \?\? horse\.horseNo/);
+            assert.match(app, /horseName: market\.horseName \|\| horse\.horseName/);
+          });
+
+          test('v3.6.5 unmatched identity never receives another horse market values', () => {
+            assert.match(app, /if \(!market\) \{/);
+            assert.match(app, /odds: null/);
+            assert.match(app, /popularity: null/);
+            assert.match(app, /expectedValue: null/);
+          });
+
+          test('v3.6.5 suppresses duplicate main marks in Viewer', () => {
+            assert.match(app, /function normalizeDuplicateMainMarks\(race\)/);
+            assert.match(app, /horse\.mark === '◎'/);
+            assert.match(app, /if \(horse !== keep\) horse\.mark = null/);
+          });
+
+          test('v3.6.5 supports a unique small spelling discrepancy without broad fuzzy matching', () => {
+            assert.match(app, /horseNameDistance/);
+            assert.match(app, /item\.distance <= 2/);
+            assert.match(app, /fuzzy\[0\]\.distance < fuzzy\[1\]\.distance/);
+          });
+
+          EOF
+
+      - name: Verify v3.6.5 source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "function horseIdentityKey(value)" viewer/viewer-app.js
+          grep -Fq "function resolveHorseIdentity(baseHorse, candidates, used = new Set())" viewer/viewer-app.js
+          grep -Fq "horseNo: market.horseNo ?? horse.horseNo" viewer/viewer-app.js
+          grep -Fq "horseName: market.horseName || horse.horseName" viewer/viewer-app.js
+          grep -Fq "function normalizeDuplicateMainMarks(race)" viewer/viewer-app.js
+
+          # Old horse-number-only market join must be gone.
+          if grep -Fq "new Map(marketRace.horses.map((horse) => [Number(horse.horseNo), horse]))" viewer/viewer-app.js; then
+            echo "::error::Unsafe horse-number-only market merge still exists."
+            exit 1
+          fi
+
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references protected/internal surfaces."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/viewer-foundation.test.mjs             tests/viewer-empty-date-v35.test.mjs             tests/viewer-hidden-state-v351.test.mjs             tests/viewer-ability-comment-v361.test.mjs             tests/viewer-ability-mark-order-v363.test.mjs             tests/viewer-ability-rank-ev-v364.test.mjs             tests/viewer-horse-identity-v365.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Commit Viewer v3.6.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add viewer/viewer-app.js tests/viewer-horse-identity-v365.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "Viewer v3.6.5 already applied."
+          else
+            git commit -m "Fix viewer horse identity and market merge"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -H 'Cache-Control: no-cache' "$BASE_URL/viewer/viewer-app.js?v=$GITHUB_SHA" -o /tmp/app.js               && grep -Fq "function resolveHorseIdentity(baseHorse, candidates, used = new Set())" /tmp/app.js               && grep -Fq "horseNo: market.horseNo ?? horse.horseNo" /tmp/app.js               && grep -Fq "function normalizeDuplicateMainMarks(race)" /tmp/app.js; then
+                echo "Production Viewer v3.6.5 OK"
+                exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::Viewer v3.6.5 production smoke test failed."
+          exit 1
+
+      - name: Final summary
+        run: |
+          echo "✅ 馬番ではなく馬名IDを優先して市場データを結合"
+          echo "✅ 馬名と馬番が矛盾する場合は馬番だけで結合しない"
+          echo "✅ 一意な軽微表記差のみ安全に補正"
+          echo "✅ 安全に照合できた馬は最新馬番・馬名へ更新"
+          echo "✅ 照合できない馬へ別馬の人気・オッズ・EVを付けない"
+          echo "✅ 能力指数・順位・💎・⚠も正しい馬へ結合"
+          echo "✅ ◎重複はViewer内で1頭に正規化"
+          echo "✅ v3.6.4のEV再計算・折りたたみUIは維持"
