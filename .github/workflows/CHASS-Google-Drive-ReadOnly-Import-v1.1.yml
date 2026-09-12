@@ -1,0 +1,242 @@
+name: CHASS Google Drive Read-Only Import Readiness v1.1
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-drive-readonly-readiness
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate read-only import prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+      ENABLE_DRIVE_READ_IMPORT: "false"
+      GOOGLE_DRIVE_READ_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_READ_CLIENT_ID }}
+      GOOGLE_DRIVE_READ_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_READ_CLIENT_SECRET }}
+      GOOGLE_DRIVE_READ_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_READ_REFRESH_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Confirm repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f package.json
+          node -e "const p=require('./package.json'); console.log('repo:',p.name,'version:',p.version)"
+
+      # Keep the regression failure visible, but allow the diagnostic/readiness
+      # steps below to run with always(). The job will still finish as failed
+      # if this step fails.
+      - name: Check existing application regression suite
+        id: regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Check read-only credential presence without exposing values
+        id: secrets
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+
+          if [ -z "${GOOGLE_DRIVE_READ_CLIENT_ID:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_CLIENT_ID is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_CLIENT_ID: configured"
+          fi
+
+          if [ -z "${GOOGLE_DRIVE_READ_CLIENT_SECRET:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_CLIENT_SECRET is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_CLIENT_SECRET: configured"
+          fi
+
+          if [ -z "${GOOGLE_DRIVE_READ_REFRESH_TOKEN:-}" ]; then
+            echo "::warning::GOOGLE_DRIVE_READ_REFRESH_TOKEN is not configured."
+            missing=1
+          else
+            echo "GOOGLE_DRIVE_READ_REFRESH_TOKEN: configured"
+          fi
+
+          echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Drive read implementation
+        id: reader
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -R \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude='*.md' \
+            --exclude='*.yml' \
+            --exclude='*.yaml' \
+            -E 'ENABLE_DRIVE_READ_IMPORT|GOOGLE_DRIVE_READ_CLIENT_ID|spreadsheets\.readonly' \
+            . >/dev/null 2>&1; then
+            echo "implemented=true" >> "$GITHUB_OUTPUT"
+            echo "Drive read implementation marker: found"
+          else
+            echo "implemented=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Drive -> app read implementation is not present yet. This workflow does not modify application code."
+          fi
+
+      - name: Generate safe read-only configuration artifact
+        id: config
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p chass-drive-readonly-artifact
+
+          cat > chass-drive-readonly-artifact/drive-readonly-import.config.yml <<'EOF'
+          schema_version: "1.1"
+
+          feature:
+            name: "google_drive_readonly_import"
+            enabled_after_reader_implementation: true
+            mode: "read_only"
+            fail_open_for_core_app: true
+            browser_direct_google_access: false
+            preserve_existing_drive_sync: true
+            preserve_existing_prediction_snapshots: true
+
+          source:
+            provider: "google_sheets"
+            spreadsheet_id: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+            spreadsheet_title: "CHASS競馬研究所_アーカイブマスター"
+            expected_locale: "ja_JP"
+            expected_timezone: "Asia/Tokyo"
+
+          authentication:
+            type: "google_oauth2_offline"
+            server_side_only: true
+            secret_names:
+              client_id: "GOOGLE_DRIVE_READ_CLIENT_ID"
+              client_secret: "GOOGLE_DRIVE_READ_CLIENT_SECRET"
+              refresh_token: "GOOGLE_DRIVE_READ_REFRESH_TOKEN"
+            scopes:
+              - "https://www.googleapis.com/auth/spreadsheets.readonly"
+
+          write_protection:
+            drive_write: false
+            sheets_write: false
+            permission_change: false
+            d1_overwrite_from_drive: false
+            prediction_snapshot_overwrite: false
+
+          organization:
+            explicit_only: true
+            unknown_defaults_to_nar: false
+            cross_org_merge: false
+
+          sheet_allowlist:
+            JRA:
+              - "JRA_予想アーカイブ"
+              - "JRA_レース結果"
+              - "JRA_レース後検証"
+              - "JRA_指数マスター"
+              - "JRA_改善履歴"
+              - "JRA_指数隣接研究"
+              - "JRA_指数クラスター事前検証"
+            NAR:
+              - "NAR_予想アーカイブ"
+              - "NAR_レース結果"
+              - "NAR_レース後検証"
+              - "NAR_指数マスター"
+              - "NAR_改善履歴"
+              - "NAR_指数隣接研究"
+
+          legacy_sheet_denylist:
+            - "予想アーカイブ"
+            - "レース結果"
+            - "レース後検証"
+            - "CHASS指数マスター"
+            - "モデル改善履歴"
+
+          rollout:
+            initial_destination: "staging_or_read_model_only"
+            automatic_d1_merge: false
+            require_schema_validation: true
+            require_regression_test: true
+            rollback_flag: "ENABLE_DRIVE_READ_IMPORT=false"
+          EOF
+
+      - name: Write readiness summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          REGRESSION_OUTCOME: ${{ steps.regression.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          SECRETS_MISSING: ${{ steps.secrets.outputs.missing }}
+          READER_OUTCOME: ${{ steps.reader.outcome }}
+          READER_IMPLEMENTED: ${{ steps.reader.outputs.implemented }}
+          CONFIG_OUTCOME: ${{ steps.config.outcome }}
+        run: |
+          set -u
+
+          regression="${REGRESSION_OUTCOME:-unknown}"
+          secrets_outcome="${SECRETS_OUTCOME:-unknown}"
+          secrets_missing="${SECRETS_MISSING:-unknown}"
+          reader_outcome="${READER_OUTCOME:-unknown}"
+          reader_implemented="${READER_IMPLEMENTED:-unknown}"
+          config_outcome="${CONFIG_OUTCOME:-unknown}"
+
+          if [ "$secrets_missing" = "0" ]; then
+            credential_status="yes"
+          elif [ "$secrets_missing" = "1" ]; then
+            credential_status="no"
+          else
+            credential_status="unknown"
+          fi
+
+          {
+            echo "## CHASS Google Drive Read-Only Import"
+            echo
+            echo "- Existing app regression check: $regression"
+            echo "- Read credential diagnostic step: $secrets_outcome"
+            echo "- Read credential set complete: $credential_status"
+            echo "- Drive reader detection step: $reader_outcome"
+            echo "- Drive -> app reader implementation detected: $reader_implemented"
+            echo "- Safe config artifact generation: $config_outcome"
+            echo "- Private Sheet ID: configured in artifact"
+            echo "- Drive sharing change: not required"
+            echo
+            if [ "$regression" != "success" ]; then
+              echo "> Regression tests failed, but Drive readiness diagnostics were allowed to continue. The workflow remains failed so the regression is not hidden."
+              echo
+            fi
+            if [ "$reader_implemented" != "true" ]; then
+              echo "> This workflow is a safe readiness/validation workflow. It does not implement Drive -> D1/app reading by itself."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload configuration artifact
+        if: ${{ always() && steps.config.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHASS-Google-Drive-ReadOnly-Import-v1.1-config
+          path: chass-drive-readonly-artifact/drive-readonly-import.config.yml
+          if-no-files-found: error
+          retention-days: 30
