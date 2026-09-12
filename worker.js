@@ -526,6 +526,36 @@ function publicDayAiLight(day){
    horses:race.horses.map(horse=>horseColumns.map(key=>horse[key]??null))
   }))};
 }
+function publicViewerMarketOverlay(day,races){
+ const rawByRaceNo=new Map((races||[]).map(r=>[Number(r?.raceNo),r]));
+ return (day?.races||[]).map(item=>{
+  const raw=rawByRaceNo.get(Number(item?.raceNumber))||null,
+        resultHorses=Array.isArray(raw?.result?.horses)?raw.result.horses:[],
+        resultByNo=new Map(resultHorses.map(h=>[Number(h?.horseNo),h])),
+        resultAt=raw?.resultAcquiredAt||raw?.result?.fetchedAt||raw?.result?.resultAcquiredAt||null;
+  return {
+   raceNumber:item?.raceNumber??null,
+   horses:(item?.horses||[]).map(h=>{
+    const no=Number(h?.horseNumber??h?.no),
+          resultHorse=resultByNo.get(no)||null,
+          finalOdds=publicPositiveNumber(resultHorse?.finalOdds??resultHorse?.odds),
+          finalPopularity=publicPositiveInteger(resultHorse?.finalPopularity??resultHorse?.popularity),
+          savedStatus=String(h?.oddsStatus||item?.market?.oddsStatus||'unavailable'),
+          savedUsable=savedStatus==='available',
+          finalUsable=finalOdds!=null;
+    return {
+     horseNumber:Number.isFinite(no)?no:null,
+     horseName:h?.horseName??h?.name??'',
+     odds:finalUsable?finalOdds:(savedUsable?publicPositiveNumber(h?.odds):null),
+     popularity:finalUsable?(finalPopularity??publicPositiveInteger(h?.popularity)):(savedUsable?publicPositiveInteger(h?.popularity):null),
+     oddsStatus:finalUsable?'final':savedStatus,
+     oddsFetchedAt:finalUsable?resultAt:(h?.oddsFetchedAt||item?.market?.oddsFetchedAt||null),
+     marketDataSource:finalUsable?'result_final':(item?.market?.marketDataSource||null)
+    };
+   })
+  };
+ });
+}
 function publicDayAiCompact(day){
  const round=(value,digits)=>value==null?null:Number(Number(value).toFixed(digits));
  return {date:day.date,track:day.track,organization:day.organization,raceCount:day.raceCount,
@@ -595,7 +625,14 @@ export async function handlePublicApi(request,env){
    if(output==='text')return publicText(publicDayAiText(races,{date,track}),{cache,head});
    if(output==='compact'){publicStage='BUILD_DAY_PAYLOAD';const day=publicCachedAbilityDay(DB,races,{date,track,organization:filterOrg,cacheAt:read.cacheAt,failures:read.failures||[]}),payload=publicPerformance(day.payload,startedAt,day.cacheHit);publicStage='JSON_SERIALIZE';return publicJson(payload,{cache,head,extra:{'X-CHASS-Processing-Ms':String(payload.processingMs)}})}
    const day=publicDayAi(races,{date,track});
-   if(output==='tabular')return publicJson(publicDayAiLight(day),{cache,head});
+   if(output==='tabular'){
+    const payload=publicDayAiLight(day);
+    if(u.searchParams.get('viewerMarket')==='1'){
+     payload.viewerMarketMode='fresh-final-overlay-v1';
+     payload.viewerMarketOverlay=publicViewerMarketOverlay(day,races);
+    }
+    return publicJson(payload,{cache,head});
+   }
    return publicJson(day,{cache,head,pretty:true});
   }
   if(u.pathname.endsWith('/day')){const races=mapped.filter(r=>r.date===date&&r.track===track&&(!filterOrg||publicOrganization(r)===filterOrg)&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested day were not found.',404,publicCorsHeaders('no-store'),head);const compact=u.searchParams.get('format')!=='full',allFinal=races.every(r=>!!r.result);return publicJson(publicDay(races,{date,track,compact}),{cache:allFinal?'public, max-age=3600, s-maxage=3600':'public, max-age=30, s-maxage=30',head,pretty:true})}

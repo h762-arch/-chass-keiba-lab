@@ -83,6 +83,7 @@ export function buildViewerMarketDayUrl({ date, track, organization, origin = ''
     track: context.track,
     organization: context.organization,
     format: 'tabular',
+    viewerMarket: '1',
   });
   return `${viewerBase(origin)}${VIEWER_PUBLIC_API_PREFIX}/day-ai?${params.toString()}`;
 }
@@ -259,32 +260,73 @@ export function sanitizeViewerMarketPayload(payload = {}) {
     return Object.fromEntries(columns.map((key, index) => [key, row[index] ?? null]));
   };
 
-  const races = payload.races.map((race) => ({
-    raceNo: finiteOrNull(race?.raceNumber),
-    raceName: textOrNull(race?.raceName),
-    horses: Array.isArray(race?.horses)
-      ? race.horses.map((row) => {
-          const horse = toObject(row);
-          return {
-            horseNo: finiteOrNull(horse.horseNumber),
-            horseName: textOrNull(horse.horseName) || '',
-            abilityRank: finiteOrNull(horse.abilityRank),
-            abilityScore: finiteOrNull(horse.score),
-            odds: finiteOrNull(horse.odds),
-            popularity: finiteOrNull(horse.popularity),
-            expectedValue: finiteOrNull(horse.expectedValue),
-            longshotMark: textOrNull(horse.diamond),
-            dangerMark: textOrNull(horse.warning),
-          };
-        })
-      : [],
-  }));
+  const normalizeMarketName = (value) => String(value ?? '')
+    .normalize('NFKC')
+    .replace(/\s+/g, '')
+    .trim();
+
+  const overlayByRace = new Map(
+    (Array.isArray(payload.viewerMarketOverlay) ? payload.viewerMarketOverlay : [])
+      .map((race) => [Number(race?.raceNumber), race])
+      .filter(([raceNo]) => Number.isFinite(raceNo)),
+  );
+
+  const races = payload.races.map((race) => {
+    const raceNo = finiteOrNull(race?.raceNumber);
+    const overlayRace = overlayByRace.get(Number(raceNo)) || null;
+    const overlayHorses = Array.isArray(overlayRace?.horses) ? overlayRace.horses : [];
+
+    return {
+      raceNo,
+      raceName: textOrNull(race?.raceName),
+      horses: Array.isArray(race?.horses)
+        ? race.horses.map((row) => {
+            const horse = toObject(row);
+            const horseNo = finiteOrNull(horse.horseNumber);
+            const horseName = textOrNull(horse.horseName) || '';
+            const normalizedName = normalizeMarketName(horseName);
+
+            const overlay = overlayHorses.find((item) => {
+              const sameNo = finiteOrNull(item?.horseNumber) === horseNo;
+              if (!sameNo) return false;
+
+              const overlayName = normalizeMarketName(item?.horseName);
+              if (!overlayName || !normalizedName) return true;
+              return overlayName === normalizedName;
+            }) || null;
+
+            const overlayStatus = textOrNull(overlay?.oddsStatus);
+            const overlayUsable = overlayStatus === 'available' || overlayStatus === 'final';
+            const baseOdds = finiteOrNull(horse.odds);
+            const basePopularity = finiteOrNull(horse.popularity);
+
+            return {
+              horseNo,
+              horseName,
+              abilityRank: finiteOrNull(horse.abilityRank),
+              abilityScore: finiteOrNull(horse.score),
+              odds: overlay ? (overlayUsable ? finiteOrNull(overlay.odds) : null) : baseOdds,
+              popularity: overlay
+                ? (overlayUsable ? finiteOrNull(overlay.popularity) : null)
+                : basePopularity,
+              expectedValue: finiteOrNull(horse.expectedValue),
+              longshotMark: textOrNull(horse.diamond),
+              dangerMark: textOrNull(horse.warning),
+              marketStatus: overlayStatus,
+              marketFetchedAt: textOrNull(overlay?.oddsFetchedAt),
+              marketDataSource: textOrNull(overlay?.marketDataSource),
+            };
+          })
+        : [],
+    };
+  });
 
   return Object.freeze({
     ok: true,
     date: textOrNull(payload.date),
     track: textOrNull(payload.track),
     organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
+    viewerMarketMode: textOrNull(payload.viewerMarketMode),
     races: Object.freeze(races.map((race) => Object.freeze({
       ...race,
       horses: Object.freeze(race.horses.map((horse) => Object.freeze(horse))),

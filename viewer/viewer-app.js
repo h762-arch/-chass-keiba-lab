@@ -548,8 +548,19 @@ function raceKey(race) {
 function marketStatus(race) {
   const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
   const withOdds = active.filter((horse) => horse.odds != null).length;
+  const finalCount = active.filter(
+    (horse) => horse.odds != null && horse.marketStatus === 'final',
+  ).length;
+  const staleCount = active.filter((horse) => horse.marketStatus === 'stale').length;
+
+  if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
   if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
-  if (withOdds < active.length) return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+  if (finalCount === active.length && active.length > 0) {
+    return { text: '確定市場 反映済み', state: 'ready' };
+  }
+  if (withOdds < active.length) {
+    return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+  }
   return { text: '市場データ 反映済み', state: 'ready' };
 }
 
@@ -927,6 +938,9 @@ function mergeMarket(day, marketDay) {
         odds: market.odds ?? null,
         popularity: market.popularity ?? null,
         expectedValue,
+        marketStatus: market.marketStatus ?? null,
+        marketFetchedAt: market.marketFetchedAt ?? null,
+        marketDataSource: market.marketDataSource ?? null,
         longshotMark: market.longshotMark ?? horse.longshotMark,
         dangerMark: market.dangerMark ?? horse.dangerMark,
       };
