@@ -17,11 +17,12 @@ test('stable public tabular horseColumns contract is unchanged', () => {
   );
 });
 
-test('viewer opts into a separate market overlay', () => {
+test('viewer opts into the persisted market overlay', () => {
   assert.match(core, /viewerMarket: '1'/);
-  assert.match(worker, /function publicViewerMarketOverlay\(day,races\)/);
+  assert.match(worker, /async function publicViewerMarketOverlay\(day,races,env\)/);
   assert.match(worker, /u\.searchParams\.get\('viewerMarket'\)==='1'/);
-  assert.match(worker, /payload\.viewerMarketOverlay=publicViewerMarketOverlay\(day,races\)/);
+  assert.match(worker, /payload\.viewerMarketOverlay=await publicViewerMarketOverlay\(day,races,env\)/);
+  assert.match(worker, /readJraOfficialOddsCacheForViewer/);
 });
 
 test('normal day-ai saved-snapshot semantics remain present', () => {
@@ -30,13 +31,11 @@ test('normal day-ai saved-snapshot semantics remain present', () => {
   assert.match(worker, /const pop=popularity\.map\.get\(h\.no\)\?\?null,odds=publicPositiveNumber\(h\.odds\)/);
 });
 
-test('viewer overlay is fail-closed for stale market data', () => {
-  assert.match(worker, /savedUsable=savedStatus==='available'/);
-  assert.match(
-    worker,
-    /odds:finalUsable\?finalOdds:\(savedUsable\?publicPositiveNumber\(h\?\.odds\):null\)/,
-  );
-  assert.match(core, /overlayUsable = overlayStatus === 'available' \|\| overlayStatus === 'final'/);
+test('viewer accepts persisted saved/final market data without weakening strict current odds', () => {
+  assert.doesNotMatch(worker, /savedUsable=savedStatus==='available'/);
+  assert.match(worker, /readJraOfficialOddsCacheForViewer/);
+  assert.match(core, /const overlayDisplayable = \['available', 'final', 'saved'\]\.includes/);
+  assert.match(core, /fallbackToSaved/);
 });
 
 test('viewer horse identity contract is preserved', () => {

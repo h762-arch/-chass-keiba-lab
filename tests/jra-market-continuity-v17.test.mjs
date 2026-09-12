@@ -133,8 +133,9 @@ test('viewer explicitly labels saved market instead of current market', () => {
   assert.match(core, /saved_snapshot_fallback/);
 });
 
-test('worker public API contract and v1.6 viewer overlay remain untouched', () => {
-  assert.match(worker, /function publicViewerMarketOverlay\(day,races\)/);
+test('worker public API contract and persisted viewer overlay remain intact', () => {
+  assert.match(worker, /async function publicViewerMarketOverlay\(day,races,env\)/);
+  assert.match(worker, /payload\.viewerMarketOverlay=await publicViewerMarketOverlay\(day,races,env\)/);
   assert.match(worker, /payload\.viewerMarketMode='fresh-final-overlay-v1'/);
   assert.match(worker, /marketEvaluationMode:'saved-snapshot-only'/);
 });
