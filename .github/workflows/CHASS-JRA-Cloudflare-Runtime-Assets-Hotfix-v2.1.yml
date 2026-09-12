@@ -1,0 +1,848 @@
+name: CHASS JRA Cloudflare Runtime + Assets Hotfix v2.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      date:
+        description: "JRAライブ確認日 (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-12"
+        type: string
+      track:
+        description: "競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "レース番号"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-cloudflare-runtime-assets-hotfix-v21
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_WORKER_NAME: chass-keiba-lab7
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      REVIEWED_NAV_COMMIT: ee201b4343b31d3e877c7e44e5d752dd56443951
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $BASE"
+
+      - name: Safety guard - reviewed source state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f worker.js
+          test -f wrangler.jsonc
+          test -f jra-race-fetch.mjs
+          test -f jra-race-client.js
+          test -f jra-meeting-discovery.mjs
+          test -f jra-odds-fetch.mjs
+          test -f jra-result-fetch.mjs
+
+          # Refuse to patch if the reviewed JRA/core files changed unexpectedly.
+          declare -A EXPECTED
+          EXPECTED[jra-race-fetch.mjs]="fdb2bfd84d8db7e596b523cb908e19aaad813428"
+          EXPECTED[jra-race-client.js]="1818580f5f1b4935d9a99adab63a4ed3a0819468"
+          EXPECTED[jra-meeting-discovery.mjs]="d4252dda617950796eb482c16d370e9488fead09"
+          EXPECTED[jra-odds-fetch.mjs]="dc24cb27aa68605ad5c12b5e48cb485489a9c256"
+          EXPECTED[jra-result-fetch.mjs]="4b0734981424e34eb40e49c2dbf4a2ed7cb92e41"
+          EXPECTED[wrangler.jsonc]="2579b7f97972787d59d7eef2af337f3438a460bb"
+
+          for FILE in "${!EXPECTED[@]}"; do
+            ACTUAL="$(git hash-object "$FILE")"
+            if [ "$ACTUAL" != "${EXPECTED[$FILE]}" ]; then
+              echo "::error::$FILE changed from the reviewed baseline. Refusing to overwrite."
+              echo "Expected: ${EXPECTED[$FILE]}"
+              echo "Actual:   $ACTUAL"
+              exit 1
+            fi
+          done
+
+          git cat-file -e "${REVIEWED_NAV_COMMIT}^{commit}"
+          test -z "$(git status --porcelain=v1)"
+          echo "Reviewed source guard OK"
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Build isolated patched worktree
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-hotfix-v2
+          git worktree add --detach /tmp/chass-hotfix-v2 HEAD
+          cd /tmp/chass-hotfix-v2
+
+          # Restore the already-reviewed navigation hotfix that passed GitHub Runner live JRA.
+          git show "${REVIEWED_NAV_COMMIT}:jra-race-fetch.mjs" > jra-race-fetch.mjs
+          git show "${REVIEWED_NAV_COMMIT}:jra-race-client.js" > jra-race-client.js
+
+          # Cloudflare Workers rejects redirect:'error' at runtime.
+          # Use manual so 3xx is returned to existing response.ok guards instead of throwing
+          # an unsupported-runtime TypeError before the network response is inspected.
+          node <<'NODE'
+          const fs = require('fs');
+
+          const files = [
+            'jra-race-fetch.mjs',
+            'jra-meeting-discovery.mjs',
+            'jra-odds-fetch.mjs',
+            'jra-result-fetch.mjs'
+          ];
+
+          const counts = {};
+          for (const file of files) {
+            let src = fs.readFileSync(file, 'utf8');
+            const before = (src.match(/redirect\s*:\s*['"]error['"]/g) || []).length;
+            if (!before) throw new Error(`${file}: reviewed redirect:error marker not found`);
+            src = src.replace(/redirect\s*:\s*['"]error['"]/g, "redirect:'manual'");
+            if (/redirect\s*:\s*['"]error['"]/.test(src)) {
+              throw new Error(`${file}: redirect:error remains after patch`);
+            }
+            fs.writeFileSync(file, src);
+            counts[file] = before;
+          }
+
+          fs.writeFileSync('/tmp/jra-redirect-replacements.json', JSON.stringify(counts, null, 2));
+          console.log(JSON.stringify(counts, null, 2));
+          NODE
+
+
+          # Keep the regression test aligned with the Cloudflare-supported behavior.
+          # The requirement is to avoid automatic redirect following; Cloudflare requires 'manual'.
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'tests/jra-j1.test.mjs';
+          let src = fs.readFileSync(file, 'utf8');
+          const old = "assert.equal(options.redirect,'error')";
+          const next = "assert.equal(options.redirect,'manual')";
+          const count = src.split(old).length - 1;
+          if (count !== 1) throw new Error(`${file}: expected exactly one legacy redirect assertion, found ${count}`);
+          src = src.replace(old, next);
+          src = src.replace(
+            'concurrent requests single-flight and no redirect following',
+            'concurrent requests single-flight and redirects stay manual'
+          );
+          fs.writeFileSync(file, src);
+          console.log('Updated J1 redirect regression expectation to manual');
+          NODE
+
+          # Assets are intentionally still served from repository root for compatibility,
+          # but all server/internal/security-sensitive paths are excluded.
+          cat > .assetsignore <<'EOF'
+          # CHASS public-static security boundary
+          .assetsignore
+          .git
+          .git/**
+          .gitignore
+          .github
+          .github/**
+          .wrangler
+          .wrangler/**
+          node_modules
+          node_modules/**
+          mcp
+          mcp/**
+          migrations
+          migrations/**
+          tests
+          tests/**
+
+          # Worker/server/config internals
+          worker.js
+          server.mjs
+          wrangler.jsonc
+          wrangler.canary.jsonc
+          canary-worker.mjs
+          package.json
+          package-lock.json
+          d1-schema.sql
+          *.sql
+
+          # Server-only collectors/fetchers
+          jra-background-refresh.mjs
+          jra-meeting-discovery.mjs
+          jra-race-fetch.mjs
+          jra-odds-fetch.mjs
+          jra-result-fetch.mjs
+          meeting-discovery.mjs
+          nar-fixtures.mjs
+          publish-ai-snapshot.mjs
+          research-storage-sync.mjs
+          similarity-intelligence.mjs
+          regression.test.mjs
+
+          # Fixtures / internal reports / checksums
+          jra-program-fixture.html
+          jra-race-card-fixture.html
+          jra-result-fixture.html
+          *.md
+          *.txt
+          JRA_*_SHA256.json
+          EOF
+
+          # Regression guard committed with the fix so the unsupported mode cannot silently return.
+          cat > tests/jra-cloudflare-runtime-assets.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const outboundFiles = [
+            'jra-race-fetch.mjs',
+            'jra-meeting-discovery.mjs',
+            'jra-odds-fetch.mjs',
+            'jra-result-fetch.mjs'
+          ];
+
+          test('JRA outbound fetches are Cloudflare-compatible', () => {
+            for (const file of outboundFiles) {
+              const src = fs.readFileSync(file, 'utf8');
+              assert.equal(/redirect\s*:\s*['"]error['"]/.test(src), false, `${file} must not use redirect:error`);
+              assert.equal(/redirect\s*:\s*['"]manual['"]/.test(src), true, `${file} should use redirect:manual`);
+            }
+          });
+
+          test('root static assets exclude sensitive repository paths', () => {
+            const ignore = fs.readFileSync('.assetsignore', 'utf8');
+            for (const marker of [
+              '.git',
+              '.github',
+              'worker.js',
+              'wrangler.jsonc',
+              'package.json',
+              'migrations',
+              'tests',
+              'mcp',
+              'jra-race-fetch.mjs'
+            ]) {
+              assert.equal(ignore.includes(marker), true, `.assetsignore must protect ${marker}`);
+            }
+          });
+          EOF
+
+          # A minimal canary Worker tests BOTH patched JRA egress and .assetsignore behavior
+          # without binding production D1 or using the production Worker name.
+          CANARY_NAME="chass-jra-v2-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "canary_name=$CANARY_NAME" >> "$GITHUB_OUTPUT"
+
+          cat > canary-worker.mjs <<'EOF'
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const service = createJraRaceService({ timeoutMs: 20000 });
+
+          export default {
+            async fetch(request, env) {
+              const incoming = new URL(request.url);
+
+              if (incoming.pathname === '/__canary') {
+                return Response.json({ ok: true, canary: true });
+              }
+
+              if (incoming.pathname === '/probe-jra') {
+                const target = new URL('https://canary.invalid/api/jra/race');
+                target.searchParams.set('date', incoming.searchParams.get('date') || '');
+                target.searchParams.set('track', incoming.searchParams.get('track') || '');
+                target.searchParams.set('race', incoming.searchParams.get('race') || '');
+                return service(new Request(target), { ENABLE_JRA_AUTO_FETCH: false });
+              }
+
+              return env.ASSETS.fetch(request);
+            }
+          };
+          EOF
+
+          cat > wrangler.canary.jsonc <<EOF
+          {
+            "name": "$CANARY_NAME",
+            "main": "canary-worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "workers_dev": true,
+            "preview_urls": false,
+            "assets": {
+              "directory": "./",
+              "binding": "ASSETS",
+              "run_worker_first": ["/__canary", "/probe-jra"]
+            },
+            "observability": { "enabled": false }
+          }
+          EOF
+
+          # Prove only the intended source/test/security files differ inside the patch worktree.
+          git status --porcelain=v1
+          git status --porcelain=v1 | sed -E 's/^.. //' | sort > /tmp/hotfix-v2-changed.txt
+
+          cat > /tmp/hotfix-v2-allowed.txt <<'EOF'
+          .assetsignore
+          canary-worker.mjs
+          jra-meeting-discovery.mjs
+          jra-odds-fetch.mjs
+          jra-race-client.js
+          jra-race-fetch.mjs
+          jra-result-fetch.mjs
+          tests/jra-cloudflare-runtime-assets.test.mjs
+          tests/jra-j1.test.mjs
+          wrangler.canary.jsonc
+          EOF
+          sort -o /tmp/hotfix-v2-allowed.txt /tmp/hotfix-v2-allowed.txt
+          diff -u /tmp/hotfix-v2-allowed.txt /tmp/hotfix-v2-changed.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies in isolated worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Syntax + targeted regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+
+          node --check jra-race-fetch.mjs
+          node --check jra-race-client.js
+          node --check jra-meeting-discovery.mjs
+          node --check jra-odds-fetch.mjs
+          node --check jra-result-fetch.mjs
+          node --check canary-worker.mjs
+
+          node --test \
+            tests/jra-cloudflare-runtime-assets.test.mjs \
+            tests/jra-j1.test.mjs \
+            tests/jra-j2.test.mjs \
+            tests/jra-j3.test.mjs \
+            tests/jra-j4.test.mjs \
+            tests/jra-j5.test.mjs
+
+      - name: Full regression check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+          npm run check
+
+      - name: GitHub Runner live JRA smoke
+        shell: bash
+        env:
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+
+          node --input-type=module <<'NODE'
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const service = createJraRaceService({ timeoutMs: 20000 });
+          const url = new URL('https://runner.invalid/api/jra/race');
+          url.searchParams.set('date', process.env.TARGET_DATE);
+          url.searchParams.set('track', process.env.TARGET_TRACK);
+          url.searchParams.set('race', process.env.TARGET_RACE);
+
+          const response = await service(new Request(url), { ENABLE_JRA_AUTO_FETCH: false });
+          const body = await response.json();
+
+          console.log(JSON.stringify({
+            status: response.status,
+            ok: body.ok,
+            error: body.error ?? null,
+            race: body.race ?? null,
+            quality: body.quality ?? null,
+            navigation: body.navigation ?? null,
+            sourceUrl: body.sourceUrl ?? null
+          }, null, 2));
+
+          if (!response.ok || body.ok !== true) throw new Error(`Runner JRA smoke failed: ${body.error || response.status}`);
+          if (body.dataConfidence !== 'high') throw new Error('Runner dataConfidence is not high');
+          if (!body.quality?.raceParsed || Number(body.quality?.horseCount) < 2) throw new Error('Runner race quality gate failed');
+          NODE
+
+      - name: Deploy isolated Cloudflare canary only
+        id: canary_deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+
+          test "${{ steps.patch.outputs.canary_name }}" != "$PRODUCTION_WORKER_NAME"
+
+          npx -y wrangler@4 deploy --config wrangler.canary.jsonc 2>&1 | tee /tmp/hotfix-v2-canary-deploy.log
+
+          CANARY_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/hotfix-v2-canary-deploy.log | tail -n 1 || true)"
+          if [ -z "$CANARY_URL" ]; then
+            echo "::error::Could not determine canary workers.dev URL."
+            exit 1
+          fi
+
+          echo "url=$CANARY_URL" >> "$GITHUB_OUTPUT"
+          echo "Canary URL: $CANARY_URL"
+
+      - name: Cloudflare canary JRA live smoke
+        shell: bash
+        env:
+          CANARY_URL: ${{ steps.canary_deploy.outputs.url }}
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+
+          HTTP="$(curl -sS --max-time 35 --get "$CANARY_URL/probe-jra" \
+            --data-urlencode "date=$TARGET_DATE" \
+            --data-urlencode "track=$TARGET_TRACK" \
+            --data-urlencode "race=$TARGET_RACE" \
+            -o /tmp/hotfix-v2-canary-jra.json \
+            -w '%{http_code}')"
+
+          echo "Canary JRA HTTP: $HTTP"
+          cat /tmp/hotfix-v2-canary-jra.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/hotfix-v2-canary-jra.json', 'utf8'));
+          if (x.ok !== true) throw new Error(`Cloudflare canary JRA failed: ${x.error || 'unknown'}`);
+          if (x.dataConfidence !== 'high') throw new Error('Cloudflare canary dataConfidence is not high');
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) throw new Error('Cloudflare canary race quality gate failed');
+          console.log(`Cloudflare canary JRA OK: ${x.quality.horseCount} horses`);
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Cloudflare canary static-assets security smoke
+        shell: bash
+        env:
+          CANARY_URL: ${{ steps.canary_deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          check_public() {
+            local path="$1"
+            local code
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$CANARY_URL$path")"
+            echo "PUBLIC $path -> $code"
+            if [ "$code" != "200" ]; then
+              echo "::error::Expected public asset $path to return 200, got $code"
+              exit 1
+            fi
+          }
+
+          check_private() {
+            local path="$1"
+            local code
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$CANARY_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive path $path is still publicly served."
+              exit 1
+            fi
+          }
+
+          check_public "/"
+          check_public "/app.js"
+          check_public "/styles.css"
+          check_public "/viewer/"
+
+          check_private "/.git/config"
+          check_private "/.github/workflows/CHASS-JRA-Live-Nav-Hotfix.yml"
+          check_private "/worker.js"
+          check_private "/wrangler.jsonc"
+          check_private "/package.json"
+          check_private "/migrations/0006_jra_background_refresh.sql"
+          check_private "/tests/jra-j2.test.mjs"
+          check_private "/jra-race-fetch.mjs"
+
+      - name: Delete temporary canary Worker after successful validation
+        id: canary_cleanup
+        shell: bash
+        run: |
+          set +e
+          cd /tmp/chass-hotfix-v2
+
+          printf 'y\n' | npx -y wrangler@4 delete \
+            --name "${{ steps.patch.outputs.canary_name }}" \
+            --config wrangler.canary.jsonc
+          STATUS=$?
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::Temporary canary Worker cleanup failed with exit code $STATUS."
+            exit "$STATUS"
+          fi
+
+          touch /tmp/chass-hotfix-v2-canary-deleted
+          echo "Temporary canary Worker deleted."
+
+      - name: Remove canary-only files from patch worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-hotfix-v2
+          rm -f canary-worker.mjs wrangler.canary.jsonc
+
+          # Final production patch scope.
+          git status --porcelain=v1 | sed -E 's/^.. //' | sort > /tmp/hotfix-v2-production-files.txt
+          cat > /tmp/hotfix-v2-production-allowed.txt <<'EOF'
+          .assetsignore
+          jra-meeting-discovery.mjs
+          jra-odds-fetch.mjs
+          jra-race-client.js
+          jra-race-fetch.mjs
+          jra-result-fetch.mjs
+          tests/jra-cloudflare-runtime-assets.test.mjs
+          tests/jra-j1.test.mjs
+          EOF
+          sort -o /tmp/hotfix-v2-production-allowed.txt /tmp/hotfix-v2-production-allowed.txt
+          diff -u /tmp/hotfix-v2-production-allowed.txt /tmp/hotfix-v2-production-files.txt
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## CHASS JRA Hotfix v2.1 - VALIDATION SUCCESS"
+            echo
+            echo "- Mode: validate_only"
+            echo "- Baseline SHA: ${{ steps.base.outputs.sha }}"
+            echo "- GitHub Runner JRA: PASS"
+            echo "- Cloudflare canary JRA: PASS"
+            echo "- Cloudflare canary assets security: PASS"
+            echo "- Full regression: PASS"
+            echo "- Production commit/deploy: NOT PERFORMED"
+            echo
+            echo "Next action: rerun this workflow with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move during validation
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+          echo "Baseline: $BASE"
+          echo "Remote main: $REMOTE"
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced during validation. Nothing will be committed."
+            exit 1
+          fi
+
+      - name: Apply reviewed patch to checkout
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-hotfix-v2/jra-race-fetch.mjs jra-race-fetch.mjs
+          cp /tmp/chass-hotfix-v2/jra-race-client.js jra-race-client.js
+          cp /tmp/chass-hotfix-v2/jra-meeting-discovery.mjs jra-meeting-discovery.mjs
+          cp /tmp/chass-hotfix-v2/jra-odds-fetch.mjs jra-odds-fetch.mjs
+          cp /tmp/chass-hotfix-v2/jra-result-fetch.mjs jra-result-fetch.mjs
+          cp /tmp/chass-hotfix-v2/.assetsignore .assetsignore
+          cp /tmp/chass-hotfix-v2/tests/jra-cloudflare-runtime-assets.test.mjs tests/jra-cloudflare-runtime-assets.test.mjs
+          cp /tmp/chass-hotfix-v2/tests/jra-j1.test.mjs tests/jra-j1.test.mjs
+
+          git status --short
+
+          # Explicitly protect unrelated high-risk surfaces.
+          git diff --quiet -- worker.js app.js styles.css index.html viewer/ wrangler.jsonc migrations/ mcp/ || {
+            echo "::error::Unrelated application/data/config surfaces changed."
+            exit 1
+          }
+
+      - name: Commit tested patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            .assetsignore \
+            jra-race-fetch.mjs \
+            jra-race-client.js \
+            jra-meeting-discovery.mjs \
+            jra-odds-fetch.mjs \
+            jra-result-fetch.mjs \
+            tests/jra-cloudflare-runtime-assets.test.mjs \
+            tests/jra-j1.test.mjs
+
+          if git diff --cached --quiet; then
+            echo "::error::No production patch was staged."
+            exit 1
+          fi
+
+          git commit -m "Fix JRA Cloudflare runtime, tests and static assets"
+          PATCH_SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$PATCH_SHA" >> "$GITHUB_OUTPUT"
+          echo "Patch commit: $PATCH_SHA"
+
+      - name: Deploy production Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production health + public assets smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in 1 2 3 4 5; do
+            CODE="$(curl -sS --max-time 15 -o /tmp/health.json -w '%{http_code}' "$PRODUCTION_BASE_URL/api/chass/v1/public/health" || true)"
+            if [ "$CODE" = "200" ]; then break; fi
+            sleep 3
+          done
+
+          cat /tmp/health.json
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/health.json', 'utf8'));
+          if (x.ok !== true) throw new Error('Production health did not return ok=true');
+          NODE
+
+          for path in "/" "/app.js" "/styles.css" "/viewer/"; do
+            CODE="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PUBLIC $path -> $CODE"
+            test "$CODE" = "200"
+          done
+
+      - name: Production JRA live smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+
+          HTTP="$(curl -sS --max-time 35 --get "$PRODUCTION_BASE_URL/api/jra/race" \
+            --data-urlencode "date=$TARGET_DATE" \
+            --data-urlencode "track=$TARGET_TRACK" \
+            --data-urlencode "race=$TARGET_RACE" \
+            -o /tmp/hotfix-v2-production-jra.json \
+            -w '%{http_code}')"
+
+          echo "Production JRA HTTP: $HTTP"
+          cat /tmp/hotfix-v2-production-jra.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/hotfix-v2-production-jra.json', 'utf8'));
+          if (x.ok !== true) throw new Error(`Production JRA failed: ${x.error || 'unknown'}`);
+          if (x.dataConfidence !== 'high') throw new Error('Production dataConfidence is not high');
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) throw new Error('Production race quality gate failed');
+          console.log(`Production JRA OK: ${x.quality.horseCount} horses`);
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Production sensitive-assets closure check
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FAILED=0
+          for path in \
+            "/.git/config" \
+            "/.github/workflows/CHASS-JRA-Live-Nav-Hotfix.yml" \
+            "/worker.js" \
+            "/wrangler.jsonc" \
+            "/package.json" \
+            "/migrations/0006_jra_background_refresh.sql" \
+            "/tests/jra-j2.test.mjs" \
+            "/jra-race-fetch.mjs"
+          do
+            CODE="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $CODE"
+            if [ "$CODE" = "200" ]; then
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::At least one sensitive repository path is still publicly served."
+            exit 1
+          fi
+
+      - name: Automatic rollback on post-commit failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+
+          PATCH_SHA="${{ steps.commit.outputs.sha }}"
+          echo "::warning::Post-commit production validation failed. Reverting $PATCH_SHA"
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "$PATCH_SHA"
+          REVERT_STATUS=$?
+
+          if [ "$REVERT_STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+          else
+            echo "::error::Automatic git revert failed. Manual review required."
+          fi
+
+          if [ "$REVERT_STATUS" -eq 0 ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Redeploying reverted main..."
+            npx -y wrangler@4 deploy || echo "::warning::Rollback source succeeded but rollback deploy failed."
+          fi
+
+          exit 1
+
+      - name: Apply-and-deploy success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## CHASS JRA Hotfix v2.1 - PRODUCTION SUCCESS"
+            echo
+            echo "- Patch commit: ${{ steps.commit.outputs.sha }}"
+            echo "- Cloudflare runtime redirect compatibility: FIXED"
+            echo "- JRA live production smoke: PASS"
+            echo "- Sensitive static-assets closure: PASS"
+            echo "- D1 / migrations / NAR / prediction logic / Viewer: UNCHANGED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emergency cleanup for temporary canary Worker
+        if: always() && steps.patch.outputs.canary_name != ''
+        shell: bash
+        run: |
+          set +e
+
+          # If canary deployment never ran, there is nothing to delete.
+          if [ "${{ steps.canary_deploy.outcome }}" = "skipped" ] || [ -z "${{ steps.canary_deploy.outcome }}" ]; then
+            echo "Canary deploy was skipped; no cleanup required."
+            exit 0
+          fi
+
+          # Normal success path already deleted the canary.
+          if [ -f /tmp/chass-hotfix-v2-canary-deleted ]; then
+            echo "Canary was already deleted."
+            exit 0
+          fi
+
+          if [ ! -f /tmp/chass-hotfix-v2/wrangler.canary.jsonc ]; then
+            echo "::warning::Canary config is unavailable; cleanup could not be retried automatically."
+            exit 0
+          fi
+
+          cd /tmp/chass-hotfix-v2
+          printf 'y\n' | npx -y wrangler@4 delete \
+            --name "${{ steps.patch.outputs.canary_name }}" \
+            --config wrangler.canary.jsonc
+          STATUS=$?
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::warning::Emergency canary cleanup returned exit code $STATUS."
+          else
+            echo "Temporary canary Worker deleted by emergency cleanup."
+          fi
+          exit 0
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-hotfix-v2 2>/dev/null
+          git worktree prune 2>/dev/null
+          exit 0
