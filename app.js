@@ -315,27 +315,6 @@ function evaluateLongshots(horses,race={}){
  const assign=(h,type)=>{h.valueType=type;const power=reasonStrength(h);h.valueMark=type==='大穴'?'💎💎💎':h.longshotScore>=75&&power>=3?'💎💎':'💎';if(type==='勝ち穴')h.winValueMark=h.valueMark;else h.placeValueMark=h.valueMark};big.forEach(h=>assign(h,'大穴'));win.forEach(h=>assign(h,'勝ち穴'));place.forEach(h=>assign(h,'相手穴'));return horses;
 }
 function applyValueFlags(horses,race={}){return evaluateLongshots(horses,race)}
-function marketPredictionBasisSignature(horses=[]){
- return JSON.stringify((horses||[]).filter(isEligibleHorse).map(h=>[
-   Number(h.horseNo),num(h.win),num(h.place),num(h.overall),String(h.predictedTime||'')
- ]).sort((a,b)=>a[0]-b[0]));
-}
-function reconcileMarketDerivedValues(horses,race={}){
- (horses||[]).forEach(h=>{
-   if(!isEligibleHorse(h))return;
-   const o=num(h.odds),w=num(h.win);
-   if(o!=null&&w!=null){
-     h.ev=Number((o*w).toFixed(4));
-     h.fair=w>0?Number((100/w).toFixed(4)):null;
-   }else{
-     h.ev=null;
-     h.fair=null;
-   }
- });
- abilityMarks(horses||[]);
- applyValueFlags(horses||[],race||{});
- return horses;
-}
 function transform(root){
  const r={...(root.meta||{}),...(root.race||{})};
  const src=Array.isArray(root.horses)?root.horses:[];
@@ -712,12 +691,7 @@ function mergeExisting(next, existing){
  if(existing.race?.oddsType==='実オッズ'){
    next.race.oddsType='実オッズ'; next.race.oddsUpdatedAt=existing.race.oddsUpdatedAt;
    const oldMap=new Map((existing.horses||[]).map(h=>[String(h.horseNo),h]));
-   next.horses.forEach(h=>{const o=oldMap.get(String(h.horseNo));if(o?.odds!=null){h.odds=o.odds;h.popularity=o.popularity;}});
-   if(!locked){
-     reconcileMarketDerivedValues(next.horses,next.race);
-     next.race.marketDerivedVersion='MDV-2';
-     next.marketSnapshot={...(next.marketSnapshot||{}),schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:existing.race.oddsUpdatedAt||next.marketSnapshot?.acquiredAt||new Date().toISOString(),marketDerivedVersion:'MDV-2',predictionBasisSignature:marketPredictionBasisSignature(next.horses),horses:next.horses.map(marketHorse)};
-   }
+   next.horses.forEach(h=>{const o=oldMap.get(String(h.horseNo));if(o?.odds!=null){h.odds=o.odds;h.popularity=o.popularity;h.ev=o.ev;h.fair=o.fair;h.valueMark=o.valueMark||'';h.warningMark=o.warningMark||'';}});
  }
  return next;
 }
@@ -874,15 +848,15 @@ function applyMarketOdds(items, acquiredAt, options={}){
  const valid=items.map(x=>({horseNo:String(x.horseNo),odds:num(x.odds),popularity:num(x.popularity)})).filter(x=>x.horseNo&&x.odds!=null);
  const pop=[...valid].sort((a,b)=>a.odds-b.odds),popMap=new Map(pop.map((x,i)=>[x.horseNo,x.popularity??i+1])),map=new Map(valid.map(x=>[x.horseNo,x.odds]));
  const eligible=state.horses.filter(isEligibleHorse),totalHorseCount=eligible.length,oddsHorseCount=valid.filter(x=>eligible.some(h=>String(h.horseNo)===x.horseNo)).length,oddsCoverage=totalHorseCount?Number((oddsHorseCount/totalHorseCount).toFixed(4)):0,evRankStatus=oddsHorseCount===0?'unavailable':oddsHorseCount===totalHorseCount?'complete':'partial';
- const normalized=valid.map(x=>({horseNo:Number(x.horseNo),odds:x.odds,popularity:popMap.get(x.horseNo)||null})),signature=list=>JSON.stringify((list||[]).map(x=>[Number(x.horseNo),num(x.odds),num(x.popularity)]).sort((a,b)=>a[0]-b[0])),previous=state.validationCompleted?state.resultMarketSnapshot?.horses:state.marketSnapshot?.horses,basisSignature=marketPredictionBasisSignature(state.horses),previousBasisSignature=state.validationCompleted?state.resultMarketSnapshot?.predictionBasisSignature:state.marketSnapshot?.predictionBasisSignature;
- state.oddsLastCheckedAt=acquiredAt||new Date().toISOString();state.lastOddsApplyChanged=signature(previous)!==signature(normalized)||previousBasisSignature!==basisSignature||(!state.validationCompleted&&!state.marketSnapshot?.marketDataSource);
+ const normalized=valid.map(x=>({horseNo:Number(x.horseNo),odds:x.odds,popularity:popMap.get(x.horseNo)||null})),signature=list=>JSON.stringify((list||[]).map(x=>[Number(x.horseNo),num(x.odds),num(x.popularity)]).sort((a,b)=>a[0]-b[0])),previous=state.validationCompleted?state.resultMarketSnapshot?.horses:state.marketSnapshot?.horses;
+ state.oddsLastCheckedAt=acquiredAt||new Date().toISOString();state.lastOddsApplyChanged=signature(previous)!==signature(normalized)||(!state.validationCompleted&&!state.marketSnapshot?.marketDataSource);
  if(!state.lastOddsApplyChanged){storageDiagnostic('cacheHit');return valid.length}
  const marketDataSource=options.marketDataSource||'OddsTanFuku',snapshotType=options.oddsSnapshotType||'live';
  if(state.validationCompleted){state.resultMarketSnapshot={schemaVersion:2,createdAt:state.oddsLastCheckedAt,oddsSnapshotType:snapshotType,marketDataSource,marketDataAvailable:oddsHorseCount>0,oddsHorseCount,totalHorseCount,oddsCoverage,evRankStatus,horses:normalized};persist(true);return valid.length}
- state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;}else if(isEligibleHorse(h)){h.odds=null;h.popularity=null;}});
- reconcileMarketDerivedValues(state.horses,state.race); state.race.oddsType='実オッズ';state.race.oddsSnapshotType=snapshotType; state.race.oddsUpdatedAt=state.oddsLastCheckedAt;state.race.oddsChangedAt=state.oddsLastCheckedAt;state.race.marketDerivedVersion='MDV-2';
+ state.horses.forEach(h=>{const k=String(h.horseNo),o=map.get(k);if(o!=null){h.odds=o;h.popularity=popMap.get(k)||null;h.ev=o*h.win;h.fair=h.win>0?100/h.win:null;}else if(isEligibleHorse(h)){h.odds=null;h.popularity=null;h.ev=null;h.fair=null;h.valueMark='';h.warningMark='';}});
+ abilityMarks(state.horses); applyValueFlags(state.horses,state.race); state.race.oddsType='実オッズ';state.race.oddsSnapshotType=snapshotType; state.race.oddsUpdatedAt=state.oddsLastCheckedAt;state.race.oddsChangedAt=state.oddsLastCheckedAt;
  state.race.marketDataSource=marketDataSource;state.race.marketDataAvailable=oddsHorseCount>0;state.race.oddsHorseCount=oddsHorseCount;state.race.totalHorseCount=totalHorseCount;state.race.oddsCoverage=oddsCoverage;state.race.evRankStatus=evRankStatus;
- if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:snapshotType,marketDataSource,marketDataAvailable:oddsHorseCount>0,oddsHorseCount,totalHorseCount,oddsCoverage,evRankStatus,marketDerivedVersion:'MDV-2',predictionBasisSignature:basisSignature,horses:state.horses.map(marketHorse)};
+ if(!state.validationCompleted)state.marketSnapshot={schemaVersion:2,modelVersion:APP_VERSION,acquiredAt:state.race.oddsUpdatedAt,createdAt:state.race.oddsUpdatedAt,oddsSnapshotType:snapshotType,marketDataSource,marketDataAvailable:oddsHorseCount>0,oddsHorseCount,totalHorseCount,oddsCoverage,evRankStatus,horses:state.horses.map(marketHorse)};
  makeSnapshot();
  const rid=raceId(state.race);
  if(rid){
@@ -1337,15 +1311,6 @@ function migrateSnapshotRecord(r){
  if(!r.finalSnapshot?.top3?.length){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
  if(r.result?.finishOrder?.length>=3&&!r.resultSnapshot){r.resultSnapshot={schemaVersion:2,source:r.result.source||'legacy',fetchedAt:r.resultFetchedAt||r.result.at||now,finishOrder:r.result.finishOrder.map(Number),actualTimes:{...(r.result.actualTimes||r.actualTimes||{})},legacyDerived:true};changed=true}
  if(r.resultSnapshot&&!Array.isArray(r.resultSnapshot.horses)){const times=r.resultSnapshot.actualTimes||r.result?.actualTimes||r.actualTimes||{};r.resultSnapshot.horses=(r.resultSnapshot.finishOrder||[]).map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo:Number(horseNo),time:times[String(horseNo)]||''}));r.resultSnapshot.legacyDerived=true;changed=true}
- const lockedMarketHistory=!!(r.validationCompleted||r.validated&&r.result?.finishOrder?.length>=3);
- if(!lockedMarketHistory&&r.race?.oddsType==='実オッズ'&&horses.length){
-   const before=JSON.stringify(horses.map(h=>[Number(h.horseNo),num(h.ev),h.valueMark||'',h.warningMark||'']));
-   reconcileMarketDerivedValues(horses,r.race||{});
-   const after=JSON.stringify(horses.map(h=>[Number(h.horseNo),num(h.ev),h.valueMark||'',h.warningMark||'']));
-   r.race.marketDerivedVersion='MDV-2';
-   r.marketSnapshot={...(r.marketSnapshot||{}),schemaVersion:2,modelVersion:r.modelVersion||APP_VERSION,marketDerivedVersion:'MDV-2',predictionBasisSignature:marketPredictionBasisSignature(horses),horses:horses.map(marketHorse)};
-   if(before!==after||r.marketSnapshot?.marketDerivedVersion!=='MDV-2')changed=true;
- }
  r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.predictionCreatedAt=r.predictionCreatedAt||r.predictionSnapshot?.createdAt||r.predictionSnapshot?.generatedAt||null;r.resultAcquiredAt=r.resultAcquiredAt||r.resultSnapshot?.fetchedAt||r.resultFetchedAt||null;r.updatedAt=r.updatedAt||now;r.snapshotSchemaVersion=2;
  return changed;
 }
