@@ -1,0 +1,515 @@
+name: CHASS JRA Market Freshness + Final Odds Hotfix v1.3
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-market-freshness-final-odds-v13
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Capture protected-file hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum app.js jra-normalizer.js jra-model.js > /tmp/protected.before
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f worker.js
+          test -f viewer/viewer-core.js
+          test -f viewer/viewer-app.js
+
+          grep -Fq "function publicMarketFreshness" worker.js
+          grep -Fq "function publicDayAiLight" worker.js
+          grep -Fq "function publicDayAi(" worker.js
+          grep -Fq "export function sanitizeViewerMarketPayload" viewer/viewer-core.js
+          grep -Fq "function mergeMarket(day, marketDay)" viewer/viewer-app.js
+          grep -Fq "function marketStatus(race)" viewer/viewer-app.js
+
+          echo "Baseline anchors: PASS"
+
+      - name: Patch fresh/final market handling
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/chass_market_freshness_v13.py <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 anchor, got {count}")
+              return text.replace(old, new, 1)
+
+          worker_path = Path("worker.js")
+          worker = worker_path.read_text(encoding="utf-8")
+
+          old_columns = (
+              "const horseColumns=['horseNumber','horseName','abilityRank','score','winProb','top3Prob',"
+              "'odds','popularity','expectedValue','evRank','abilityPopularityGap','diamond','warning'];"
+          )
+          new_columns = (
+              "const horseColumns=['horseNumber','horseName','abilityRank','score','winProb','top3Prob',"
+              "'odds','popularity','oddsStatus','oddsFetchedAt','marketDataSource','expectedValue',"
+              "'evRank','abilityPopularityGap','diamond','warning'];"
+          )
+          worker = replace_once(worker, old_columns, new_columns, "worker horseColumns")
+
+          old_prepare = (
+              "popularity=publicPopularityMap(compact.horses),prepared=compact.horses.map(h=>{"
+              "const pop=popularity.map.get(h.no)??null,odds=publicPositiveNumber(h.odds),"
+              "expectedValue=odds!=null&&h.win!=null?Number((h.win*odds).toFixed(4)):null,"
+              "full=fullByNo.get(Number(h.no));"
+          )
+          new_prepare = (
+              "popularity=publicPopularityMap(compact.horses),"
+              "resultMarketByNo=new Map((race?.result?.horses||[]).map(item=>[Number(item.horseNo),item])),"
+              "prepared=compact.horses.map(h=>{"
+              "const finalMarket=resultMarketByNo.get(Number(h.no))||null,"
+              "savedPop=popularity.map.get(h.no)??null,"
+              "savedOdds=publicPositiveNumber(h.odds),"
+              "finalOdds=publicPositiveNumber(finalMarket?.finalOdds),"
+              "finalPopularity=publicPositiveInteger(finalMarket?.finalPopularity),"
+              "isFinal=finalOdds!=null,"
+              "odds=isFinal?finalOdds:savedOdds,"
+              "pop=isFinal?(finalPopularity??savedPop):savedPop,"
+              "oddsStatus=isFinal?'final':publicMarketFreshness(odds,race),"
+              "oddsFetchedAt=isFinal?"
+              "(race?.resultAcquiredAt||race?.result?.resultAcquiredAt||null):"
+              "(odds==null?null:race?.oddsUpdatedAt||null),"
+              "marketDataSource=isFinal?'result_final':"
+              "(race?.marketDataSource||(publicOddsType(race,publicOrganization(race))==='none'?"
+              "null:publicOddsType(race,publicOrganization(race)))),"
+              "expectedValue=odds!=null&&h.win!=null?Number((h.win*odds).toFixed(4)):null,"
+              "full=fullByNo.get(Number(h.no));"
+          )
+          worker = replace_once(worker, old_prepare, new_prepare, "worker prepared market")
+
+          old_freshness_fields = (
+              "oddsStatus:publicMarketFreshness(odds,race),"
+              "oddsFetchedAt:odds==null?null:race?.oddsUpdatedAt||null"
+          )
+          new_freshness_fields = "oddsStatus,oddsFetchedAt,marketDataSource"
+          worker = replace_once(
+              worker,
+              old_freshness_fields,
+              new_freshness_fields,
+              "worker freshness fields",
+          )
+
+          old_compact_market = (
+              "popularity:horse.popularity,expectedValue:round(horse.expectedValue,2)"
+          )
+          new_compact_market = (
+              "popularity:horse.popularity,oddsStatus:horse.oddsStatus,"
+              "oddsFetchedAt:horse.oddsFetchedAt,marketDataSource:horse.marketDataSource,"
+              "expectedValue:round(horse.expectedValue,2)"
+          )
+          worker = replace_once(
+              worker,
+              old_compact_market,
+              new_compact_market,
+              "worker compact freshness",
+          )
+
+          worker_path.write_text(worker, encoding="utf-8")
+
+          core_path = Path("viewer/viewer-core.js")
+          core = core_path.read_text(encoding="utf-8")
+
+          core_anchor = (
+              "            popularity: finiteOrNull(horse.popularity),\n"
+              "            expectedValue: finiteOrNull(horse.expectedValue),"
+          )
+          core_replacement = (
+              "            popularity: finiteOrNull(horse.popularity),\n"
+              "            oddsStatus: textOrNull(horse.oddsStatus),\n"
+              "            oddsFetchedAt: textOrNull(horse.oddsFetchedAt),\n"
+              "            marketDataSource: textOrNull(horse.marketDataSource),\n"
+              "            expectedValue: finiteOrNull(horse.expectedValue),"
+          )
+          core = replace_once(
+              core,
+              core_anchor,
+              core_replacement,
+              "viewer-core market fields",
+          )
+          core_path.write_text(core, encoding="utf-8")
+
+          app_path = Path("viewer/viewer-app.js")
+          app = app_path.read_text(encoding="utf-8")
+
+          merge_start = app.find("function mergeMarket(day, marketDay) {")
+          merge_end = app.find("\nfunction mergeRaceDetail", merge_start)
+          if merge_start < 0 or merge_end < 0:
+              raise SystemExit("viewer-app mergeMarket block not found")
+
+          new_merge = r"""function marketFreshnessStatus(market) {
+            const status = String(market?.oddsStatus || '').trim().toLowerCase();
+            if (['available', 'final', 'stale', 'unavailable', 'partial'].includes(status)) {
+              return status;
+            }
+            return 'unavailable';
+          }
+
+          function usableMarketRow(market) {
+            const status = marketFreshnessStatus(market);
+            const odds = Number(market?.odds);
+            return ['available', 'final'].includes(status)
+              && Number.isFinite(odds)
+              && odds > 0;
+          }
+
+          function mergeMarket(day, marketDay) {
+            const racesByNo = new Map(marketDay.races.map((race) => [Number(race.raceNo), race]));
+
+            for (const race of day.races) {
+              const marketRace = racesByNo.get(Number(race.raceNo));
+              if (!marketRace) continue;
+
+              const used = new Set();
+
+              race.horses = race.horses.map((horse) => {
+                const market = resolveHorseIdentity(horse, marketRace.horses, used);
+
+                if (!market) {
+                  return {
+                    ...horse,
+                    odds: null,
+                    popularity: null,
+                    expectedValue: null,
+                    marketStatus: 'unavailable',
+                    marketFetchedAt: null,
+                    marketDataSource: null,
+                  };
+                }
+
+                used.add(market);
+
+                const status = marketFreshnessStatus(market);
+
+                if (!usableMarketRow(market)) {
+                  return {
+                    ...horse,
+                    horseNo: horse.horseNo,
+                    horseName: horse.horseName,
+                    odds: null,
+                    popularity: null,
+                    expectedValue: null,
+                    marketStatus: status,
+                    marketFetchedAt: market.oddsFetchedAt || null,
+                    marketDataSource: market.marketDataSource || null,
+                  };
+                }
+
+                const expectedValue = (
+                  horse.aiWinRate != null && market.odds != null
+                    ? Number((horse.aiWinRate * market.odds).toFixed(2))
+                    : null
+                );
+
+                return {
+                  ...horse,
+                  horseNo: horse.horseNo,
+                  horseName: horse.horseName,
+                  abilityScore: horse.abilityScore ?? market.abilityScore,
+                  abilityRank: horse.abilityRank ?? market.abilityRank,
+                  odds: market.odds ?? null,
+                  popularity: market.popularity ?? null,
+                  expectedValue,
+                  marketStatus: status,
+                  marketFetchedAt: market.oddsFetchedAt || null,
+                  marketDataSource: market.marketDataSource || null,
+                  longshotMark: market.longshotMark ?? horse.longshotMark,
+                  dangerMark: market.dangerMark ?? horse.dangerMark,
+                };
+              });
+
+              race.marketAvailable = race.horses.some(
+                (horse) => horse.odds != null
+                  && ['available', 'final'].includes(String(horse.marketStatus || '')),
+              );
+              normalizeAbilityMarkOrder(race);
+              normalizeDuplicateMainMarks(race);
+            }
+          }
+          """
+          app = app[:merge_start] + new_merge + app[merge_end:]
+
+          status_start = app.find("function marketStatus(race) {")
+          status_end = app.find("\nfunction mobileRaceBody", status_start)
+          if status_start < 0 or status_end < 0:
+              raise SystemExit("viewer-app marketStatus block not found")
+
+          new_market_status = r"""function marketStatus(race) {
+            const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+            const withOdds = active.filter((horse) => horse.odds != null).length;
+            const finalCount = active.filter(
+              (horse) => horse.odds != null && horse.marketStatus === 'final',
+            ).length;
+            const staleCount = active.filter(
+              (horse) => horse.marketStatus === 'stale',
+            ).length;
+
+            if (!withOdds && staleCount) return { text: '市場データ 古い', state: 'stale' };
+            if (!withOdds) return { text: '市場データ 未取得', state: 'missing' };
+            if (finalCount === active.length && active.length > 0) {
+              return { text: '確定市場 反映済み', state: 'ready' };
+            }
+            if (withOdds < active.length) {
+              return { text: `市場データ ${withOdds}/${active.length}`, state: 'partial' };
+            }
+            return { text: '市場データ 反映済み', state: 'ready' };
+          }
+          """
+          app = app[:status_start] + new_market_status + app[status_end:]
+
+          # Race-detail enrichment must never rewrite the prediction-side horse identity.
+          detail_identity = (
+              "      horseNo: full.horseNo ?? horse.horseNo,\n"
+              "      horseName: horse.horseName || full.horseName,"
+          )
+          frozen_identity = (
+              "      horseNo: horse.horseNo,\n"
+              "      horseName: horse.horseName || full.horseName,"
+          )
+          app = replace_once(
+              app,
+              detail_identity,
+              frozen_identity,
+              "viewer-app race-detail identity freeze",
+          )
+
+          app_path.write_text(app, encoding="utf-8")
+
+          print("Patched worker.js, viewer/viewer-core.js, viewer/viewer-app.js")
+          PY
+
+          python3 /tmp/chass_market_freshness_v13.py
+
+      - name: Add regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > tests/jra-market-freshness-final-odds-v13.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const worker = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+          const core = fs.readFileSync(new URL('../viewer/viewer-core.js', import.meta.url), 'utf8');
+          const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+
+          test('public day-ai exposes market freshness metadata', () => {
+            assert.match(worker, /'oddsStatus','oddsFetchedAt','marketDataSource'/);
+            assert.match(worker, /resultMarketByNo=new Map/);
+            assert.match(worker, /isFinal\?'final':publicMarketFreshness/);
+            assert.match(worker, /marketDataSource=isFinal\?'result_final'/);
+          });
+
+          test('viewer sanitizer keeps market freshness metadata', () => {
+            assert.match(core, /oddsStatus: textOrNull\(horse\.oddsStatus\)/);
+            assert.match(core, /oddsFetchedAt: textOrNull\(horse\.oddsFetchedAt\)/);
+            assert.match(core, /marketDataSource: textOrNull\(horse\.marketDataSource\)/);
+          });
+
+          test('market merge is fail-closed and cannot rewrite horse identity', () => {
+            assert.match(app, /function usableMarketRow\(market\)/);
+            assert.match(app, /\['available', 'final'\]\.includes\(status\)/);
+            assert.match(app, /horseNo: horse\.horseNo/);
+            assert.match(app, /horseName: horse\.horseName/);
+            assert.match(app, /marketStatus: status/);
+            assert.doesNotMatch(app, /horseNo: full\.horseNo \?\? horse\.horseNo/);
+          });
+
+          test('viewer distinguishes stale and final market states', () => {
+            assert.match(app, /市場データ 古い/);
+            assert.match(app, /確定オッズ 反映済み/);
+          });
+          EOF
+
+      - name: Verify protected files were not modified
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum app.js jra-normalizer.js jra-model.js > /tmp/protected.after
+          diff -u /tmp/protected.before /tmp/protected.after
+          echo "Prediction / JRA normalization protected files: UNCHANGED"
+
+      - name: Syntax and regression checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check worker.js
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/jra-market-freshness-final-odds-v13.test.mjs
+          npm run check
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Market Freshness + Final Odds Hotfix v1.3 - VALIDATION SUCCESS"
+            echo
+            echo "- JRA horse identity rewrite: BLOCKED"
+            echo "- Ability / AI probability logic: UNCHANGED"
+            echo "- ◎○▲△ normalization: KEPT"
+            echo "- Stale market rows: FAIL-CLOSED"
+            echo "- Result-confirmed market/popularity: PREFERRED when available"
+            echo "- Viewer freshness metadata: ENABLED"
+            echo "- NAR: UNCHANGED"
+            echo "- Production deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun this workflow with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare auth preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Commit source patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            worker.js \
+            viewer/viewer-core.js \
+            viewer/viewer-app.js \
+            tests/jra-market-freshness-final-odds-v13.test.mjs
+
+          ALLOWED="$(
+            printf '%s\n' \
+              worker.js \
+              viewer/viewer-core.js \
+              viewer/viewer-app.js \
+              tests/jra-market-freshness-final-odds-v13.test.mjs \
+            | sort
+          )"
+
+          ACTUAL="$(git diff --cached --name-only | sort)"
+          test "$ACTUAL" = "$ALLOWED" || {
+            echo "::error::Unexpected staged files."
+            printf 'Expected:\n%s\nActual:\n%s\n' "$ALLOWED" "$ACTUAL"
+            exit 1
+          }
+
+          git commit -m "fix: prefer fresh/final JRA market data in viewer"
+          git push origin main
+
+      - name: Deploy production worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CODE="$(curl -sS --max-time 20 \
+            -o /tmp/viewer-market-smoke.json \
+            -w '%{http_code}' \
+            --get "$PRODUCTION_BASE_URL/api/chass/v1/public/day-ai" \
+            --data-urlencode "date=2026-09-12" \
+            --data-urlencode "track=阪神" \
+            --data-urlencode "organization=JRA" \
+            --data-urlencode "format=tabular" || true)"
+
+          test "$CODE" = "200" || {
+            echo "::error::Public day-ai smoke HTTP $CODE"
+            cat /tmp/viewer-market-smoke.json || true
+            exit 1
+          }
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/viewer-market-smoke.json', 'utf8'));
+          if (x.ok !== true) throw new Error('PUBLIC_DAY_AI_NOT_OK');
+          if (!Array.isArray(x.horseColumns)) throw new Error('HORSE_COLUMNS_MISSING');
+
+          for (const key of ['horseNumber', 'horseName', 'odds', 'popularity', 'oddsStatus', 'oddsFetchedAt', 'marketDataSource']) {
+            if (!x.horseColumns.includes(key)) throw new Error(`COLUMN_MISSING:${key}`);
+          }
+
+          console.log(`Public races=${x.races?.length || 0}`);
+          NODE
+
+      - name: Apply summary
+        if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Market Freshness + Final Odds Hotfix v1.3 - PRODUCTION SUCCESS"
+            echo
+            echo "- Horse number/name: prediction identity remains authoritative"
+            echo "- Popularity/odds: only fresh or final market rows are displayed"
+            echo "- Post-race: result-confirmed market fields are preferred when available"
+            echo "- Stale odds: no longer shown as current market data"
+            echo "- EV: recalculated from displayed AI win probability x accepted odds"
+            echo "- ◎○▲△: ability-order normalization preserved"
+            echo "- app.js / jra-normalizer.js / jra-model.js: unchanged"
+            echo "- NAR: unchanged"
+          } >> "$GITHUB_STEP_SUMMARY"
