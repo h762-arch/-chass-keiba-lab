@@ -1,0 +1,34 @@
+# CHASS public static-asset security boundary
+.assetsignore
+.git
+.git/**
+.github
+.github/**
+.wrangler
+.wrangler/**
+node_modules
+node_modules/**
+tests
+tests/**
+migrations
+migrations/**
+mcp
+mcp/**
+scripts
+scripts/**
+
+# Server/runtime internals
+worker.js
+server.mjs
+*.mjs
+wrangler.jsonc
+wrangler.*.jsonc
+package.json
+package-lock.json
+d1-schema.sql
+*.sql
+
+# Internal reports / patch notes / checksums
+*.md
+*.txt
+JRA_*_SHA256.json
