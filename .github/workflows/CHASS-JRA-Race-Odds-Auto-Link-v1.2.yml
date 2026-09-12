@@ -1,0 +1,624 @@
+name: CHASS JRA Race + Odds Auto Link v1.2
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-race-odds-auto-link-v12
+  cancel-in-progress: false
+
+jobs:
+  auto_link:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $BASE"
+
+      - name: Safety guard - current UI clients
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          test -f jra-race-client.js
+          test -f jra-odds-client.js
+          test -f .assetsignore
+
+          # Exact current blobs reviewed before creating this patch.
+          test "$(git hash-object jra-race-client.js)" = "1818580f5f1b4935d9a99adab63a4ed3a0819468"
+          test "$(git hash-object jra-odds-client.js)" = "164e075a00209506fec0f607e51f9d5695e9e6e0"
+
+          grep -Fq "JRA公式データを取得・予想開始" jra-race-client.js
+          grep -Fq "JRA公式から現在オッズを取得" jra-odds-client.js
+
+          echo "UI client baseline: PASS"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Build isolated UI candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-auto-link-v12
+          git worktree add --detach /tmp/chass-jra-auto-link-v12 HEAD
+          cd /tmp/chass-jra-auto-link-v12
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          // ----------------------------------------------------------
+          // Race client:
+          // after official race data commits successfully, publish one
+          // narrow event. Odds failure can never invalidate race commit.
+          // ----------------------------------------------------------
+          {
+            const file = 'jra-race-client.js';
+            let src = fs.readFileSync(file, 'utf8');
+
+            const oldText =
+              "commit(data,generation);status.textContent=`JRA公式 ${data.quality.activeHorseCount}/${data.quality.horseCount}頭｜予想計算完了`;";
+
+            const newText =
+              "commit(data,generation);status.textContent=`JRA公式 ${data.quality.activeHorseCount}/${data.quality.horseCount}頭｜予想計算完了`;try{window.dispatchEvent(new CustomEvent('chass:jra-race-ready',{detail:{date:selection.date,track:selection.track,race:Number(selection.race),generation}}))}catch{}";
+
+            const count = src.split(oldText).length - 1;
+            if (count !== 1) throw new Error(`${file}: expected exactly one commit anchor, found ${count}`);
+
+            src = src.replace(oldText, newText);
+            fs.writeFileSync(file, src);
+          }
+
+          // ----------------------------------------------------------
+          // Odds client:
+          // listen for the successful race event and automatically
+          // fetch/apply odds. The manual button remains available.
+          // ----------------------------------------------------------
+          {
+            const file = 'jra-odds-client.js';
+            let src = fs.readFileSync(file, 'utf8');
+
+            const declaration =
+              "const button=document.getElementById('liveOddsSync'),status=document.getElementById('liveOddsStatus');let active=false,token=0,controller;";
+
+            const declarationNext =
+              "const button=document.getElementById('liveOddsSync'),status=document.getElementById('liveOddsStatus');let active=false,token=0,controller,autoTimer;";
+
+            if ((src.split(declaration).length - 1) !== 1) {
+              throw new Error(`${file}: declaration anchor mismatch`);
+            }
+            src = src.replace(declaration, declarationNext);
+
+            const cancel =
+              "const cancel=()=>{token++;controller?.abort();controller=null;if(active){button.disabled=false;button.textContent='JRA公式から現在オッズを取得'}};";
+
+            const cancelNext =
+              "const cancel=()=>{token++;clearTimeout(autoTimer);controller?.abort();controller=null;if(active){button.disabled=false;button.textContent='JRA公式から現在オッズを取得'}};";
+
+            if ((src.split(cancel).length - 1) !== 1) {
+              throw new Error(`${file}: cancel anchor mismatch`);
+            }
+            src = src.replace(cancel, cancelNext);
+
+            const returnAnchor =
+              "return {load,cancel,setActive(value){active=value;if(!value)cancel();else{button.disabled=false;button.textContent='JRA公式から現在オッズを取得';status.textContent='JRA出馬表取得後に、必要な時だけ手動で更新します。'}}};";
+
+            const returnNext =
+              "const sameSelection=(detail,current)=>String(detail?.date||'')===String(current?.date||'')&&String(detail?.track||'')===String(current?.track||'')&&Number(detail?.race)===Number(current?.race);const onRaceReady=event=>{if(!active||!isActive())return;const current=getSelection();if(!sameSelection(event?.detail,current))return;clearTimeout(autoTimer);status.textContent='JRA公式出馬表を取得しました。単勝オッズを自動連動しています…';autoTimer=setTimeout(load,80)};if(typeof window.addEventListener==='function')window.addEventListener('chass:jra-race-ready',onRaceReady);return {load,cancel,setActive(value){active=value;if(!value)cancel();else{button.disabled=false;button.textContent='JRA公式から現在オッズを取得';status.textContent='JRA出馬表取得後は単勝オッズも自動連動します。手動再取得もできます。'}}};";
+
+            if ((src.split(returnAnchor).length - 1) !== 1) {
+              throw new Error(`${file}: return anchor mismatch`);
+            }
+            src = src.replace(returnAnchor, returnNext);
+
+            fs.writeFileSync(file, src);
+          }
+          NODE
+
+          cat > tests/jra-race-odds-auto-link.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import vm from 'node:vm';
+
+          class FakeElement {
+            constructor() {
+              this.disabled = false;
+              this.textContent = '';
+              this.open = false;
+              this.listeners = new Map();
+            }
+            addEventListener(type, fn) {
+              const list = this.listeners.get(type) || [];
+              list.push(fn);
+              this.listeners.set(type, list);
+            }
+            click() {
+              for (const fn of this.listeners.get('click') || []) fn({ type: 'click' });
+            }
+          }
+
+          class FakeCustomEvent {
+            constructor(type, options = {}) {
+              this.type = type;
+              this.detail = options.detail;
+            }
+          }
+
+          function makeContext(fetchImpl) {
+            const elements = new Map([
+              ['jraOfficialLoad', new FakeElement()],
+              ['jraStatus', new FakeElement()],
+              ['jraDataFile', new FakeElement()],
+              ['jraManualFallback', new FakeElement()],
+              ['liveOddsSync', new FakeElement()],
+              ['liveOddsStatus', new FakeElement()]
+            ]);
+
+            const listeners = new Map();
+
+            const addEventListener = (type, fn) => {
+              const list = listeners.get(type) || [];
+              list.push(fn);
+              listeners.set(type, list);
+            };
+
+            const removeEventListener = (type, fn) => {
+              const list = listeners.get(type) || [];
+              listeners.set(type, list.filter(item => item !== fn));
+            };
+
+            const dispatchEvent = event => {
+              for (const fn of listeners.get(event?.type) || []) fn(event);
+              return true;
+            };
+
+            const context = {
+              console,
+              URLSearchParams,
+              AbortController,
+              setTimeout,
+              clearTimeout,
+              CustomEvent: FakeCustomEvent,
+              fetch: fetchImpl,
+              document: {
+                getElementById(id) {
+                  return elements.get(id) || null;
+                }
+              }
+            };
+
+            context.window = {
+              CHASS_FEATURES: {},
+              addEventListener,
+              removeEventListener,
+              dispatchEvent
+            };
+
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync('jra-odds-client.js', 'utf8'), context);
+            vm.runInContext(fs.readFileSync('jra-race-client.js', 'utf8'), context);
+
+            return { context, elements };
+          }
+
+          const selection = { date: '2026-09-12', track: '中山', race: 1 };
+
+          const racePayload = {
+            ok: true,
+            organization: 'JRA',
+            quality: {
+              raceParsed: true,
+              horseCount: 12,
+              activeHorseCount: 12,
+              horseNameRate: 1,
+              weightRate: 1,
+              jockeyRate: 1
+            },
+            dataConfidence: 'high'
+          };
+
+          const oddsPayload = {
+            ok: true,
+            organization: 'JRA',
+            odds: Array.from({ length: 12 }, (_, i) => ({
+              horseNo: i + 1,
+              odds: 2 + i,
+              popularity: i + 1
+            })),
+            quality: {
+              activeHorseCount: 12,
+              oddsHorseCount: 12,
+              oddsCoverage: 1,
+              complete: true
+            },
+            oddsSnapshotType: 'live',
+            bridgeCache: {
+              provider: 'github_actions_d1',
+              kind: 'odds'
+            }
+          };
+
+          test('successful official race load automatically chains JRA odds once', async () => {
+            const calls = [];
+            let applied = 0;
+            let committed = 0;
+
+            const fetchImpl = async url => {
+              calls.push(String(url));
+              if (String(url).startsWith('/api/jra/race?')) {
+                return { ok: true, json: async () => racePayload };
+              }
+              if (String(url).startsWith('/api/jra/odds?')) {
+                return { ok: true, json: async () => oddsPayload };
+              }
+              throw new Error(`unexpected URL ${url}`);
+            };
+
+            const { context } = makeContext(fetchImpl);
+
+            const odds = context.window.CHASS_JRA_ODDS_CLIENT.create({
+              isActive: () => true,
+              getSelection: () => selection,
+              getGeneration: () => 7,
+              apply: () => { applied += 1; }
+            });
+            odds.setActive(true);
+
+            const race = context.window.CHASS_JRA_RACE_CLIENT.create({
+              isActive: () => true,
+              getSelection: () => selection,
+              getGeneration: () => 7,
+              commit: () => { committed += 1; }
+            });
+            race.setActive(true);
+
+            await race.load();
+            await new Promise(resolve => setTimeout(resolve, 180));
+
+            assert.equal(committed, 1);
+            assert.equal(applied, 1);
+            assert.equal(calls.filter(x => x.startsWith('/api/jra/race?')).length, 1);
+            assert.equal(calls.filter(x => x.startsWith('/api/jra/odds?')).length, 1);
+          });
+
+          test('odds failure never rolls back a successful race commit', async () => {
+            let committed = 0;
+            let applied = 0;
+
+            const fetchImpl = async url => {
+              if (String(url).startsWith('/api/jra/race?')) {
+                return { ok: true, json: async () => racePayload };
+              }
+              if (String(url).startsWith('/api/jra/odds?')) {
+                return {
+                  ok: false,
+                  json: async () => ({ ok: false, error: 'JRA_ODDS_CACHE_MISS' })
+                };
+              }
+              throw new Error(`unexpected URL ${url}`);
+            };
+
+            const { context, elements } = makeContext(fetchImpl);
+
+            const odds = context.window.CHASS_JRA_ODDS_CLIENT.create({
+              isActive: () => true,
+              getSelection: () => selection,
+              getGeneration: () => 11,
+              apply: () => { applied += 1; }
+            });
+            odds.setActive(true);
+
+            const race = context.window.CHASS_JRA_RACE_CLIENT.create({
+              isActive: () => true,
+              getSelection: () => selection,
+              getGeneration: () => 11,
+              commit: () => { committed += 1; }
+            });
+            race.setActive(true);
+
+            await race.load();
+            await new Promise(resolve => setTimeout(resolve, 180));
+
+            assert.equal(committed, 1);
+            assert.equal(applied, 0);
+            assert.match(elements.get('jraStatus').textContent, /予想計算完了/);
+            assert.match(elements.get('liveOddsStatus').textContent, /JRAオッズ取得エラー/);
+          });
+
+          test('event for a different race is ignored', async () => {
+            let oddsCalls = 0;
+            const fetchImpl = async url => {
+              if (String(url).startsWith('/api/jra/odds?')) oddsCalls += 1;
+              return { ok: true, json: async () => oddsPayload };
+            };
+
+            const { context } = makeContext(fetchImpl);
+
+            const odds = context.window.CHASS_JRA_ODDS_CLIENT.create({
+              isActive: () => true,
+              getSelection: () => selection,
+              getGeneration: () => 1,
+              apply: () => {}
+            });
+            odds.setActive(true);
+
+            context.window.dispatchEvent(new FakeCustomEvent('chass:jra-race-ready', {
+              detail: { date: '2026-09-12', track: '中山', race: 2, generation: 1 }
+            }));
+
+            await new Promise(resolve => setTimeout(resolve, 140));
+            assert.equal(oddsCalls, 0);
+          });
+          EOF
+
+          git status --porcelain=v1 -uall
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/auto-link-actual.txt
+
+          cat > /tmp/auto-link-allowed.txt <<'EOF'
+          jra-odds-client.js
+          jra-race-client.js
+          tests/jra-race-odds-auto-link.test.mjs
+          EOF
+
+          sort -o /tmp/auto-link-allowed.txt /tmp/auto-link-allowed.txt
+          if ! diff -u /tmp/auto-link-allowed.txt /tmp/auto-link-actual.txt; then
+            echo "::error::Auto-link candidate scope mismatch."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-auto-link-v12
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Syntax + auto-link tests + full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-auto-link-v12
+
+          node --check jra-race-client.js
+          node --check jra-odds-client.js
+          node --test tests/jra-race-odds-auto-link.test.mjs
+          npm run check
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Race + Odds Auto Link v1.2 - VALIDATION SUCCESS"
+            echo
+            echo "- JRA official race load -> automatic odds load: PASS"
+            echo "- Odds failure does not invalidate race prediction: PASS"
+            echo "- Wrong-race event isolation: PASS"
+            echo "- Manual odds button: KEPT"
+            echo "- 60-second auto refresh: UNCHANGED"
+            echo "- Browser-event test harness: PASS"
+            echo "- Legacy UI window-stub compatibility: PASS"
+            echo "- Full regression: PASS"
+            echo "- Production commit/deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          BASE="${{ steps.base.outputs.sha }}"
+          REMOTE="$(git rev-parse origin/main)"
+
+          if [ "$BASE" != "$REMOTE" ]; then
+            echo "::error::main advanced during validation. Nothing will be applied."
+            exit 1
+          fi
+
+      - name: Apply auto-link source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: auto_link_commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-auto-link-v12/jra-race-client.js jra-race-client.js
+          cp /tmp/chass-jra-auto-link-v12/jra-odds-client.js jra-odds-client.js
+          cp /tmp/chass-jra-auto-link-v12/tests/jra-race-odds-auto-link.test.mjs tests/jra-race-odds-auto-link.test.mjs
+
+          # No model/backend/NAR/viewer changes are allowed in this patch.
+          git diff --quiet -- \
+            app.js \
+            worker.js \
+            jra-race-fetch.mjs \
+            jra-odds-fetch.mjs \
+            jra-official-cache.mjs \
+            wrangler.jsonc \
+            migrations/ \
+            scripts/ \
+            viewer/ \
+            mcp/ \
+            .github/workflows/ || {
+              echo "::error::Unexpected unrelated surface changed."
+              exit 1
+            }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-race-client.js \
+            jra-odds-client.js \
+            tests/jra-race-odds-auto-link.test.mjs
+
+          git commit -m "Auto-link JRA official race load to current odds"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy UI auto-link
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production static-asset smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            if [ "$DELAY" -gt 0 ]; then sleep "$DELAY"; fi
+
+            RACE_CODE="$(curl -sS --max-time 15 \
+              "$PRODUCTION_BASE_URL/jra-race-client.js" \
+              -o /tmp/prod-race-client.js \
+              -w '%{http_code}' || true)"
+
+            ODDS_CODE="$(curl -sS --max-time 15 \
+              "$PRODUCTION_BASE_URL/jra-odds-client.js" \
+              -o /tmp/prod-odds-client.js \
+              -w '%{http_code}' || true)"
+
+            echo "race-client HTTP=$RACE_CODE odds-client HTTP=$ODDS_CODE"
+
+            if [ "$RACE_CODE" = "200" ] && [ "$ODDS_CODE" = "200" ] \
+              && grep -Fq "chass:jra-race-ready" /tmp/prod-race-client.js \
+              && grep -Fq "chass:jra-race-ready" /tmp/prod-odds-client.js \
+              && grep -Fq "単勝オッズも自動連動します" /tmp/prod-odds-client.js
+            then
+              PASS=1
+              break
+            fi
+          done
+
+          if [ "$PASS" -ne 1 ]; then
+            echo "::error::Production auto-link assets did not become visible after retry."
+            exit 1
+          fi
+
+          for path in "/.git/config" "/worker.js" "/wrangler.jsonc" "/jra-odds-fetch.mjs"; do
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            echo "PRIVATE $path -> $code"
+            if [ "$code" = "200" ]; then
+              echo "::error::Sensitive file became public: $path"
+              exit 1
+            fi
+          done
+
+          echo "Production auto-link assets: PASS"
+
+      - name: Roll back auto-link on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.auto_link_commit.outputs.committed == 'true' }}
+        shell: bash
+        run: |
+          set +e
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.auto_link_commit.outputs.sha }}"
+          STATUS=$?
+
+          if [ "$STATUS" -eq 0 ]; then
+            git push origin HEAD:main
+            if npx -y wrangler@4 deploy; then
+              echo "Auto-link rollback and redeploy: SUCCESS"
+              exit 0
+            fi
+            echo "::error::Auto-link source reverted, but baseline redeploy failed."
+            exit 1
+          fi
+
+          echo "::error::Automatic auto-link revert failed."
+          exit 1
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Race + Odds Auto Link v1.2 - PRODUCTION SUCCESS"
+            echo
+            echo "- Official race load -> automatic current odds: ENABLED"
+            echo "- Manual current-odds button: KEPT"
+            echo "- Odds failure isolation: ENABLED"
+            echo "- 60-second auto refresh setting: UNCHANGED"
+            echo "- Ability ranking remains odds-independent: UNCHANGED"
+            echo "- Odds update can refresh market/EV layer: KEPT"
+            echo "- Backend / D1 / NAR / Viewer / prediction logic: UNCHANGED"
+            echo "- Static-assets security boundary: PASS"
+            echo
+            echo "App behavior: one press on 'JRA公式データを取得・予想開始' now triggers race data first and current win odds second."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-jra-auto-link-v12 2>/dev/null
+          git worktree prune 2>/dev/null
+          exit 0
