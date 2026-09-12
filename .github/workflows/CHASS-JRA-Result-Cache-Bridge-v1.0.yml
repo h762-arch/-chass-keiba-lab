@@ -1,0 +1,386 @@
+name: CHASS JRA Result Cache Bridge v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+          - refresh_results
+      date:
+        description: "対象日。空欄なら日本時間の今日 (YYYY-MM-DD)"
+        required: false
+        default: ""
+        type: string
+      track:
+        description: "競馬場。ALLは開催場すべて"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - ALL
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "0は対象競馬場の全R"
+        required: true
+        default: "1"
+        type: choice
+        options: ["0","1","2","3","4","5","6","7","8","9","10","11","12"]
+  schedule:
+    - cron: "*/10 0-8 * * 6,0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-result-cache-bridge-v10
+  cancel-in-progress: false
+
+jobs:
+  install:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode != 'refresh_results' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      D1_DATABASE_NAME: chass-keiba-research-db
+      INPUT_DATE: ${{ inputs.date }}
+      INPUT_TRACK: ${{ inputs.track }}
+      INPUT_RACE: ${{ inputs.race }}
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test "$(git hash-object jra-result-fetch.mjs)" = "4b0734981424e34eb40e49c2dbf4a2ed7cb92e41"
+          test "$(git hash-object jra-official-cache.mjs)" = "10e3ec49fb8f994d3bd706e0894a19adecafd585"
+          test -f jra-result-client.js
+          test -f worker.js
+          test -f migrations/0007_jra_official_cache.sql
+          grep -Fq "if(u.pathname==='/api/jra/result')return handleJraResultRequest" worker.js
+          grep -Fq "JRA公式から結果取得・自動検証" jra-result-client.js
+          grep -Fq "CREATE TABLE IF NOT EXISTS jra_official_cache" migrations/0007_jra_official_cache.sql
+          test ! -e scripts/jra-official-result-refresh.mjs
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Build isolated result bridge candidate
+        shell: bash
+        env:
+          PATCHER_B64: CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAoKIyAxKSBBZGQgRDEgcmVzdWx0LWNhY2hlIHJlYWRlci4KY2FjaGVfZmlsZSA9IFBhdGgoImpyYS1vZmZpY2lhbC1jYWNoZS5tanMiKQpjYWNoZV9zcmMgPSBjYWNoZV9maWxlLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKQppZiAicmVhZEpyYU9mZmljaWFsUmVzdWx0Q2FjaGUiIGluIGNhY2hlX3NyYzoKICAgIHJhaXNlIFN5c3RlbUV4aXQoImpyYS1vZmZpY2lhbC1jYWNoZS5tanM6IHJlc3VsdCBjYWNoZSByZWFkZXIgYWxyZWFkeSBleGlzdHMiKQoKY2FjaGVfc3JjICs9IHIiIiIKCmNvbnN0IHJlc3VsdEtleSA9IChkYXRlLCB0cmFjaywgcmFjZSkgPT4gYHJlc3VsdHwke2RhdGV9fCR7dHJhY2t9fCR7TnVtYmVyKHJhY2UpfWA7CgpleHBvcnQgYXN5bmMgZnVuY3Rpb24gcmVhZEpyYU9mZmljaWFsUmVzdWx0Q2FjaGUoZW52LCB7IGRhdGUsIHRyYWNrLCByYWNlLCBub3dNcyA9IERhdGUubm93KCkgfSA9IHt9KSB7CiAgY29uc3QgREIgPSBlbnY/LkRCOwogIGlmICghREI/LnByZXBhcmUpIHJldHVybiBudWxsOwoKICBsZXQgcm93OwogIHRyeSB7CiAgICByb3cgPSBhd2FpdCBEQi5wcmVwYXJlKAogICAgICBgU0VMRUNUIHBheWxvYWRfanNvbixzb3VyY2VfdXJsLGZldGNoZWRfYXQsZXhwaXJlc19hdCxwYXJzZXJfdmVyc2lvbixjb250ZW50X2hhc2gKICAgICAgICAgRlJPTSBqcmFfb2ZmaWNpYWxfY2FjaGUKICAgICAgICBXSEVSRSBraW5kPSdyZXN1bHQnIEFORCBjYWNoZV9rZXk9P2AKICAgICkuYmluZChyZXN1bHRLZXkoZGF0ZSwgdHJhY2ssIHJhY2UpKS5maXJzdCgpOwogIH0gY2F0Y2ggKGVycm9yKSB7CiAgICBpZiAoL25vIHN1Y2ggdGFibGUvaS50ZXN0KFN0cmluZyhlcnJvcj8ubWVzc2FnZSB8fCBlcnJvcikpKSByZXR1cm4gbnVsbDsKICAgIHRocm93IGVycm9yOwogIH0KCiAgaWYgKCFyb3cpIHJldHVybiBudWxsOwoKICBjb25zdCBleHBpcmVzTXMgPSBEYXRlLnBhcnNlKHJvdy5leHBpcmVzX2F0IHx8ICcnKTsKICBpZiAoIU51bWJlci5pc0Zpbml0ZShleHBpcmVzTXMpIHx8IGV4cGlyZXNNcyA8PSBOdW1iZXIobm93TXMpKSByZXR1cm4gbnVsbDsKCiAgbGV0IGJvZHk7CiAgdHJ5IHsKICAgIGJvZHkgPSBKU09OLnBhcnNlKHJvdy5wYXlsb2FkX2pzb24gfHwgJycpOwogIH0gY2F0Y2ggewogICAgdGhyb3cgT2JqZWN0LmFzc2lnbihuZXcgRXJyb3IoJ0pSQV9SRVNVTFRfQ0FDSEVfQ09SUlVQVCcpLCB7IGNvZGU6ICdKUkFfUkVTVUxUX0NBQ0hFX0NPUlJVUFQnIH0pOwogIH0KCiAgaWYgKAogICAgIWJvZHk/Lm9rIHx8CiAgICBib2R5Py5vcmdhbml6YXRpb24gIT09ICdKUkEnIHx8CiAgICAhQXJyYXkuaXNBcnJheShib2R5Py5maW5pc2hPcmRlcikgfHwKICAgIGJvZHkuZmluaXNoT3JkZXIubGVuZ3RoIDwgMyB8fAogICAgIUFycmF5LmlzQXJyYXkoYm9keT8ucmVzdWx0cykgfHwKICAgIGJvZHkucmVzdWx0cy5sZW5ndGggPCAzIHx8CiAgICBOdW1iZXIoYm9keT8ucXVhbGl0eT8uZmluaXNoT3JkZXJDb3VudCkgPCAzCiAgKSB7CiAgICB0aHJvdyBPYmplY3QuYXNzaWduKG5ldyBFcnJvcignSlJBX1JFU1VMVF9DQUNIRV9DT1JSVVBUJyksIHsgY29kZTogJ0pSQV9SRVNVTFRfQ0FDSEVfQ09SUlVQVCcgfSk7CiAgfQoKICByZXR1cm4gewogICAgYm9keTogewogICAgICAuLi5ib2R5LAogICAgICBicmlkZ2VDYWNoZTogewogICAgICAgIHByb3ZpZGVyOiAnZ2l0aHViX2FjdGlvbnNfZDEnLAogICAgICAgIGtpbmQ6ICdyZXN1bHQnLAogICAgICAgIGZldGNoZWRBdDogcm93LmZldGNoZWRfYXQsCiAgICAgICAgZXhwaXJlc0F0OiByb3cuZXhwaXJlc19hdCwKICAgICAgICBjb250ZW50SGFzaDogcm93LmNvbnRlbnRfaGFzaCB8fCBudWxsCiAgICAgIH0KICAgIH0KICB9Owp9CiIiIgpjYWNoZV9maWxlLndyaXRlX3RleHQoY2FjaGVfc3JjLCBlbmNvZGluZz0idXRmLTgiKQoKIyAyKSBSb3V0ZSAvYXBpL2pyYS9yZXN1bHQgdGhyb3VnaCBEMSBmaXJzdC4KcmVzdWx0X2ZpbGUgPSBQYXRoKCJqcmEtcmVzdWx0LWZldGNoLm1qcyIpCnJlc3VsdF9zcmMgPSByZXN1bHRfZmlsZS5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKCmltcG9ydF9hbmNob3IgPSAiaW1wb3J0IHtyZXNvbHZlUmFjZUNhcmRVcmx9IGZyb20gJy4vanJhLXJhY2UtZmV0Y2gubWpzJztcbiIKaWYgcmVzdWx0X3NyYy5jb3VudChpbXBvcnRfYW5jaG9yKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgianJhLXJlc3VsdC1mZXRjaC5tanM6IGltcG9ydCBhbmNob3IgbWlzbWF0Y2giKQpyZXN1bHRfc3JjID0gcmVzdWx0X3NyYy5yZXBsYWNlKAogICAgaW1wb3J0X2FuY2hvciwKICAgIGltcG9ydF9hbmNob3IgKyAiaW1wb3J0IHtyZWFkSnJhT2ZmaWNpYWxSZXN1bHRDYWNoZX0gZnJvbSAnLi9qcmEtb2ZmaWNpYWwtY2FjaGUubWpzJztcbiIsCiAgICAxLAopCgpvbGRfYW5jaG9yID0gKAogICAgImlmKCEoZW52LkVOQUJMRV9KUkFfUkVTVUxUX0ZFVENIPT09dHJ1ZXx8ZW52LkVOQUJMRV9KUkFfUkVTVUxUX0ZFVENIPT09J3RydWUnKSkiCiAgICAicmV0dXJuIHNlbmQoe29rOmZhbHNlLGVycm9yOidKUkFfUkVTVUxUX0ZFVENIX0RJU0FCTEVEJ30sNTAzKTsiCiAgICAiY29uc3Qga2V5PWBKUkE6JHtkYXRlfToke3RyYWNrfToke3JhY2V9YCwiCikKbmV3X2FuY2hvciA9ICgKICAgICJpZighKGVudi5FTkFCTEVfSlJBX1JFU1VMVF9GRVRDSD09PXRydWV8fGVudi5FTkFCTEVfSlJBX1JFU1VMVF9GRVRDSD09PSd0cnVlJykpIgogICAgInJldHVybiBzZW5kKHtvazpmYWxzZSxlcnJvcjonSlJBX1JFU1VMVF9GRVRDSF9ESVNBQkxFRCd9LDUwMyk7IgogICAgImlmKGVudj8uREIpeyIKICAgICJ0cnl7Y29uc3QgY2FjaGVkPWF3YWl0IHJlYWRKcmFPZmZpY2lhbFJlc3VsdENhY2hlKGVudix7ZGF0ZSx0cmFjayxyYWNlLG5vd01zOm5vdygpfSk7IgogICAgImlmKGNhY2hlZClyZXR1cm4gc2VuZChjYWNoZWQuYm9keSwyMDAsJ0QxLUhJVCcpfSIKICAgICJjYXRjaChlcnJvcil7cmV0dXJuIHNlbmQoe29rOmZhbHNlLG9yZ2FuaXphdGlvbjonSlJBJyxkYXRlLHRyYWNrLHJhY2UsIgogICAgImVycm9yOmVycm9yPy5jb2RlfHwnSlJBX1JFU1VMVF9DQUNIRV9SRUFEX0ZBSUxFRCd9LDUwMywnRDEtRVJST1InKX0iCiAgICAiY29uc3QgYWxsb3dEaXJlY3Q9ZW52LkVOQUJMRV9KUkFfUkVTVUxUX0RJUkVDVF9GRVRDSD09PXRydWV8fCIKICAgICJlbnYuRU5BQkxFX0pSQV9SRVNVTFRfRElSRUNUX0ZFVENIPT09J3RydWUnOyIKICAgICJpZighYWxsb3dEaXJlY3QpcmV0dXJuIHNlbmQoe29rOmZhbHNlLG9yZ2FuaXphdGlvbjonSlJBJyxkYXRlLHRyYWNrLHJhY2UsIgogICAgImVycm9yOidKUkFfUkVTVUxUX0NBQ0hFX01JU1MnLGNhY2hlUHJvdmlkZXI6J2dpdGh1Yl9hY3Rpb25zX2QxJywiCiAgICAiaGludDonUnVuIEpSQSByZXN1bHQgY2FjaGUgcmVmcmVzaCd9LDUwMywnRDEtTUlTUycpfSIKICAgICJjb25zdCBrZXk9YEpSQToke2RhdGV9OiR7dHJhY2t9OiR7cmFjZX1gLCIKKQppZiByZXN1bHRfc3JjLmNvdW50KG9sZF9hbmNob3IpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJqcmEtcmVzdWx0LWZldGNoLm1qczogc2VydmljZSBhbmNob3IgbWlzbWF0Y2giKQpyZXN1bHRfc3JjID0gcmVzdWx0X3NyYy5yZXBsYWNlKG9sZF9hbmNob3IsIG5ld19hbmNob3IsIDEpCnJlc3VsdF9maWxlLndyaXRlX3RleHQocmVzdWx0X3NyYywgZW5jb2Rpbmc9InV0Zi04IikKCiMgMykgUnVubmVyLW9ubHkgb2ZmaWNpYWwgcmVzdWx0IHJlZnJlc2ggc2NyaXB0LgpzY3JpcHQgPSByIiIiaW1wb3J0IHsgY3JlYXRlSGFzaCB9IGZyb20gJ25vZGU6Y3J5cHRvJzsKaW1wb3J0IGZzIGZyb20gJ25vZGU6ZnMnOwppbXBvcnQgeyBjcmVhdGVKcmFNZWV0aW5nU2VydmljZSwgSlJBX1RSQUNLUyB9IGZyb20gJy4uL2pyYS1tZWV0aW5nLWRpc2NvdmVyeS5tanMnOwppbXBvcnQgeyBjcmVhdGVKcmFSYWNlU2VydmljZSB9IGZyb20gJy4uL2pyYS1yYWNlLWZldGNoLm1qcyc7CmltcG9ydCB7CiAgcGFyc2VKcmFSZXN1bHQsCiAgcmVzb2x2ZUpyYVJlc3VsdFVybCwKICBleHRyYWN0SnJhUG9zdFRpbWUKfSBmcm9tICcuLi9qcmEtcmVzdWx0LWZldGNoLm1qcyc7CgpmdW5jdGlvbiBhcmdzKCkgewogIGNvbnN0IG91dCA9IHt9OwogIGZvciAoY29uc3QgaXRlbSBvZiBwcm9jZXNzLmFyZ3Yuc2xpY2UoMikpIHsKICAgIGNvbnN0IG0gPSAvXi0tKFtePV0rKT0oLiopJC8uZXhlYyhpdGVtKTsKICAgIGlmIChtKSBvdXRbbVsxXV0gPSBtWzJdOwogIH0KICByZXR1cm4gb3V0Owp9CgpmdW5jdGlvbiB0b2t5b0RhdGUoKSB7CiAgY29uc3QgcGFydHMgPSBuZXcgSW50bC5EYXRlVGltZUZvcm1hdCgnZW4tQ0EnLCB7CiAgICB0aW1lWm9uZTogJ0FzaWEvVG9reW8nLAogICAgeWVhcjogJ251bWVyaWMnLAogICAgbW9udGg6ICcyLWRpZ2l0JywKICAgIGRheTogJzItZGlnaXQnCiAgfSkuZm9ybWF0VG9QYXJ0cyhuZXcgRGF0ZSgpKTsKICBjb25zdCBnZXQgPSB0eXBlID0+IHBhcnRzLmZpbmQoeCA9PiB4LnR5cGUgPT09IHR5cGUpPy52YWx1ZTsKICByZXR1cm4gYCR7Z2V0KCd5ZWFyJyl9LSR7Z2V0KCdtb250aCcpfS0ke2dldCgnZGF5Jyl9YDsKfQoKZnVuY3Rpb24gc3FsVGV4dCh2YWx1ZSkgewogIGlmICh2YWx1ZSA9PT0gbnVsbCB8fCB2YWx1ZSA9PT0gdW5kZWZpbmVkKSByZXR1cm4gJ05VTEwnOwogIHJldHVybiBgQ0FTVChYJyR7QnVmZmVyLmZyb20oU3RyaW5nKHZhbHVlKSwgJ3V0ZjgnKS50b1N0cmluZygnaGV4Jyl9JyBBUyBURVhUKWA7Cn0KCmFzeW5jIGZ1bmN0aW9uIHJlYWRPZmZpY2lhbFRleHQodXJsLCBtYXggPSAyXzA5N18xNTIpIHsKICBjb25zdCByZXNwb25zZSA9IGF3YWl0IGZldGNoKHVybCwgewogICAgbWV0aG9kOiAnR0VUJywKICAgIGhlYWRlcnM6IHsKICAgICAgJ0FjY2VwdCc6ICd0ZXh0L2h0bWwsYXBwbGljYXRpb24veGh0bWwreG1sLGFwcGxpY2F0aW9uL3htbDtxPTAuOSwqLyo7cT0wLjgnLAogICAgICAnQWNjZXB0LUxhbmd1YWdlJzogJ2phLGVuLVVTO3E9MC43LGVuO3E9MC41JywKICAgICAgJ0NhY2hlLUNvbnRyb2wnOiAnbm8tY2FjaGUnLAogICAgICAnUmVmZXJlcic6ICdodHRwczovL3d3dy5qcmEuZ28uanAvJwogICAgfSwKICAgIHJlZGlyZWN0OiAnZXJyb3InCiAgfSk7CgogIGlmICghcmVzcG9uc2Uub2spIHsKICAgIHRocm93IG5ldyBFcnJvcihyZXNwb25zZS5zdGF0dXMgPT09IDQwNCA/ICdKUkFfUkVTVUxUX1VOUFVCTElTSEVEJyA6ICdKUkFfSFRUUF9FUlJPUicpOwogIH0KCiAgY29uc3QgYnl0ZXMgPSBuZXcgVWludDhBcnJheShhd2FpdCByZXNwb25zZS5hcnJheUJ1ZmZlcigpKTsKICBpZiAoYnl0ZXMubGVuZ3RoID4gbWF4KSB0aHJvdyBuZXcgRXJyb3IoJ0pSQV9SRVNVTFRfUEFSU0VfRVJST1InKTsKCiAgY29uc3QgaGludCA9IG5ldyBUZXh0RGVjb2RlcigpLmRlY29kZShieXRlcy5zbGljZSgwLCA0MDk2KSk7CiAgY29uc3QgZW5jb2RpbmcgPSAvc2hpZnRbXy1dP2ppc3xzamlzL2kudGVzdCgKICAgIChyZXNwb25zZS5oZWFkZXJzLmdldCgnY29udGVudC10eXBlJykgfHwgJycpICsgJyAnICsgaGludAogICkgPyAnc2hpZnQtamlzJyA6ICd1dGYtOCc7CgogIHJldHVybiBuZXcgVGV4dERlY29kZXIoZW5jb2RpbmcpLmRlY29kZShieXRlcyk7Cn0KCmNvbnN0IGEgPSBhcmdzKCk7CmNvbnN0IGRhdGUgPSBhLmRhdGUgfHwgdG9reW9EYXRlKCk7CmNvbnN0IHRyYWNrSW5wdXQgPSBhLnRyYWNrIHx8ICdBTEwnOwpjb25zdCByYWNlSW5wdXQgPSBOdW1iZXIoYS5yYWNlIHx8IDApOwpjb25zdCBzdHJpY3QgPSBhLnN0cmljdCA9PT0gJ3RydWUnOwpjb25zdCBzcWxPdXQgPSBhLm91dCB8fCAnL3RtcC9qcmEtcmVzdWx0LWNhY2hlLnNxbCc7CmNvbnN0IHN1bW1hcnlPdXQgPSBhLnN1bW1hcnkgfHwgJy90bXAvanJhLXJlc3VsdC1jYWNoZS1zdW1tYXJ5Lmpzb24nOwoKaWYgKCEvXlxkezR9LVxkezJ9LVxkezJ9JC8udGVzdChkYXRlKSkgdGhyb3cgbmV3IEVycm9yKCdpbnZhbGlkIGRhdGUnKTsKaWYgKHRyYWNrSW5wdXQgIT09ICdBTEwnICYmICFKUkFfVFJBQ0tTLmluY2x1ZGVzKHRyYWNrSW5wdXQpKSB0aHJvdyBuZXcgRXJyb3IoJ2ludmFsaWQgdHJhY2snKTsKaWYgKCFOdW1iZXIuaXNJbnRlZ2VyKHJhY2VJbnB1dCkgfHwgcmFjZUlucHV0IDwgMCB8fCByYWNlSW5wdXQgPiAxMikgdGhyb3cgbmV3IEVycm9yKCdpbnZhbGlkIHJhY2UnKTsKCmNvbnN0IG1lZXRpbmdTZXJ2aWNlID0gY3JlYXRlSnJhTWVldGluZ1NlcnZpY2UoeyB0aW1lb3V0TXM6IDE1MDAwIH0pOwpjb25zdCByYWNlU2VydmljZSA9IGNyZWF0ZUpyYVJhY2VTZXJ2aWNlKHsgdGltZW91dE1zOiAyMDAwMCB9KTsKCmxldCB0YXJnZXRzID0gW107CgppZiAodHJhY2tJbnB1dCAhPT0gJ0FMTCcgJiYgcmFjZUlucHV0ID4gMCkgewogIHRhcmdldHMgPSBbeyB0cmFjazogdHJhY2tJbnB1dCwgcmFjZTogcmFjZUlucHV0IH1dOwp9IGVsc2UgewogIGNvbnN0IG1lZXRpbmdSZXF1ZXN0ID0gbmV3IFJlcXVlc3QoCiAgICBgaHR0cHM6Ly9ydW5uZXIuaW52YWxpZC9hcGkvanJhL21lZXRpbmc/ZGF0ZT0ke2VuY29kZVVSSUNvbXBvbmVudChkYXRlKX1gCiAgKTsKICBjb25zdCBtZWV0aW5nUmVzcG9uc2UgPSBhd2FpdCBtZWV0aW5nU2VydmljZSgKICAgIG1lZXRpbmdSZXF1ZXN0LAogICAgeyBFTkFCTEVfSlJBX01FRVRJTkdfRElTQ09WRVJZOiB0cnVlIH0KICApOwogIGNvbnN0IG1lZXRpbmdCb2R5ID0gYXdhaXQgbWVldGluZ1Jlc3BvbnNlLmpzb24oKTsKCiAgaWYgKCFtZWV0aW5nUmVzcG9uc2Uub2sgfHwgIW1lZXRpbmdCb2R5Py5vayB8fCAhQXJyYXkuaXNBcnJheShtZWV0aW5nQm9keS5tZWV0aW5ncykpIHsKICAgIHRocm93IG5ldyBFcnJvcihtZWV0aW5nQm9keT8uZXJyb3IgfHwgJ0pSQV9NRUVUSU5HX1VOQVZBSUxBQkxFJyk7CiAgfQoKICBmb3IgKGNvbnN0IG1lZXRpbmcgb2YgbWVldGluZ0JvZHkubWVldGluZ3MpIHsKICAgIGlmIChtZWV0aW5nLnN0YXR1cyAhPT0gJ21lZXRpbmcnKSBjb250aW51ZTsKICAgIGlmICh0cmFja0lucHV0ICE9PSAnQUxMJyAmJiBtZWV0aW5nLnRyYWNrICE9PSB0cmFja0lucHV0KSBjb250aW51ZTsKCiAgICBmb3IgKGNvbnN0IHJhY2Ugb2YgbWVldGluZy5yYWNlTnVtYmVycyB8fCBbXSkgewogICAgICBpZiAocmFjZUlucHV0ID4gMCAmJiBOdW1iZXIocmFjZSkgIT09IHJhY2VJbnB1dCkgY29udGludWU7CiAgICAgIHRhcmdldHMucHVzaCh7IHRyYWNrOiBtZWV0aW5nLnRyYWNrLCByYWNlOiBOdW1iZXIocmFjZSkgfSk7CiAgICB9CiAgfQp9Cgpjb25zdCBzcWwgPSBbXTsKY29uc3Qgc3VjY2Vzc2VzID0gW107CmNvbnN0IHBlbmRpbmcgPSBbXTsKY29uc3QgZmFpbHVyZXMgPSBbXTsKY29uc3Qgbm93TXMgPSBEYXRlLm5vdygpOwoKZm9yIChjb25zdCB0YXJnZXQgb2YgdGFyZ2V0cykgewogIHRyeSB7CiAgICBjb25zdCBxID0gbmV3IFVSTFNlYXJjaFBhcmFtcyh7CiAgICAgIGRhdGUsCiAgICAgIHRyYWNrOiB0YXJnZXQudHJhY2ssCiAgICAgIHJhY2U6IFN0cmluZyh0YXJnZXQucmFjZSkKICAgIH0pOwoKICAgIGNvbnN0IHJhY2VSZXNwb25zZSA9IGF3YWl0IHJhY2VTZXJ2aWNlKAogICAgICBuZXcgUmVxdWVzdChgaHR0cHM6Ly9ydW5uZXIuaW52YWxpZC9hcGkvanJhL3JhY2U/JHtxfWApLAogICAgICB7IEVOQUJMRV9KUkFfQVVUT19GRVRDSDogZmFsc2UgfQogICAgKTsKICAgIGNvbnN0IHJhY2VCb2R5ID0gYXdhaXQgcmFjZVJlc3BvbnNlLmpzb24oKTsKCiAgICBpZiAoCiAgICAgICFyYWNlUmVzcG9uc2Uub2sgfHwKICAgICAgIXJhY2VCb2R5Py5vayB8fAogICAgICAhcmFjZUJvZHk/LnNvdXJjZVVybCB8fAogICAgICByYWNlQm9keT8uZGF0YUNvbmZpZGVuY2UgIT09ICdoaWdoJwogICAgKSB7CiAgICAgIHRocm93IG5ldyBFcnJvcihyYWNlQm9keT8uZXJyb3IgfHwgJ0pSQV9SQUNFX1NPVVJDRV9VTkFWQUlMQUJMRScpOwogICAgfQoKICAgIGNvbnN0IGNhcmRIdG1sID0gYXdhaXQgcmVhZE9mZmljaWFsVGV4dChyYWNlQm9keS5zb3VyY2VVcmwpOwogICAgY29uc3QgcG9zdCA9IGV4dHJhY3RKcmFQb3N0VGltZShjYXJkSHRtbCk7CgogICAgaWYgKCFwb3N0LnBvc3RUaW1lKSB0aHJvdyBuZXcgRXJyb3IoJ0pSQV9SRVNVTFRfUEFSU0VfRVJST1InKTsKCiAgICBjb25zdCBwb3N0TXMgPSBEYXRlLnBhcnNlKGAke2RhdGV9VCR7cG9zdC5wb3N0VGltZX06MDArMDk6MDBgKTsKICAgIGlmIChOdW1iZXIuaXNGaW5pdGUocG9zdE1zKSAmJiBub3dNcyA8IHBvc3RNcyArIDQgKiA2MCAqIDEwMDApIHsKICAgICAgcGVuZGluZy5wdXNoKHsKICAgICAgICBkYXRlLAogICAgICAgIHRyYWNrOiB0YXJnZXQudHJhY2ssCiAgICAgICAgcmFjZTogdGFyZ2V0LnJhY2UsCiAgICAgICAgcmVhc29uOiAnSlJBX1JFU1VMVF9CRUZPUkVfUE9TVCcsCiAgICAgICAgcG9zdFRpbWU6IHBvc3QucG9zdFRpbWUKICAgICAgfSk7CiAgICAgIGNvbnRpbnVlOwogICAgfQoKICAgIGNvbnN0IHJlc3VsdFVybCA9IHJlc29sdmVKcmFSZXN1bHRVcmwoY2FyZEh0bWwsIHsKICAgICAgZGF0ZSwKICAgICAgdHJhY2s6IHRhcmdldC50cmFjaywKICAgICAgcmFjZTogdGFyZ2V0LnJhY2UKICAgIH0pOwoKICAgIGNvbnN0IHJlc3VsdEh0bWwgPSBhd2FpdCByZWFkT2ZmaWNpYWxUZXh0KHJlc3VsdFVybCk7CiAgICBjb25zdCBwYXJzZWQgPSBwYXJzZUpyYVJlc3VsdChyZXN1bHRIdG1sLCB7CiAgICAgIGRhdGUsCiAgICAgIHRyYWNrOiB0YXJnZXQudHJhY2ssCiAgICAgIHJhY2U6IHRhcmdldC5yYWNlCiAgICB9KTsKCiAgICBpZiAoCiAgICAgICFBcnJheS5pc0FycmF5KHBhcnNlZD8uZmluaXNoT3JkZXIpIHx8CiAgICAgIHBhcnNlZC5maW5pc2hPcmRlci5sZW5ndGggPCAzIHx8CiAgICAgICFBcnJheS5pc0FycmF5KHBhcnNlZD8ucmVzdWx0cykgfHwKICAgICAgcGFyc2VkLnJlc3VsdHMubGVuZ3RoIDwgMyB8fAogICAgICBOdW1iZXIocGFyc2VkPy5xdWFsaXR5Py5maW5pc2hPcmRlckNvdW50KSA8IDMKICAgICkgewogICAgICB0aHJvdyBuZXcgRXJyb3IoJ0pSQV9SRVNVTFRfUEFSU0VfRVJST1InKTsKICAgIH0KCiAgICBjb25zdCBhY3F1aXJlZEF0ID0gbmV3IERhdGUoKS50b0lTT1N0cmluZygpOwogICAgY29uc3QgZXhwaXJlc0F0ID0gbmV3IERhdGUoCiAgICAgIERhdGUucGFyc2UoYWNxdWlyZWRBdCkgKyAzNjUgKiAyNCAqIDYwICogNjAgKiAxMDAwCiAgICApLnRvSVNPU3RyaW5nKCk7CgogICAgY29uc3QgYm9keSA9IHsKICAgICAgb2s6IHRydWUsCiAgICAgIC4uLnBhcnNlZCwKICAgICAgc291cmNlVXJsOiByZXN1bHRVcmwsCiAgICAgIGFjcXVpcmVkQXQKICAgIH07CgogICAgY29uc3QgcGF5bG9hZCA9IEpTT04uc3RyaW5naWZ5KGJvZHkpOwogICAgY29uc3QgaGFzaCA9IGNyZWF0ZUhhc2goJ3NoYTI1NicpLnVwZGF0ZShwYXlsb2FkKS5kaWdlc3QoJ2hleCcpOwogICAgY29uc3Qga2V5ID0gYHJlc3VsdHwke2RhdGV9fCR7dGFyZ2V0LnRyYWNrfXwke3RhcmdldC5yYWNlfWA7CgogICAgc3FsLnB1c2goCiAgICAgIGBJTlNFUlQgSU5UTyBqcmFfb2ZmaWNpYWxfY2FjaGUgYCArCiAgICAgIGAoa2luZCxjYWNoZV9rZXksb3JnYW5pemF0aW9uLHJhY2VfZGF0ZSx0cmFjayxyYWNlX25vLHBheWxvYWRfanNvbixzb3VyY2VfdXJsLGZldGNoZWRfYXQsZXhwaXJlc19hdCxwYXJzZXJfdmVyc2lvbixjb250ZW50X2hhc2gsdXBkYXRlZF9hdCkgVkFMVUVTIChgICsKICAgICAgYCdyZXN1bHQnLCR7c3FsVGV4dChrZXkpfSwnSlJBJywke3NxbFRleHQoZGF0ZSl9LCR7c3FsVGV4dCh0YXJnZXQudHJhY2spfSwke051bWJlcih0YXJnZXQucmFjZSl9LGAgKwogICAgICBgJHtzcWxUZXh0KHBheWxvYWQpfSwke3NxbFRleHQocmVzdWx0VXJsKX0sJHtzcWxUZXh0KGFjcXVpcmVkQXQpfSwke3NxbFRleHQoZXhwaXJlc0F0KX0sYCArCiAgICAgIGAke3NxbFRleHQocGFyc2VkLnBhcnNlclZlcnNpb24gfHwgbnVsbCl9LCR7c3FsVGV4dChoYXNoKX0sJHtzcWxUZXh0KGFjcXVpcmVkQXQpfSkgYCArCiAgICAgIGBPTiBDT05GTElDVChjYWNoZV9rZXkpIERPIFVQREFURSBTRVQgYCArCiAgICAgIGBwYXlsb2FkX2pzb249ZXhjbHVkZWQucGF5bG9hZF9qc29uLHNvdXJjZV91cmw9ZXhjbHVkZWQuc291cmNlX3VybCxmZXRjaGVkX2F0PWV4Y2x1ZGVkLmZldGNoZWRfYXQsYCArCiAgICAgIGBleHBpcmVzX2F0PWV4Y2x1ZGVkLmV4cGlyZXNfYXQscGFyc2VyX3ZlcnNpb249ZXhjbHVkZWQucGFyc2VyX3ZlcnNpb24sYCArCiAgICAgIGBjb250ZW50X2hhc2g9ZXhjbHVkZWQuY29udGVudF9oYXNoLHVwZGF0ZWRfYXQ9ZXhjbHVkZWQudXBkYXRlZF9hdDtgCiAgICApOwoKICAgIHN1Y2Nlc3Nlcy5wdXNoKHsKICAgICAgZGF0ZSwKICAgICAgdHJhY2s6IHRhcmdldC50cmFjaywKICAgICAgcmFjZTogdGFyZ2V0LnJhY2UsCiAgICAgIHJlc3VsdFJvd3M6IE51bWJlcihwYXJzZWQucXVhbGl0eT8ucmVzdWx0Um93cyB8fCAwKSwKICAgICAgZmluaXNoT3JkZXI6IHBhcnNlZC5maW5pc2hPcmRlci5zbGljZSgwLCAzKSwKICAgICAgYWNxdWlyZWRBdCwKICAgICAgY29udGVudEhhc2g6IGhhc2gsCiAgICAgIHNvdXJjZVVybDogcmVzdWx0VXJsCiAgICB9KTsKICB9IGNhdGNoIChlcnJvcikgewogICAgY29uc3QgY29kZSA9IC9eSlJBXy8udGVzdChTdHJpbmcoZXJyb3I/Lm1lc3NhZ2UgfHwgJycpKQogICAgICA/IFN0cmluZyhlcnJvci5tZXNzYWdlKQogICAgICA6ICdKUkFfT0ZGSUNJQUxfVU5BVkFJTEFCTEUnOwoKICAgIGlmIChbJ0pSQV9SRVNVTFRfQkVGT1JFX1BPU1QnLCAnSlJBX1JFU1VMVF9VTlBVQkxJU0hFRCddLmluY2x1ZGVzKGNvZGUpKSB7CiAgICAgIHBlbmRpbmcucHVzaCh7CiAgICAgICAgZGF0ZSwKICAgICAgICB0cmFjazogdGFyZ2V0LnRyYWNrLAogICAgICAgIHJhY2U6IHRhcmdldC5yYWNlLAogICAgICAgIHJlYXNvbjogY29kZQogICAgICB9KTsKICAgIH0gZWxzZSB7CiAgICAgIGZhaWx1cmVzLnB1c2goewogICAgICAgIGRhdGUsCiAgICAgICAgdHJhY2s6IHRhcmdldC50cmFjaywKICAgICAgICByYWNlOiB0YXJnZXQucmFjZSwKICAgICAgICBlcnJvcjogY29kZQogICAgICB9KTsKICAgIH0KICB9CgogIGF3YWl0IG5ldyBQcm9taXNlKHJlc29sdmUgPT4gc2V0VGltZW91dChyZXNvbHZlLCAxODApKTsKfQoKZnMud3JpdGVGaWxlU3luYyhzcWxPdXQsIHNxbC5qb2luKCdcbicpICsgKHNxbC5sZW5ndGggPyAnXG4nIDogJycpKTsKCmNvbnN0IHN1bW1hcnkgPSB7CiAgb2s6IHRydWUsCiAgZGF0ZSwKICB0cmFja0lucHV0LAogIHJhY2VJbnB1dCwKICB0YXJnZXRDb3VudDogdGFyZ2V0cy5sZW5ndGgsCiAgc3VjY2Vzc0NvdW50OiBzdWNjZXNzZXMubGVuZ3RoLAogIHBlbmRpbmdDb3VudDogcGVuZGluZy5sZW5ndGgsCiAgZmFpbHVyZUNvdW50OiBmYWlsdXJlcy5sZW5ndGgsCiAgc3VjY2Vzc2VzLAogIHBlbmRpbmcsCiAgZmFpbHVyZXMsCiAgZ2VuZXJhdGVkQXQ6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQp9OwoKZnMud3JpdGVGaWxlU3luYyhzdW1tYXJ5T3V0LCBKU09OLnN0cmluZ2lmeShzdW1tYXJ5LCBudWxsLCAyKSk7CmNvbnNvbGUubG9nKEpTT04uc3RyaW5naWZ5KHN1bW1hcnksIG51bGwsIDIpKTsKCmlmIChzdHJpY3QgJiYgc3VjY2Vzc2VzLmxlbmd0aCAhPT0gMSkgcHJvY2Vzcy5leGl0Q29kZSA9IDI7CmVsc2UgaWYgKHRhcmdldHMubGVuZ3RoID4gMCAmJiBzdWNjZXNzZXMubGVuZ3RoID09PSAwICYmIGZhaWx1cmVzLmxlbmd0aCA+IDApIHByb2Nlc3MuZXhpdENvZGUgPSAxOwoiIiIKUGF0aCgic2NyaXB0cy9qcmEtb2ZmaWNpYWwtcmVzdWx0LXJlZnJlc2gubWpzIikud3JpdGVfdGV4dChzY3JpcHQsIGVuY29kaW5nPSJ1dGYtOCIpCgojIDQpIEQxIGJyaWRnZSB0ZXN0cy4KdGVzdF9zcmMgPSByIiIiaW1wb3J0IHRlc3QgZnJvbSAnbm9kZTp0ZXN0JzsKaW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgeyBjcmVhdGVKcmFSZXN1bHRTZXJ2aWNlIH0gZnJvbSAnLi4vanJhLXJlc3VsdC1mZXRjaC5tanMnOwoKZnVuY3Rpb24gZmFrZURiKHJvdykgewogIHJldHVybiB7CiAgICBwcmVwYXJlKCkgewogICAgICByZXR1cm4gewogICAgICAgIGJpbmQoKSB7CiAgICAgICAgICByZXR1cm4gewogICAgICAgICAgICBhc3luYyBmaXJzdCgpIHsKICAgICAgICAgICAgICByZXR1cm4gcm93OwogICAgICAgICAgICB9CiAgICAgICAgICB9OwogICAgICAgIH0KICAgICAgfTsKICAgIH0KICB9Owp9Cgpjb25zdCBjYWNoZWRCb2R5ID0gewogIG9rOiB0cnVlLAogIG9yZ2FuaXphdGlvbjogJ0pSQScsCiAgZGF0ZTogJzIwMjYtMDktMTInLAogIHRyYWNrOiAn5Lit5bGxJywKICByYWNlOiAxLAogIGZpbmlzaE9yZGVyOiBbMiwgOCwgOV0sCiAgYWN0dWFsVGltZXM6IHsgMjogJzE6MTAuOCcsIDg6ICcxOjExLjAnLCA5OiAnMToxMS4yJyB9LAogIHJlc3VsdHM6IFsKICAgIHsgcG9zaXRpb246IDEsIGhvcnNlTm86IDIsIGhvcnNlTmFtZTogJ0EnLCB0aW1lOiAnMToxMC44JywgYWN0dWFsVGltZTogJzE6MTAuOCcgfSwKICAgIHsgcG9zaXRpb246IDIsIGhvcnNlTm86IDgsIGhvcnNlTmFtZTogJ0InLCB0aW1lOiAnMToxMS4wJywgYWN0dWFsVGltZTogJzE6MTEuMCcgfSwKICAgIHsgcG9zaXRpb246IDMsIGhvcnNlTm86IDksIGhvcnNlTmFtZTogJ0MnLCB0aW1lOiAnMToxMS4yJywgYWN0dWFsVGltZTogJzE6MTEuMicgfQogIF0sCiAgcmVzdWx0TWV0YTogeyB3ZWF0aGVyOiAn5pm0JywgdHJhY2tDb25kaXRpb246ICfoia8nIH0sCiAgcXVhbGl0eTogeyByZXN1bHRSb3dzOiAzLCBmaW5pc2hPcmRlckNvdW50OiAzLCBjb21wbGV0ZTogdHJ1ZSB9LAogIHNvdXJjZTogJ0pSQV9PRkZJQ0lBTCcsCiAgcGFyc2VyVmVyc2lvbjogJ3Rlc3QnCn07Cgp0ZXN0KCdKUkEgcmVzdWx0IHNlcnZpY2UgcmV0dXJucyBmcmVzaCBEMSByZXN1bHQgd2l0aG91dCBvdXRib3VuZCBmZXRjaCcsIGFzeW5jICgpID0+IHsKICBjb25zdCBzZXJ2aWNlID0gY3JlYXRlSnJhUmVzdWx0U2VydmljZSh7CiAgICBmZXRjaEltcGw6IGFzeW5jICgpID0+IHsgdGhyb3cgbmV3IEVycm9yKCdvdXRib3VuZCBmZXRjaCBtdXN0IG5vdCBydW4nKTsgfSwKICAgIG5vdzogKCkgPT4gRGF0ZS5wYXJzZSgnMjAyNi0wOS0xMlQwNzowMDowMFonKQogIH0pOwoKICBjb25zdCByZXNwb25zZSA9IGF3YWl0IHNlcnZpY2UoCiAgICBuZXcgUmVxdWVzdCgnaHR0cHM6Ly9sb2NhbC5pbnZhbGlkL2FwaS9qcmEvcmVzdWx0P2RhdGU9MjAyNi0wOS0xMiZ0cmFjaz0lRTQlQjglQUQlRTUlQjElQjEmcmFjZT0xJyksCiAgICB7CiAgICAgIERCOiBmYWtlRGIoewogICAgICAgIHBheWxvYWRfanNvbjogSlNPTi5zdHJpbmdpZnkoY2FjaGVkQm9keSksCiAgICAgICAgc291cmNlX3VybDogJ2h0dHBzOi8vd3d3LmpyYS5nby5qcC8nLAogICAgICAgIGZldGNoZWRfYXQ6ICcyMDI2LTA5LTEyVDA2OjU5OjAwWicsCiAgICAgICAgZXhwaXJlc19hdDogJzIwMjctMDktMTJUMDY6NTk6MDBaJywKICAgICAgICBwYXJzZXJfdmVyc2lvbjogJ3Rlc3QnLAogICAgICAgIGNvbnRlbnRfaGFzaDogJ2FiYycKICAgICAgfSksCiAgICAgIEVOQUJMRV9KUkFfUkVTVUxUX0ZFVENIOiAndHJ1ZScsCiAgICAgIEVOQUJMRV9KUkFfUkVTVUxUX0RJUkVDVF9GRVRDSDogJ2ZhbHNlJwogICAgfQogICk7CgogIGFzc2VydC5lcXVhbChyZXNwb25zZS5zdGF0dXMsIDIwMCk7CiAgYXNzZXJ0LmVxdWFsKHJlc3BvbnNlLmhlYWRlcnMuZ2V0KCdYLUNIQVNTLUpSQS1SZXN1bHQtQ2FjaGUnKSwgJ0QxLUhJVCcpOwogIGNvbnN0IGJvZHkgPSBhd2FpdCByZXNwb25zZS5qc29uKCk7CiAgYXNzZXJ0LmVxdWFsKGJvZHkub2ssIHRydWUpOwogIGFzc2VydC5kZWVwRXF1YWwoYm9keS5maW5pc2hPcmRlciwgWzIsIDgsIDldKTsKICBhc3NlcnQuZXF1YWwoYm9keS5icmlkZ2VDYWNoZS5wcm92aWRlciwgJ2dpdGh1Yl9hY3Rpb25zX2QxJyk7CiAgYXNzZXJ0LmVxdWFsKGJvZHkuYnJpZGdlQ2FjaGUua2luZCwgJ3Jlc3VsdCcpOwp9KTsKCnRlc3QoJ0pSQSByZXN1bHQgc2VydmljZSBmYWlscyBjbG9zZWQgb24gRDEgbWlzcyB3aGVuIGRpcmVjdCBmZXRjaCBpcyBkaXNhYmxlZCcsIGFzeW5jICgpID0+IHsKICBjb25zdCBzZXJ2aWNlID0gY3JlYXRlSnJhUmVzdWx0U2VydmljZSh7CiAgICBmZXRjaEltcGw6IGFzeW5jICgpID0+IHsgdGhyb3cgbmV3IEVycm9yKCdvdXRib3VuZCBmZXRjaCBtdXN0IG5vdCBydW4nKTsgfSwKICAgIG5vdzogKCkgPT4gRGF0ZS5wYXJzZSgnMjAyNi0wOS0xMlQwNzowMDowMFonKQogIH0pOwoKICBjb25zdCByZXNwb25zZSA9IGF3YWl0IHNlcnZpY2UoCiAgICBuZXcgUmVxdWVzdCgnaHR0cHM6Ly9sb2NhbC5pbnZhbGlkL2FwaS9qcmEvcmVzdWx0P2RhdGU9MjAyNi0wOS0xMiZ0cmFjaz0lRTQlQjglQUQlRTUlQjElQjEmcmFjZT0xJyksCiAgICB7CiAgICAgIERCOiBmYWtlRGIobnVsbCksCiAgICAgIEVOQUJMRV9KUkFfUkVTVUxUX0ZFVENIOiAndHJ1ZScsCiAgICAgIEVOQUJMRV9KUkFfUkVTVUxUX0RJUkVDVF9GRVRDSDogJ2ZhbHNlJwogICAgfQogICk7CgogIGFzc2VydC5lcXVhbChyZXNwb25zZS5zdGF0dXMsIDUwMyk7CiAgYXNzZXJ0LmVxdWFsKHJlc3BvbnNlLmhlYWRlcnMuZ2V0KCdYLUNIQVNTLUpSQS1SZXN1bHQtQ2FjaGUnKSwgJ0QxLU1JU1MnKTsKICBhc3NlcnQuZXF1YWwoKGF3YWl0IHJlc3BvbnNlLmpzb24oKSkuZXJyb3IsICdKUkFfUkVTVUxUX0NBQ0hFX01JU1MnKTsKfSk7Cgp0ZXN0KCdKUkEgcmVzdWx0IHNlcnZpY2UgcHJlc2VydmVzIGRpcmVjdC1mZXRjaCBiZWhhdmlvciB3aGVuIG5vIERCIGlzIGJvdW5kJywgYXN5bmMgKCkgPT4gewogIGxldCBjYWxscyA9IDA7CiAgY29uc3Qgc2VydmljZSA9IGNyZWF0ZUpyYVJlc3VsdFNlcnZpY2UoewogICAgZmV0Y2hJbXBsOiBhc3luYyAoKSA9PiB7IGNhbGxzICs9IDE7IHRocm93IG5ldyBFcnJvcignb2ZmbGluZScpOyB9CiAgfSk7CgogIGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgc2VydmljZSgKICAgIG5ldyBSZXF1ZXN0KCdodHRwczovL2xvY2FsLmludmFsaWQvYXBpL2pyYS9yZXN1bHQ/ZGF0ZT0yMDI2LTA5LTEyJnRyYWNrPSVFNCVCOCVBRCVFNSVCMSVCMSZyYWNlPTEnKSwKICAgIHsgRU5BQkxFX0pSQV9SRVNVTFRfRkVUQ0g6ICd0cnVlJyB9CiAgKTsKCiAgYXNzZXJ0LmVxdWFsKHJlc3BvbnNlLnN0YXR1cywgNTAzKTsKICBhc3NlcnQuZXF1YWwoKGF3YWl0IHJlc3BvbnNlLmpzb24oKSkuZXJyb3IsICdKUkFfT0ZGSUNJQUxfVU5BVkFJTEFCTEUnKTsKICBhc3NlcnQuZXF1YWwoY2FsbHMsIDEpOwp9KTsKIiIiClBhdGgoInRlc3RzL2pyYS1yZXN1bHQtY2FjaGUtYnJpZGdlLnRlc3QubWpzIikud3JpdGVfdGV4dCh0ZXN0X3NyYywgZW5jb2Rpbmc9InV0Zi04IikK
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-jra-result-bridge-v10
+          git worktree add --detach /tmp/chass-jra-result-bridge-v10 HEAD
+          cd /tmp/chass-jra-result-bridge-v10
+          printf '%s' "$PATCHER_B64" | base64 -d > /tmp/chass-result-patcher.py
+          python3 /tmp/chass-result-patcher.py
+
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/result-bridge-actual.txt
+          printf '%s\n'             jra-official-cache.mjs             jra-result-fetch.mjs             scripts/jra-official-result-refresh.mjs             tests/jra-result-cache-bridge.test.mjs             | sort > /tmp/result-bridge-allowed.txt
+          diff -u /tmp/result-bridge-allowed.txt /tmp/result-bridge-actual.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-result-bridge-v10
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Result Bridge tests + full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-result-bridge-v10
+          node --check jra-official-cache.mjs
+          node --check jra-result-fetch.mjs
+          node --check scripts/jra-official-result-refresh.mjs
+          node --test tests/jra-result-cache-bridge.test.mjs
+          npm run check
+
+      - name: Validate live runner result acquisition
+        id: live
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-result-bridge-v10
+          node scripts/jra-official-result-refresh.mjs             --date="${INPUT_DATE:-}"             --track="${INPUT_TRACK:-中山}"             --race="${INPUT_RACE:-1}"             --strict=true             --out=/tmp/jra-result-validation.sql             --summary=/tmp/jra-result-validation.json
+
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-result-validation.json','utf8'));
+          console.log(`resolved_date=${x.date || ''}`);
+          console.log(`success_count=${Number(x.successCount || 0)}`);
+          const first = x.successes?.[0];
+          if (first) {
+            console.log(`track=${first.track}`);
+            console.log(`race=${first.race}`);
+            console.log(`result_rows=${Number(first.resultRows || 0)}`);
+          }
+          NODE
+          test -s /tmp/jra-result-validation.sql
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Result Cache Bridge v1.0 - VALIDATION SUCCESS"
+            echo
+            echo "- GitHub Runner -> JRA official result: PASS"
+            echo "- Result rows: ${{ steps.live.outputs.result_rows }}"
+            echo "- D1 result cache tests: PASS"
+            echo "- Full regression: PASS"
+            echo "- D1 write: NOT PERFORMED"
+            echo "- Production deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "${{ steps.base.outputs.sha }}" = "$(git rev-parse origin/main)"
+
+      - name: Apply Result Bridge source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/chass-jra-result-bridge-v10/jra-official-cache.mjs jra-official-cache.mjs
+          cp /tmp/chass-jra-result-bridge-v10/jra-result-fetch.mjs jra-result-fetch.mjs
+          cp /tmp/chass-jra-result-bridge-v10/scripts/jra-official-result-refresh.mjs scripts/jra-official-result-refresh.mjs
+          cp /tmp/chass-jra-result-bridge-v10/tests/jra-result-cache-bridge.test.mjs tests/jra-result-cache-bridge.test.mjs
+
+          git diff --quiet -- app.js jra-model.js jra-race-client.js jra-race-fetch.mjs             jra-odds-client.js jra-odds-fetch.mjs jra-result-client.js wrangler.jsonc             migrations/ viewer/ mcp/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jra-official-cache.mjs jra-result-fetch.mjs             scripts/jra-official-result-refresh.mjs tests/jra-result-cache-bridge.test.mjs
+          git commit -m "Route JRA results through GitHub Runner and D1 cache"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+          echo "done=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Result Bridge
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: npx -y wrangler@4 deploy
+
+      - name: Bootstrap validated result into D1
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/jra-result-validation.sql
+          ! grep -Eiq '^[[:space:]]*(BEGIN|COMMIT|SAVEPOINT|RELEASE)[[:space:];]' /tmp/jra-result-validation.sql
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --file=/tmp/jra-result-validation.sql
+
+      - name: Production result D1 smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        env:
+          DATE_VALUE: ${{ steps.live.outputs.resolved_date }}
+          TRACK_VALUE: ${{ steps.live.outputs.track }}
+          RACE_VALUE: ${{ steps.live.outputs.race }}
+        run: |
+          set -euo pipefail
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            [ "$DELAY" -eq 0 ] || sleep "$DELAY"
+            CODE="$(curl -sS --max-time 20 -D /tmp/result.headers               --get "$PRODUCTION_BASE_URL/api/jra/result"               --data-urlencode "date=$DATE_VALUE"               --data-urlencode "track=$TRACK_VALUE"               --data-urlencode "race=$RACE_VALUE"               -o /tmp/result.json -w '%{http_code}' || true)"
+            if [ "$CODE" = "200" ] && grep -qi '^x-chass-jra-result-cache: D1-HIT' /tmp/result.headers; then
+              node -e "const x=require('/tmp/result.json'); if(!x.ok||x.finishOrder?.length<3||x.bridgeCache?.kind!=='result') process.exit(1)"
+              PASS=1
+              break
+            fi
+          done
+          test "$PASS" = "1"
+
+          for path in "/.git/config" "/worker.js" "/wrangler.jsonc"             "/jra-result-fetch.mjs" "/scripts/jra-official-result-refresh.mjs"; do
+            CODE="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            [ "$CODE" != "200" ]
+          done
+
+      - name: Roll back on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.done == 'true' }}
+        shell: bash
+        run: |
+          set +e
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit "${{ steps.commit.outputs.sha }}"
+          git push origin HEAD:main
+          npx -y wrangler@4 deploy
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Result Cache Bridge v1.0 - PRODUCTION SUCCESS"
+            echo
+            echo "- GitHub Runner -> JRA Result -> D1: ENABLED"
+            echo "- /api/jra/result -> D1-HIT: PASS"
+            echo "- App auto-validation path: PRESERVED"
+            echo "- Worker result queue: PRESERVED"
+            echo "- Race/Odds Bridge: UNCHANGED"
+            echo "- Prediction/TIME model: UNCHANGED"
+            echo "- NAR/Viewer: UNCHANGED"
+            echo "- Scheduled refresh: every 10 minutes on Sat/Sun race hours"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-jra-result-bridge-v10 2>/dev/null
+          git worktree prune 2>/dev/null
+
+  refresh_results:
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'refresh_results') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_NAME: chass-keiba-research-db
+      INPUT_DATE: ${{ inputs.date }}
+      INPUT_TRACK: ${{ inputs.track }}
+      INPUT_RACE: ${{ inputs.race }}
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Detect installed bridge
+        id: installed
+        shell: bash
+        run: |
+          if [ -f scripts/jra-official-result-refresh.mjs ] && grep -Fq "readJraOfficialResultCache" jra-official-cache.mjs; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: ${{ steps.installed.outputs.value == 'true' }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Authenticate Cloudflare
+        if: ${{ steps.installed.outputs.value == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Fetch published results
+        if: ${{ steps.installed.outputs.value == 'true' }}
+        id: refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DATE_ARG=""
+            TRACK_ARG="ALL"
+            RACE_ARG="0"
+          else
+            DATE_ARG="${INPUT_DATE:-}"
+            TRACK_ARG="${INPUT_TRACK:-ALL}"
+            RACE_ARG="${INPUT_RACE:-0}"
+          fi
+
+          node scripts/jra-official-result-refresh.mjs             --date="$DATE_ARG" --track="$TRACK_ARG" --race="$RACE_ARG"             --strict=false --out=/tmp/result.sql --summary=/tmp/result-summary.json
+
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const x=require('/tmp/result-summary.json');
+          console.log(`date=${x.date || ''}`);
+          console.log(`targets=${Number(x.targetCount || 0)}`);
+          console.log(`success=${Number(x.successCount || 0)}`);
+          console.log(`pending=${Number(x.pendingCount || 0)}`);
+          console.log(`failures=${Number(x.failureCount || 0)}`);
+          NODE
+
+      - name: Write results to D1
+        if: ${{ steps.installed.outputs.value == 'true' && steps.refresh.outputs.success != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/result.sql
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" --remote --file=/tmp/result.sql
+
+      - name: Refresh summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Result Cache Refresh"
+            echo
+            echo "- Bridge installed: ${{ steps.installed.outputs.value || 'false' }}"
+            echo "- Date: ${{ steps.refresh.outputs.date || 'unresolved' }}"
+            echo "- Targets: ${{ steps.refresh.outputs.targets || '0' }}"
+            echo "- Published results cached: ${{ steps.refresh.outputs.success || '0' }}"
+            echo "- Before-post/unpublished: ${{ steps.refresh.outputs.pending || '0' }}"
+            echo "- Fetch/parse failures: ${{ steps.refresh.outputs.failures || '0' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
