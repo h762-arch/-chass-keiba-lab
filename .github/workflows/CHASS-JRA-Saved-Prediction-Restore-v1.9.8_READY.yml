@@ -1,0 +1,358 @@
+name: CHASS JRA Saved Prediction Restore v1.9.8
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "validate_only=検証のみ / apply_and_deploy=修正・main反映・本番デプロイ"
+        required: true
+        default: apply_and_deploy
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-saved-prediction-restore-v198
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_MODE: ${{ inputs.mode }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Validate v1.9.7 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app.js
+          test -f package.json
+          test -f wrangler.jsonc
+          grep -Fq "CHASS-JRA-RACE-STATE-ISOLATION-v1.9.7" app.js
+          grep -Fq "function restoreSavedRace" app.js
+          grep -Fq "function ensureJraRaceSelectionState" app.js
+          grep -Fq "function switchActiveRaceDraft" app.js
+          node --check app.js
+
+      - name: Patch exact saved JRA prediction restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp app.js /tmp/app.before-v198.js
+
+          cat > /tmp/patch-v198.py <<'PY'
+          from pathlib import Path
+          import re
+
+          path=Path("app.js")
+          src=path.read_text(encoding="utf-8")
+          marker="// CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8"
+
+          if marker not in src:
+              anchor="""function expectedJraRaceId(date,track,raceNo){
+            return raceId({raceDate:date,track,raceNo});
+          }
+          """
+              if anchor not in src:
+                  raise SystemExit("expectedJraRaceId anchor not found")
+
+              helper=r"""
+          // CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8
+          function exactSavedJraRace(draft){
+            const nextId=raceId(draft);
+            if(!nextId)return null;
+            const sources=[raceCache,store.get(KEY,{}),store.get(LEGACY_KEY,{})];
+            for(const source of sources){
+              const saved=source?.[nextId];
+              if(!saved?.predictionSnapshot)continue;
+              const recordIdentity=activeRaceIdentity(saved);
+              const predictionIdentity=snapshotIdentity(saved.predictionSnapshot,saved,'prediction');
+              if(recordIdentity.organization!=='JRA'||recordIdentity.raceId!==nextId)continue;
+              if(predictionIdentity.organization!=='JRA'||predictionIdentity.raceId!==nextId)continue;
+              return saved;
+            }
+            return null;
+          }
+
+          function activateJraSelectionState(draft,{renderNow=true}={}){
+            const normalized={
+              ...jraDraftFromSelection(),
+              ...cloneData(draft||{}),
+              raceType:'JRA',
+              category:'中央競馬'
+            };
+            const nextId=raceId(normalized);
+            if(!nextId)return false;
+            const active=activeRaceIdentity();
+            if(active.organization==='JRA'&&active.raceId===nextId)return false;
+
+            activeRaceGeneration++;
+            lastRaceFetchAudit=null;
+            predictionViewMode='original';
+            jraNormalizedDraft=null;
+
+            const saved=exactSavedJraRace(normalized);
+            if(saved){
+              const restored=restoreSavedRace(saved,{organization:'JRA',raceId:nextId});
+              const restoredIdentity=activeRaceIdentity(restored);
+              const predictionIdentity=restored?.predictionSnapshot
+                ? snapshotIdentity(restored.predictionSnapshot,restored,'prediction')
+                : {organization:'',raceId:''};
+
+              if(
+                restored?.predictionSnapshot &&
+                restoredIdentity.organization==='JRA' &&
+                restoredIdentity.raceId===nextId &&
+                predictionIdentity.organization==='JRA' &&
+                predictionIdentity.raceId===nextId
+              ){
+                state=restored;
+                state.race={...state.race,...cloneData(normalized),raceType:'JRA',category:'中央競馬'};
+                state.predictionSaved=state.predictionSaved??true;
+                saveCurrentRace(nextId);
+                if(renderNow)render();
+                if(typeof document!=='undefined'&&$('jraStatus')){
+                  $('jraStatus').textContent='保存済み予想を復元しました｜現在オッズは必要に応じて更新してください。';
+                }
+                return true;
+              }
+            }
+
+            state=emptyRaceState('JRA');
+            state.race={...state.race,...cloneData(normalized),raceType:'JRA',category:'中央競馬'};
+            clearValidationTransient(state);
+            renderRaceFetchDiagnostics(null);
+            if(renderNow)render();
+            if(typeof document!=='undefined'&&$('jraStatus')){
+              $('jraStatus').textContent='予想データ未読込｜JRA公式データを取得してください。';
+            }
+            return true;
+          }
+          """.strip()
+
+              src=src.replace(anchor,anchor+helper+"\n",1)
+
+              pat=re.compile(r"""function ensureJraRaceSelectionState\(\{renderNow=true\}=\{\}\)\{
+            if\(raceTypeOf\(state\)!=='JRA'\)return false;
+            const draft=jraDraftFromSelection\(\);
+            const nextId=raceId\(draft\);
+            if\(!nextId\)return false;
+            const active=activeRaceIdentity\(\);
+            if\(active\.organization==='JRA'&&active\.raceId===nextId\)return false;
+            beginActiveRaceTransition\('JRA',draft\);
+            if\(renderNow\)render\(\);
+            return true;
+          \}""")
+              repl="""function ensureJraRaceSelectionState({renderNow=true}={}){
+            if(raceTypeOf(state)!=='JRA')return false;
+            return activateJraSelectionState(jraDraftFromSelection(),{renderNow});
+          }"""
+              src,n=pat.subn(repl,src,count=1)
+              if n!=1:
+                  raise SystemExit(f"ensureJraRaceSelectionState replacement count={n}")
+
+              old="function switchActiveRaceDraft(next,mode){const before=activeRaceIdentity(),after={organization:mode,raceId:raceId(next)};if(before.organization===after.organization&&before.raceId===after.raceId)return false;beginActiveRaceTransition(mode,next);return true}"
+              new="function switchActiveRaceDraft(next,mode){const before=activeRaceIdentity(),after={organization:mode,raceId:raceId(next)};if(before.organization===after.organization&&before.raceId===after.raceId)return false;if(mode==='JRA')return activateJraSelectionState(next,{renderNow:false});beginActiveRaceTransition(mode,next);return true}"
+              if old not in src:
+                  raise SystemExit("switchActiveRaceDraft exact baseline not found")
+              src=src.replace(old,new,1)
+
+          required=[
+            marker,
+            "function exactSavedJraRace(draft)",
+            "function activateJraSelectionState(draft,{renderNow=true}={})",
+            "restoreSavedRace(saved,{organization:'JRA',raceId:nextId})",
+            "saveCurrentRace(nextId)",
+            "return activateJraSelectionState(jraDraftFromSelection(),{renderNow})",
+            "if(mode==='JRA')return activateJraSelectionState(next,{renderNow:false})",
+            "if(!same||!jraPayloadMatchesActive(data))return false;"
+          ]
+          missing=[x for x in required if x not in src]
+          if missing:
+              raise SystemExit("missing invariants: "+repr(missing))
+
+          m=re.search(r"function ensureJraRaceSelectionState\(\{renderNow=true\}=\{\}\)\{[\s\S]*?\n\}",src)
+          if not m:
+              raise SystemExit("ensureJraRaceSelectionState not found")
+          if "beginActiveRaceTransition('JRA',draft)" in m.group(0):
+              raise SystemExit("unconditional blank transition still present")
+
+          path.write_text(src,encoding="utf-8")
+          PY
+
+          python3 /tmp/patch-v198.py
+          node --check app.js
+          git diff -- app.js
+
+      - name: Add v1.9.8 regression guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tests/jra-saved-prediction-restore-v198.test.mjs <<'TEST'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app=fs.readFileSync(new URL('../app.js',import.meta.url),'utf8');
+
+          test('v1.9.8 exact saved prediction restore is installed',()=>{
+            assert.match(app,/CHASS-JRA-SAVED-PREDICTION-RESTORE-v1\.9\.8/);
+            assert.match(app,/function exactSavedJraRace\(draft\)/);
+            assert.match(app,/function activateJraSelectionState\(draft,\{renderNow=true\}=\{\}\)/);
+          });
+
+          test('saved prediction lookup is exact JRA race identity only',()=>{
+            const start=app.indexOf('function exactSavedJraRace');
+            const end=app.indexOf('\nfunction activateJraSelectionState',start);
+            assert.ok(start>=0&&end>start);
+            const body=app.slice(start,end);
+            assert.match(body,/source\?\.\[nextId\]/);
+            assert.match(body,/saved\?\.predictionSnapshot/);
+            assert.match(body,/recordIdentity\.organization!=='JRA'/);
+            assert.match(body,/recordIdentity\.raceId!==nextId/);
+            assert.match(body,/predictionIdentity\.organization!=='JRA'/);
+            assert.match(body,/predictionIdentity\.raceId!==nextId/);
+          });
+
+          test('restore is attempted before clean empty fallback',()=>{
+            const start=app.indexOf('function activateJraSelectionState');
+            const end=app.indexOf('\nfunction ensureJraRaceSelectionState',start);
+            assert.ok(start>=0&&end>start);
+            const body=app.slice(start,end);
+            const restore=body.indexOf("restoreSavedRace(saved,{organization:'JRA',raceId:nextId})");
+            const blank=body.indexOf("state=emptyRaceState('JRA')");
+            assert.ok(restore>=0&&blank>restore);
+            assert.match(body,/saveCurrentRace\(nextId\)/);
+          });
+
+          test('all JRA selection paths use restore-aware transition',()=>{
+            assert.match(app,/return activateJraSelectionState\(jraDraftFromSelection\(\),\{renderNow\}\)/);
+            assert.match(app,/if\(mode==='JRA'\)return activateJraSelectionState\(next,\{renderNow:false\}\)/);
+          });
+
+          test('v1.9.7 odds and result identity guards remain',()=>{
+            assert.match(app,/CHASS-JRA-RACE-STATE-ISOLATION-v1\.9\.7/);
+            assert.match(app,/if\(!same\|\|!jraPayloadMatchesActive\(data\)\)return false;/);
+            assert.match(app,/layerMatchesActive\(state,state\.predictionSnapshot,'prediction'\)/);
+          });
+          TEST
+
+          node --check tests/jra-saved-prediction-restore-v198.test.mjs
+          node --test tests/jra-saved-prediction-restore-v198.test.mjs
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          if [ -f mcp/package.json ]; then npm ci --prefix mcp; fi
+
+      - name: Full regression check
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Validate change scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              app.js|tests/jra-saved-prediction-restore-v198.test.mjs) ;;
+              *) echo "::error::Unexpected modified file: $f"; exit 21 ;;
+            esac
+          done <<< "$changed"
+
+      - name: Validation-only conclusion
+        if: ${{ inputs.mode == 'validate_only' }}
+        run: echo "v1.9.8 validation PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Commit v1.9.8 source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js tests/jra-saved-prediction-restore-v198.test.mjs
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore exact saved JRA prediction on race selection"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in 1 2 3 4 5; do
+            code="$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' "$PRODUCTION_BASE_URL/api/chass/v1/public/health" || true)"
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          node -e "const x=require('/tmp/health.json');if(x.ok!==true)process.exit(1)"
+
+          for i in 1 2 3 4 5; do
+            code="$(curl -sS --max-time 20 -o /tmp/prod-app.js -w '%{http_code}' "$PRODUCTION_BASE_URL/app.js?ts=$(date +%s)" || true)"
+            if [ "$code" = "200" ] && grep -Fq "CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8" /tmp/prod-app.js; then
+              break
+            fi
+            sleep 4
+          done
+          grep -Fq "CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8" /tmp/prod-app.js
+          grep -Fq "function exactSavedJraRace(draft)" /tmp/prod-app.js
+          grep -Fq "function activateJraSelectionState(draft,{renderNow=true}={})" /tmp/prod-app.js
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Saved Prediction Restore v1.9.8"
+            echo "- Mode: \`$INPUT_MODE\`"
+            echo "- v1.9.7 race-state isolation: PRESERVED"
+            echo "- Exact same-race saved prediction: RESTORE"
+            echo "- Wrong-race saved state: BLOCK"
+            echo "- No saved prediction: CLEAN EMPTY STATE"
+            echo "- NAR / D1 schema / odds rows: UNCHANGED"
+          } >> "$GITHUB_STEP_SUMMARY"
