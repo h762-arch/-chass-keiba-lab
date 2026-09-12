@@ -1,0 +1,346 @@
+name: CHASS JRA Cloudflare 1042 Diagnostic v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-cloudflare-1042-diagnostic-v3
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo "::error::CLOUDFLARE_API_TOKEN is not configured."
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          }
+          npx -y wrangler@4 whoami
+
+      - name: Build transport-only diagnostic Worker
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-jra-1042diag
+          mkdir -p /tmp/chass-jra-1042diag
+          cd /tmp/chass-jra-1042diag
+
+          NAME="chass-jra-1042diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+          cat > worker.mjs <<'EOF'
+          function safePrefix(text, max = 240) {
+            return String(text || '')
+              .replace(/[\r\n\t]+/g, ' ')
+              .replace(/\s+/g, ' ')
+              .slice(0, max);
+          }
+
+          async function probe(url, init = {}) {
+            const started = Date.now();
+            try {
+              const response = await fetch(url, {
+                ...init,
+                redirect: 'manual',
+                headers: {
+                  'user-agent': 'Mozilla/5.0 (compatible; CHASS-1042-Diagnostic/3.0)',
+                  'accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+                  'accept-language': 'ja,en;q=0.7',
+                  ...(init.headers || {})
+                }
+              });
+
+              let body = '';
+              try {
+                body = await response.text();
+              } catch (error) {
+                body = `BODY_READ_ERROR:${error?.message || error}`;
+              }
+
+              return {
+                ok: true,
+                status: response.status,
+                url,
+                method: init.method || 'GET',
+                location: response.headers.get('location'),
+                server: response.headers.get('server'),
+                cfRay: response.headers.get('cf-ray'),
+                contentType: response.headers.get('content-type'),
+                bodyPrefix: safePrefix(body),
+                elapsedMs: Date.now() - started
+              };
+            } catch (error) {
+              return {
+                ok: false,
+                url,
+                method: init.method || 'GET',
+                errorName: error?.name || 'Error',
+                errorMessage: String(error?.message || error),
+                elapsedMs: Date.now() - started
+              };
+            }
+          }
+
+          export default {
+            async fetch(request) {
+              const u = new URL(request.url);
+
+              if (u.pathname === '/__health') {
+                return Response.json({
+                  ok: true,
+                  worker: 'CHASS JRA Cloudflare 1042 Diagnostic v3'
+                });
+              }
+
+              if (u.pathname === '/self-probe') {
+                const target = new URL('/__health', request.url).toString();
+                return Response.json({
+                  probe: 'self',
+                  result: await probe(target)
+                });
+              }
+
+              if (u.pathname === '/cloudflare-probe') {
+                return Response.json({
+                  probe: 'cloudflare',
+                  result: await probe('https://www.cloudflare.com/')
+                });
+              }
+
+              if (u.pathname === '/jra-root-probe') {
+                return Response.json({
+                  probe: 'jra-root',
+                  result: await probe('https://www.jra.go.jp/')
+                });
+              }
+
+              if (u.pathname === '/jra-entry-get-probe') {
+                return Response.json({
+                  probe: 'jra-entry-get',
+                  result: await probe('https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3')
+                });
+              }
+
+              if (u.pathname === '/jra-entry-post-probe') {
+                const body = new URLSearchParams({
+                  cname: 'pw01dli00/F3'
+                }).toString();
+
+                return Response.json({
+                  probe: 'jra-entry-post',
+                  result: await probe(
+                    'https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3',
+                    {
+                      method: 'POST',
+                      headers: {
+                        'content-type': 'application/x-www-form-urlencoded',
+                        'referer': 'https://www.jra.go.jp/'
+                      },
+                      body
+                    }
+                  )
+                });
+              }
+
+              return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
+            }
+          };
+          EOF
+
+          cat > wrangler.jsonc <<EOF
+          {
+            "name": "$NAME",
+            "main": "worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "compatibility_flags": ["global_fetch_strictly_public"],
+            "workers_dev": true,
+            "preview_urls": false,
+            "observability": { "enabled": false }
+          }
+          EOF
+
+          node --check worker.mjs
+
+      - name: Deploy diagnostic Worker
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-1042diag
+
+          npx -y wrangler@4 deploy --config wrangler.jsonc 2>&1 | tee /tmp/chass-jra-1042diag-deploy.log
+
+          URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/chass-jra-1042diag-deploy.log | tail -n 1 || true)"
+          if [ -z "$URL" ]; then
+            echo "::error::Could not determine diagnostic workers.dev URL."
+            exit 1
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Diagnostic Worker: $URL"
+
+      - name: GitHub Runner control probes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "== Runner control: JRA root =="
+          curl -sS --max-time 20 -D /tmp/runner-jra-root.h -o /tmp/runner-jra-root.b \
+            -w 'HTTP=%{http_code}\n' \
+            'https://www.jra.go.jp/' || true
+          head -c 240 /tmp/runner-jra-root.b 2>/dev/null | tr '\n' ' ' || true
+          echo
+
+          echo "== Runner control: JRA F3 GET =="
+          curl -sS --max-time 20 -D /tmp/runner-jra-f3.h -o /tmp/runner-jra-f3.b \
+            -w 'HTTP=%{http_code}\n' \
+            'https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3' || true
+          head -c 240 /tmp/runner-jra-f3.b 2>/dev/null | tr '\n' ' ' || true
+          echo
+
+      - name: Cloudflare transport matrix
+        id: matrix
+        shell: bash
+        env:
+          DIAG_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          probe() {
+            local name="$1"
+            local path="$2"
+            local out="/tmp/${name}.body"
+            local code
+
+            code="$(curl -sS --max-time 30 -o "$out" -w '%{http_code}' "$DIAG_URL$path" || true)"
+
+            echo "===== $name ====="
+            echo "HTTP=$code"
+            cat "$out" 2>/dev/null || true
+            echo
+            echo
+
+            printf '%s' "$code" > "/tmp/${name}.code"
+          }
+
+          probe self_probe /self-probe
+          probe cloudflare_probe /cloudflare-probe
+          probe jra_root_probe /jra-root-probe
+          probe jra_entry_get_probe /jra-entry-get-probe
+          probe jra_entry_post_probe /jra-entry-post-probe
+
+          SELF_CODE="$(cat /tmp/self_probe.code)"
+          JRA_ROOT_CODE="$(cat /tmp/jra_root_probe.code)"
+          JRA_GET_CODE="$(cat /tmp/jra_entry_get_probe.code)"
+          JRA_POST_CODE="$(cat /tmp/jra_entry_post_probe.code)"
+
+          SELF_BODY="$(cat /tmp/self_probe.body 2>/dev/null || true)"
+          JRA_ROOT_BODY="$(cat /tmp/jra_root_probe.body 2>/dev/null || true)"
+          JRA_GET_BODY="$(cat /tmp/jra_entry_get_probe.body 2>/dev/null || true)"
+          JRA_POST_BODY="$(cat /tmp/jra_entry_post_probe.body 2>/dev/null || true)"
+
+          SELF_OK=false
+          JRA_ROOT_OK=false
+          JRA_GET_OK=false
+          JRA_POST_OK=false
+
+          if [ "$SELF_CODE" = "200" ] && grep -q '"probe":"self"' /tmp/self_probe.body 2>/dev/null; then
+            SELF_OK=true
+          fi
+          if [ "$JRA_ROOT_CODE" = "200" ] && grep -q '"probe":"jra-root"' /tmp/jra_root_probe.body 2>/dev/null; then
+            JRA_ROOT_OK=true
+          fi
+          if [ "$JRA_GET_CODE" = "200" ] && grep -q '"probe":"jra-entry-get"' /tmp/jra_entry_get_probe.body 2>/dev/null; then
+            JRA_GET_OK=true
+          fi
+          if [ "$JRA_POST_CODE" = "200" ] && grep -q '"probe":"jra-entry-post"' /tmp/jra_entry_post_probe.body 2>/dev/null; then
+            JRA_POST_OK=true
+          fi
+
+          echo "self_ok=$SELF_OK" >> "$GITHUB_OUTPUT"
+          echo "jra_root_ok=$JRA_ROOT_OK" >> "$GITHUB_OUTPUT"
+          echo "jra_get_ok=$JRA_GET_OK" >> "$GITHUB_OUTPUT"
+          echo "jra_post_ok=$JRA_POST_OK" >> "$GITHUB_OUTPUT"
+
+          if [ "$SELF_OK" = "false" ]; then
+            DIAG="STRICT_PUBLIC_FLAG_NOT_EFFECTIVE_ON_CANARY_PATH"
+          elif [ "$JRA_ROOT_OK" = "false" ]; then
+            DIAG="JRA_DOMAIN_BLOCKED_FROM_CLOUDFLARE_WORKER"
+          elif [ "$JRA_GET_OK" = "false" ]; then
+            DIAG="JRA_JRADB_ENTRY_BLOCKED_FROM_CLOUDFLARE_WORKER"
+          elif [ "$JRA_POST_OK" = "false" ]; then
+            DIAG="JRA_JRADB_POST_BLOCKED_FROM_CLOUDFLARE_WORKER"
+          else
+            DIAG="BASE_TRANSPORT_OK_SERVICE_FLOW_NEEDS_INSTRUMENTATION"
+          fi
+
+          echo "diagnosis=$DIAG" >> "$GITHUB_OUTPUT"
+          echo "Diagnosis: $DIAG"
+
+      - name: Diagnostic summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Cloudflare 1042 Diagnostic v3"
+            echo
+            echo "- Production Worker modified: NO"
+            echo "- Repository source modified: NO"
+            echo "- D1 modified: NO"
+            echo "- Diagnostic Worker only: YES"
+            echo "- Self-fetch with global_fetch_strictly_public: ${{ steps.matrix.outputs.self_ok }}"
+            echo "- JRA root probe: ${{ steps.matrix.outputs.jra_root_ok }}"
+            echo "- JRA JRADB GET probe: ${{ steps.matrix.outputs.jra_get_ok }}"
+            echo "- JRA JRADB POST probe: ${{ steps.matrix.outputs.jra_post_ok }}"
+            echo "- Diagnosis: ${{ steps.matrix.outputs.diagnosis }}"
+            echo
+            echo "This workflow is diagnostic-only. Do not use apply_and_deploy from older hotfix workflows."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete diagnostic Worker
+        if: always() && steps.build.outputs.name != ''
+        shell: bash
+        run: |
+          set +e
+
+          NAME="${{ steps.build.outputs.name }}"
+          HTTP="$(curl -sS --max-time 20 \
+            -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -o /tmp/diag-delete.json \
+            -w '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$NAME?force=true")"
+
+          echo "Diagnostic Worker delete HTTP: $HTTP"
+          cat /tmp/diag-delete.json 2>/dev/null || true
+
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "204" ] && [ "$HTTP" != "404" ]; then
+            echo "::warning::Diagnostic Worker cleanup returned HTTP $HTTP."
+          fi
+
+          exit 0
