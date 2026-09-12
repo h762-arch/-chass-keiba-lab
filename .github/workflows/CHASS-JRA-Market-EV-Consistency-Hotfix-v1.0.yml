@@ -1,0 +1,234 @@
+name: CHASS JRA Market EV Consistency Hotfix v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: true
+        default: "validate_only"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-market-ev-consistency-v10
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture baseline
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          test "$(git hash-object app.js)" = "d997b9847475b8270688f0807958c99b1a476a20"
+          grep -Fq "function applyMarketOdds" app.js
+          grep -Fq "function mergeExisting" app.js
+          grep -Fq "function migrateSnapshotRecord" app.js
+          grep -Fq "h.ev=o.ev" app.js
+          test ! -e tests/market-ev-consistency.test.mjs
+
+      - name: Build isolated candidate
+        shell: bash
+        env:
+          PATCHER_B64: CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAoKYXBwID0gUGF0aCgiYXBwLmpzIikKc3JjID0gYXBwLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKQoKIyBTYWZldHk6IGFwcGx5IGVhY2ggcGF0Y2ggZXhhY3RseSBvbmNlLgpoZWxwZXJfYW5jaG9yID0gImZ1bmN0aW9uIGFwcGx5VmFsdWVGbGFncyhob3JzZXMscmFjZT17fSl7cmV0dXJuIGV2YWx1YXRlTG9uZ3Nob3RzKGhvcnNlcyxyYWNlKX1cbmZ1bmN0aW9uIHRyYW5zZm9ybShyb290KXsiCmlmIHNyYy5jb3VudChoZWxwZXJfYW5jaG9yKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiYXBwLmpzIGhlbHBlciBhbmNob3IgbWlzbWF0Y2giKQoKaGVscGVyX2Jsb2NrID0gciIiImZ1bmN0aW9uIGFwcGx5VmFsdWVGbGFncyhob3JzZXMscmFjZT17fSl7cmV0dXJuIGV2YWx1YXRlTG9uZ3Nob3RzKGhvcnNlcyxyYWNlKX0KZnVuY3Rpb24gbWFya2V0UHJlZGljdGlvbkJhc2lzU2lnbmF0dXJlKGhvcnNlcz1bXSl7CiByZXR1cm4gSlNPTi5zdHJpbmdpZnkoKGhvcnNlc3x8W10pLmZpbHRlcihpc0VsaWdpYmxlSG9yc2UpLm1hcChoPT5bCiAgIE51bWJlcihoLmhvcnNlTm8pLG51bShoLndpbiksbnVtKGgucGxhY2UpLG51bShoLm92ZXJhbGwpLFN0cmluZyhoLnByZWRpY3RlZFRpbWV8fCcnKQogXSkuc29ydCgoYSxiKT0+YVswXS1iWzBdKSk7Cn0KZnVuY3Rpb24gcmVjb25jaWxlTWFya2V0RGVyaXZlZFZhbHVlcyhob3JzZXMscmFjZT17fSl7CiAoaG9yc2VzfHxbXSkuZm9yRWFjaChoPT57CiAgIGlmKCFpc0VsaWdpYmxlSG9yc2UoaCkpcmV0dXJuOwogICBjb25zdCBvPW51bShoLm9kZHMpLHc9bnVtKGgud2luKTsKICAgaWYobyE9bnVsbCYmdyE9bnVsbCl7CiAgICAgaC5ldj1OdW1iZXIoKG8qdykudG9GaXhlZCg0KSk7CiAgICAgaC5mYWlyPXc+MD9OdW1iZXIoKDEwMC93KS50b0ZpeGVkKDQpKTpudWxsOwogICB9ZWxzZXsKICAgICBoLmV2PW51bGw7CiAgICAgaC5mYWlyPW51bGw7CiAgIH0KIH0pOwogYWJpbGl0eU1hcmtzKGhvcnNlc3x8W10pOwogYXBwbHlWYWx1ZUZsYWdzKGhvcnNlc3x8W10scmFjZXx8e30pOwogcmV0dXJuIGhvcnNlczsKfQpmdW5jdGlvbiB0cmFuc2Zvcm0ocm9vdCl7IiIiCnNyYyA9IHNyYy5yZXBsYWNlKGhlbHBlcl9hbmNob3IsIGhlbHBlcl9ibG9jaywgMSkKCiMgMSkgT2RkcyB1bmNoYW5nZWQgYnV0IHByZWRpY3Rpb24gY2hhbmdlZDoKIyAgICBpbmNsdWRlIGEgcHJlZGljdGlvbi1iYXNpcyBzaWduYXR1cmUgc28gc3RhbGUgRVYvdmFsdWUvd2FybmluZyBmaWVsZHMgY2Fubm90IHN1cnZpdmUuCm9sZF9vZGRzX2hlYWRlciA9ICgKIiBjb25zdCBub3JtYWxpemVkPXZhbGlkLm1hcCh4PT4oe2hvcnNlTm86TnVtYmVyKHguaG9yc2VObyksb2Rkczp4Lm9kZHMscG9wdWxhcml0eTpwb3BNYXAuZ2V0KHguaG9yc2VObyl8fG51bGx9KSksc2lnbmF0dXJlPWxpc3Q9PkpTT04uc3RyaW5naWZ5KChsaXN0fHxbXSkubWFwKHg9PltOdW1iZXIoeC5ob3JzZU5vKSxudW0oeC5vZGRzKSxudW0oeC5wb3B1bGFyaXR5KV0pLnNvcnQoKGEsYik9PmFbMF0tYlswXSkpLHByZXZpb3VzPXN0YXRlLnZhbGlkYXRpb25Db21wbGV0ZWQ/c3RhdGUucmVzdWx0TWFya2V0U25hcHNob3Q/LmhvcnNlczpzdGF0ZS5tYXJrZXRTbmFwc2hvdD8uaG9yc2VzO1xuIgoiIHN0YXRlLm9kZHNMYXN0Q2hlY2tlZEF0PWFjcXVpcmVkQXR8fG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKTtzdGF0ZS5sYXN0T2Rkc0FwcGx5Q2hhbmdlZD1zaWduYXR1cmUocHJldmlvdXMpIT09c2lnbmF0dXJlKG5vcm1hbGl6ZWQpfHwoIXN0YXRlLnZhbGlkYXRpb25Db21wbGV0ZWQmJiFzdGF0ZS5tYXJrZXRTbmFwc2hvdD8ubWFya2V0RGF0YVNvdXJjZSk7IgopCm5ld19vZGRzX2hlYWRlciA9ICgKIiBjb25zdCBub3JtYWxpemVkPXZhbGlkLm1hcCh4PT4oe2hvcnNlTm86TnVtYmVyKHguaG9yc2VObyksb2Rkczp4Lm9kZHMscG9wdWxhcml0eTpwb3BNYXAuZ2V0KHguaG9yc2VObyl8fG51bGx9KSksc2lnbmF0dXJlPWxpc3Q9PkpTT04uc3RyaW5naWZ5KChsaXN0fHxbXSkubWFwKHg9PltOdW1iZXIoeC5ob3JzZU5vKSxudW0oeC5vZGRzKSxudW0oeC5wb3B1bGFyaXR5KV0pLnNvcnQoKGEsYik9PmFbMF0tYlswXSkpLHByZXZpb3VzPXN0YXRlLnZhbGlkYXRpb25Db21wbGV0ZWQ/c3RhdGUucmVzdWx0TWFya2V0U25hcHNob3Q/LmhvcnNlczpzdGF0ZS5tYXJrZXRTbmFwc2hvdD8uaG9yc2VzLGJhc2lzU2lnbmF0dXJlPW1hcmtldFByZWRpY3Rpb25CYXNpc1NpZ25hdHVyZShzdGF0ZS5ob3JzZXMpLHByZXZpb3VzQmFzaXNTaWduYXR1cmU9c3RhdGUudmFsaWRhdGlvbkNvbXBsZXRlZD9zdGF0ZS5yZXN1bHRNYXJrZXRTbmFwc2hvdD8ucHJlZGljdGlvbkJhc2lzU2lnbmF0dXJlOnN0YXRlLm1hcmtldFNuYXBzaG90Py5wcmVkaWN0aW9uQmFzaXNTaWduYXR1cmU7XG4iCiIgc3RhdGUub2Rkc0xhc3RDaGVja2VkQXQ9YWNxdWlyZWRBdHx8bmV3IERhdGUoKS50b0lTT1N0cmluZygpO3N0YXRlLmxhc3RPZGRzQXBwbHlDaGFuZ2VkPXNpZ25hdHVyZShwcmV2aW91cykhPT1zaWduYXR1cmUobm9ybWFsaXplZCl8fHByZXZpb3VzQmFzaXNTaWduYXR1cmUhPT1iYXNpc1NpZ25hdHVyZXx8KCFzdGF0ZS52YWxpZGF0aW9uQ29tcGxldGVkJiYhc3RhdGUubWFya2V0U25hcHNob3Q/Lm1hcmtldERhdGFTb3VyY2UpOyIKKQppZiBzcmMuY291bnQob2xkX29kZHNfaGVhZGVyKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiYXBwLmpzIG9kZHMgc2lnbmF0dXJlIGFuY2hvciBtaXNtYXRjaCIpCnNyYyA9IHNyYy5yZXBsYWNlKG9sZF9vZGRzX2hlYWRlciwgbmV3X29kZHNfaGVhZGVyLCAxKQoKIyAyKSBSZWNhbGN1bGF0ZSBhbGwgbWFya2V0LWRlcml2ZWQgZmllbGRzIGZyb20gdGhlIHNhbWUgY3VycmVudCB3aW4gcHJvYmFiaWxpdHkgKyBjdXJyZW50IG9kZHMuCm9sZF9hcHBseSA9ICgKIiBzdGF0ZS5ob3JzZXMuZm9yRWFjaChoPT57Y29uc3Qgaz1TdHJpbmcoaC5ob3JzZU5vKSxvPW1hcC5nZXQoayk7aWYobyE9bnVsbCl7aC5vZGRzPW87aC5wb3B1bGFyaXR5PXBvcE1hcC5nZXQoayl8fG51bGw7aC5ldj1vKmgud2luO2guZmFpcj1oLndpbj4wPzEwMC9oLndpbjpudWxsO31lbHNlIGlmKGlzRWxpZ2libGVIb3JzZShoKSl7aC5vZGRzPW51bGw7aC5wb3B1bGFyaXR5PW51bGw7aC5ldj1udWxsO2guZmFpcj1udWxsO2gudmFsdWVNYXJrPScnO2gud2FybmluZ01hcms9Jyc7fX0pO1xuIgoiIGFiaWxpdHlNYXJrcyhzdGF0ZS5ob3JzZXMpOyBhcHBseVZhbHVlRmxhZ3Moc3RhdGUuaG9yc2VzLHN0YXRlLnJhY2UpOyBzdGF0ZS5yYWNlLm9kZHNUeXBlPSflrp/jgqrjg4PjgronO3N0YXRlLnJhY2Uub2Rkc1NuYXBzaG90VHlwZT1zbmFwc2hvdFR5cGU7IHN0YXRlLnJhY2Uub2Rkc1VwZGF0ZWRBdD1zdGF0ZS5vZGRzTGFzdENoZWNrZWRBdDtzdGF0ZS5yYWNlLm9kZHNDaGFuZ2VkQXQ9c3RhdGUub2Rkc0xhc3RDaGVja2VkQXQ7IgopCm5ld19hcHBseSA9ICgKIiBzdGF0ZS5ob3JzZXMuZm9yRWFjaChoPT57Y29uc3Qgaz1TdHJpbmcoaC5ob3JzZU5vKSxvPW1hcC5nZXQoayk7aWYobyE9bnVsbCl7aC5vZGRzPW87aC5wb3B1bGFyaXR5PXBvcE1hcC5nZXQoayl8fG51bGw7fWVsc2UgaWYoaXNFbGlnaWJsZUhvcnNlKGgpKXtoLm9kZHM9bnVsbDtoLnBvcHVsYXJpdHk9bnVsbDt9fSk7XG4iCiIgcmVjb25jaWxlTWFya2V0RGVyaXZlZFZhbHVlcyhzdGF0ZS5ob3JzZXMsc3RhdGUucmFjZSk7IHN0YXRlLnJhY2Uub2Rkc1R5cGU9J+Wun+OCquODg+OCuic7c3RhdGUucmFjZS5vZGRzU25hcHNob3RUeXBlPXNuYXBzaG90VHlwZTsgc3RhdGUucmFjZS5vZGRzVXBkYXRlZEF0PXN0YXRlLm9kZHNMYXN0Q2hlY2tlZEF0O3N0YXRlLnJhY2Uub2Rkc0NoYW5nZWRBdD1zdGF0ZS5vZGRzTGFzdENoZWNrZWRBdDtzdGF0ZS5yYWNlLm1hcmtldERlcml2ZWRWZXJzaW9uPSdNRFYtMic7IgopCmlmIHNyYy5jb3VudChvbGRfYXBwbHkpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJhcHAuanMgbWFya2V0IGFwcGx5IGFuY2hvciBtaXNtYXRjaCIpCnNyYyA9IHNyYy5yZXBsYWNlKG9sZF9hcHBseSwgbmV3X2FwcGx5LCAxKQoKIyAzKSBQZXJzaXN0IHRoZSBiYXNpcyBzaWduYXR1cmUgdG9nZXRoZXIgd2l0aCB0aGUgbWFya2V0IHNuYXBzaG90LgpvbGRfc25hcHNob3QgPSAiIGlmKCFzdGF0ZS52YWxpZGF0aW9uQ29tcGxldGVkKXN0YXRlLm1hcmtldFNuYXBzaG90PXtzY2hlbWFWZXJzaW9uOjIsbW9kZWxWZXJzaW9uOkFQUF9WRVJTSU9OLGFjcXVpcmVkQXQ6c3RhdGUucmFjZS5vZGRzVXBkYXRlZEF0LGNyZWF0ZWRBdDpzdGF0ZS5yYWNlLm9kZHNVcGRhdGVkQXQsb2Rkc1NuYXBzaG90VHlwZTpzbmFwc2hvdFR5cGUsbWFya2V0RGF0YVNvdXJjZSxtYXJrZXREYXRhQXZhaWxhYmxlOm9kZHNIb3JzZUNvdW50PjAsb2Rkc0hvcnNlQ291bnQsdG90YWxIb3JzZUNvdW50LG9kZHNDb3ZlcmFnZSxldlJhbmtTdGF0dXMsaG9yc2VzOnN0YXRlLmhvcnNlcy5tYXAobWFya2V0SG9yc2UpfTsiCm5ld19zbmFwc2hvdCA9ICIgaWYoIXN0YXRlLnZhbGlkYXRpb25Db21wbGV0ZWQpc3RhdGUubWFya2V0U25hcHNob3Q9e3NjaGVtYVZlcnNpb246Mixtb2RlbFZlcnNpb246QVBQX1ZFUlNJT04sYWNxdWlyZWRBdDpzdGF0ZS5yYWNlLm9kZHNVcGRhdGVkQXQsY3JlYXRlZEF0OnN0YXRlLnJhY2Uub2Rkc1VwZGF0ZWRBdCxvZGRzU25hcHNob3RUeXBlOnNuYXBzaG90VHlwZSxtYXJrZXREYXRhU291cmNlLG1hcmtldERhdGFBdmFpbGFibGU6b2Rkc0hvcnNlQ291bnQ+MCxvZGRzSG9yc2VDb3VudCx0b3RhbEhvcnNlQ291bnQsb2Rkc0NvdmVyYWdlLGV2UmFua1N0YXR1cyxtYXJrZXREZXJpdmVkVmVyc2lvbjonTURWLTInLHByZWRpY3Rpb25CYXNpc1NpZ25hdHVyZTpiYXNpc1NpZ25hdHVyZSxob3JzZXM6c3RhdGUuaG9yc2VzLm1hcChtYXJrZXRIb3JzZSl9OyIKaWYgc3JjLmNvdW50KG9sZF9zbmFwc2hvdCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoImFwcC5qcyBtYXJrZXQgc25hcHNob3QgYW5jaG9yIG1pc21hdGNoIikKc3JjID0gc3JjLnJlcGxhY2Uob2xkX3NuYXBzaG90LCBuZXdfc25hcHNob3QsIDEpCgojIDQpIFdoZW4gYW4gYWN0aXZlL3VudmFsaWRhdGVkIHJhY2UgaXMgcmVsb2FkZWQsIG5ldmVyIGNvcHkgb2xkIEVWL/Cfko4v4pqg77iPIHZhbHVlcy4Kb2xkX21lcmdlID0gKAoiIGlmKGV4aXN0aW5nLnJhY2U/Lm9kZHNUeXBlPT09J+Wun+OCquODg+OCuicpe1xuIgoiICAgbmV4dC5yYWNlLm9kZHNUeXBlPSflrp/jgqrjg4PjgronOyBuZXh0LnJhY2Uub2Rkc1VwZGF0ZWRBdD1leGlzdGluZy5yYWNlLm9kZHNVcGRhdGVkQXQ7XG4iCiIgICBjb25zdCBvbGRNYXA9bmV3IE1hcCgoZXhpc3RpbmcuaG9yc2VzfHxbXSkubWFwKGg9PltTdHJpbmcoaC5ob3JzZU5vKSxoXSkpO1xuIgoiICAgbmV4dC5ob3JzZXMuZm9yRWFjaChoPT57Y29uc3Qgbz1vbGRNYXAuZ2V0KFN0cmluZyhoLmhvcnNlTm8pKTtpZihvPy5vZGRzIT1udWxsKXtoLm9kZHM9by5vZGRzO2gucG9wdWxhcml0eT1vLnBvcHVsYXJpdHk7aC5ldj1vLmV2O2guZmFpcj1vLmZhaXI7aC52YWx1ZU1hcms9by52YWx1ZU1hcmt8fCcnO2gud2FybmluZ01hcms9by53YXJuaW5nTWFya3x8Jyc7fX0pO1xuIgoiIH1cbiIKKQpuZXdfbWVyZ2UgPSAoCiIgaWYoZXhpc3RpbmcucmFjZT8ub2Rkc1R5cGU9PT0n5a6f44Kq44OD44K6Jyl7XG4iCiIgICBuZXh0LnJhY2Uub2Rkc1R5cGU9J+Wun+OCquODg+OCuic7IG5leHQucmFjZS5vZGRzVXBkYXRlZEF0PWV4aXN0aW5nLnJhY2Uub2Rkc1VwZGF0ZWRBdDtcbiIKIiAgIGNvbnN0IG9sZE1hcD1uZXcgTWFwKChleGlzdGluZy5ob3JzZXN8fFtdKS5tYXAoaD0+W1N0cmluZyhoLmhvcnNlTm8pLGhdKSk7XG4iCiIgICBuZXh0LmhvcnNlcy5mb3JFYWNoKGg9Pntjb25zdCBvPW9sZE1hcC5nZXQoU3RyaW5nKGguaG9yc2VObykpO2lmKG8/Lm9kZHMhPW51bGwpe2gub2Rkcz1vLm9kZHM7aC5wb3B1bGFyaXR5PW8ucG9wdWxhcml0eTt9fSk7XG4iCiIgICBpZighbG9ja2VkKXtcbiIKIiAgICAgcmVjb25jaWxlTWFya2V0RGVyaXZlZFZhbHVlcyhuZXh0LmhvcnNlcyxuZXh0LnJhY2UpO1xuIgoiICAgICBuZXh0LnJhY2UubWFya2V0RGVyaXZlZFZlcnNpb249J01EVi0yJztcbiIKIiAgICAgbmV4dC5tYXJrZXRTbmFwc2hvdD17Li4uKG5leHQubWFya2V0U25hcHNob3R8fHt9KSxzY2hlbWFWZXJzaW9uOjIsbW9kZWxWZXJzaW9uOkFQUF9WRVJTSU9OLGFjcXVpcmVkQXQ6ZXhpc3RpbmcucmFjZS5vZGRzVXBkYXRlZEF0fHxuZXh0Lm1hcmtldFNuYXBzaG90Py5hY3F1aXJlZEF0fHxuZXcgRGF0ZSgpLnRvSVNPU3RyaW5nKCksbWFya2V0RGVyaXZlZFZlcnNpb246J01EVi0yJyxwcmVkaWN0aW9uQmFzaXNTaWduYXR1cmU6bWFya2V0UHJlZGljdGlvbkJhc2lzU2lnbmF0dXJlKG5leHQuaG9yc2VzKSxob3JzZXM6bmV4dC5ob3JzZXMubWFwKG1hcmtldEhvcnNlKX07XG4iCiIgICB9XG4iCiIgfVxuIgopCmlmIHNyYy5jb3VudChvbGRfbWVyZ2UpICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJhcHAuanMgbWVyZ2VFeGlzdGluZyBhbmNob3IgbWlzbWF0Y2giKQpzcmMgPSBzcmMucmVwbGFjZShvbGRfbWVyZ2UsIG5ld19tZXJnZSwgMSkKCiMgNSkgUmVwYWlyIHN0b3JlZCBBQ1RJVkUgcmVjb3JkcyBkdXJpbmcgbWlncmF0aW9uLCBidXQgTkVWRVIgcmV3cml0ZSB2YWxpZGF0ZWQvaGlzdG9yeSByZWNvcmRzLgpvbGRfbWlncmF0ZV90YWlsID0gKAoiIHIubW9kZWxWZXJzaW9uPXIubW9kZWxWZXJzaW9ufHxyLnByZWRpY3Rpb25TbmFwc2hvdD8ubW9kZWxWZXJzaW9ufHwnbGVnYWN5LXVua25vd24nO3IucHJlZGljdGlvbkNyZWF0ZWRBdD1yLnByZWRpY3Rpb25DcmVhdGVkQXR8fHIucHJlZGljdGlvblNuYXBzaG90Py5jcmVhdGVkQXR8fHIucHJlZGljdGlvblNuYXBzaG90Py5nZW5lcmF0ZWRBdHx8bnVsbDtyLnJlc3VsdEFjcXVpcmVkQXQ9ci5yZXN1bHRBY3F1aXJlZEF0fHxyLnJlc3VsdFNuYXBzaG90Py5mZXRjaGVkQXR8fHIucmVzdWx0RmV0Y2hlZEF0fHxudWxsO3IudXBkYXRlZEF0PXIudXBkYXRlZEF0fHxub3c7ci5zbmFwc2hvdFNjaGVtYVZlcnNpb249MjtcbiIKIiByZXR1cm4gY2hhbmdlZDtcbiIKIn0iCikKbmV3X21pZ3JhdGVfdGFpbCA9ICgKIiBjb25zdCBsb2NrZWRNYXJrZXRIaXN0b3J5PSEhKHIudmFsaWRhdGlvbkNvbXBsZXRlZHx8ci52YWxpZGF0ZWQmJnIucmVzdWx0Py5maW5pc2hPcmRlcj8ubGVuZ3RoPj0zKTtcbiIKIiBpZighbG9ja2VkTWFya2V0SGlzdG9yeSYmci5yYWNlPy5vZGRzVHlwZT09PSflrp/jgqrjg4PjgronJiZob3JzZXMubGVuZ3RoKXtcbiIKIiAgIGNvbnN0IGJlZm9yZT1KU09OLnN0cmluZ2lmeShob3JzZXMubWFwKGg9PltOdW1iZXIoaC5ob3JzZU5vKSxudW0oaC5ldiksaC52YWx1ZU1hcmt8fCcnLGgud2FybmluZ01hcmt8fCcnXSkpO1xuIgoiICAgcmVjb25jaWxlTWFya2V0RGVyaXZlZFZhbHVlcyhob3JzZXMsci5yYWNlfHx7fSk7XG4iCiIgICBjb25zdCBhZnRlcj1KU09OLnN0cmluZ2lmeShob3JzZXMubWFwKGg9PltOdW1iZXIoaC5ob3JzZU5vKSxudW0oaC5ldiksaC52YWx1ZU1hcmt8fCcnLGgud2FybmluZ01hcmt8fCcnXSkpO1xuIgoiICAgci5yYWNlLm1hcmtldERlcml2ZWRWZXJzaW9uPSdNRFYtMic7XG4iCiIgICByLm1hcmtldFNuYXBzaG90PXsuLi4oci5tYXJrZXRTbmFwc2hvdHx8e30pLHNjaGVtYVZlcnNpb246Mixtb2RlbFZlcnNpb246ci5tb2RlbFZlcnNpb258fEFQUF9WRVJTSU9OLG1hcmtldERlcml2ZWRWZXJzaW9uOidNRFYtMicscHJlZGljdGlvbkJhc2lzU2lnbmF0dXJlOm1hcmtldFByZWRpY3Rpb25CYXNpc1NpZ25hdHVyZShob3JzZXMpLGhvcnNlczpob3JzZXMubWFwKG1hcmtldEhvcnNlKX07XG4iCiIgICBpZihiZWZvcmUhPT1hZnRlcnx8ci5tYXJrZXRTbmFwc2hvdD8ubWFya2V0RGVyaXZlZFZlcnNpb24hPT0nTURWLTInKWNoYW5nZWQ9dHJ1ZTtcbiIKIiB9XG4iCiIgci5tb2RlbFZlcnNpb249ci5tb2RlbFZlcnNpb258fHIucHJlZGljdGlvblNuYXBzaG90Py5tb2RlbFZlcnNpb258fCdsZWdhY3ktdW5rbm93bic7ci5wcmVkaWN0aW9uQ3JlYXRlZEF0PXIucHJlZGljdGlvbkNyZWF0ZWRBdHx8ci5wcmVkaWN0aW9uU25hcHNob3Q/LmNyZWF0ZWRBdHx8ci5wcmVkaWN0aW9uU25hcHNob3Q/LmdlbmVyYXRlZEF0fHxudWxsO3IucmVzdWx0QWNxdWlyZWRBdD1yLnJlc3VsdEFjcXVpcmVkQXR8fHIucmVzdWx0U25hcHNob3Q/LmZldGNoZWRBdHx8ci5yZXN1bHRGZXRjaGVkQXR8fG51bGw7ci51cGRhdGVkQXQ9ci51cGRhdGVkQXR8fG5vdztyLnNuYXBzaG90U2NoZW1hVmVyc2lvbj0yO1xuIgoiIHJldHVybiBjaGFuZ2VkO1xuIgoifSIKKQppZiBzcmMuY291bnQob2xkX21pZ3JhdGVfdGFpbCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoImFwcC5qcyBtaWdyYXRlIHRhaWwgYW5jaG9yIG1pc21hdGNoIikKc3JjID0gc3JjLnJlcGxhY2Uob2xkX21pZ3JhdGVfdGFpbCwgbmV3X21pZ3JhdGVfdGFpbCwgMSkKCiMgR3VhcmQgYWdhaW5zdCB0aGUgc3BlY2lmaWMgc3RhbGUtY29weSByZWdyZXNzaW9uLgppZiAiaC5ldj1vLmV2IiBpbiBzcmMgb3IgImgudmFsdWVNYXJrPW8udmFsdWVNYXJrIiBpbiBzcmMgb3IgImgud2FybmluZ01hcms9by53YXJuaW5nTWFyayIgaW4gc3JjOgogICAgcmFpc2UgU3lzdGVtRXhpdCgic3RhbGUgbWFya2V0LWRlcml2ZWQgZmllbGQgY29weSBzdGlsbCBwcmVzZW50IikKCmFwcC53cml0ZV90ZXh0KHNyYywgZW5jb2Rpbmc9InV0Zi04IikKCnRlc3QgPSByIiIiaW1wb3J0IHRlc3QgZnJvbSAnbm9kZTp0ZXN0JzsKaW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgZnMgZnJvbSAnbm9kZTpmcyc7Cgpjb25zdCBzcmMgPSBmcy5yZWFkRmlsZVN5bmMobmV3IFVSTCgnLi4vYXBwLmpzJywgaW1wb3J0Lm1ldGEudXJsKSwgJ3V0ZjgnKTsKCnRlc3QoJ2FjdGl2ZSBtYXJrZXQgcmVsb2FkIGRvZXMgbm90IGNvcHkgc3RhbGUgRVYvdmFsdWUvd2FybmluZyBmaWVsZHMnLCAoKSA9PiB7CiAgYXNzZXJ0LmRvZXNOb3RNYXRjaChzcmMsIC9oXC5ldj1vXC5ldi8pOwogIGFzc2VydC5kb2VzTm90TWF0Y2goc3JjLCAvaFwudmFsdWVNYXJrPW9cLnZhbHVlTWFyay8pOwogIGFzc2VydC5kb2VzTm90TWF0Y2goc3JjLCAvaFwud2FybmluZ01hcms9b1wud2FybmluZ01hcmsvKTsKICBhc3NlcnQubWF0Y2goc3JjLCAvcmVjb25jaWxlTWFya2V0RGVyaXZlZFZhbHVlc1wobmV4dFwuaG9yc2VzLG5leHRcLnJhY2VcKS8pOwp9KTsKCnRlc3QoJ29kZHMgY2FjaGUgaW52YWxpZGF0ZXMgd2hlbiBwcmVkaWN0aW9uIGJhc2lzIGNoYW5nZXMnLCAoKSA9PiB7CiAgYXNzZXJ0Lm1hdGNoKHNyYywgL3ByZXZpb3VzQmFzaXNTaWduYXR1cmUhPT1iYXNpc1NpZ25hdHVyZS8pOwogIGFzc2VydC5tYXRjaChzcmMsIC9wcmVkaWN0aW9uQmFzaXNTaWduYXR1cmU6YmFzaXNTaWduYXR1cmUvKTsKICBhc3NlcnQubWF0Y2goc3JjLCAvbWFya2V0RGVyaXZlZFZlcnNpb246J01EVi0yJy8pOwp9KTsKCnRlc3QoJ2V4cGVjdGVkLXZhbHVlIHNlbWFudGljcyByZW1haW4gb2RkcyB0aW1lcyB3aW4tcGVyY2VudCcsICgpID0+IHsKICBjb25zdCBkaXNwbGF5RXYgPSAob2Rkcywgd2luUGN0KSA9PiBvZGRzICogd2luUGN0IC8gMTAwOwogIGFzc2VydC5lcXVhbChOdW1iZXIoZGlzcGxheUV2KDE1LjQsIDIzLjQpLnRvRml4ZWQoNCkpLCAzLjYwMzYpOwogIGFzc2VydC5lcXVhbChOdW1iZXIoZGlzcGxheUV2KDM2LjEsIDIuOCkudG9GaXhlZCg0KSksIDEuMDEwOCk7CiAgYXNzZXJ0LmVxdWFsKE51bWJlcihkaXNwbGF5RXYoMjYuMCwgMS43KS50b0ZpeGVkKDQpKSwgMC40NDIpOwogIGFzc2VydC5lcXVhbChOdW1iZXIoZGlzcGxheUV2KDMuNSwgMS40KS50b0ZpeGVkKDQpKSwgMC4wNDkpOwp9KTsKCnRlc3QoJ3ZhbGlkYXRlZCBoaXN0b3JpY2FsIHJlY29yZHMgYXJlIHByb3RlY3RlZCBmcm9tIHJlcGFpcicsICgpID0+IHsKICBhc3NlcnQubWF0Y2goc3JjLCAvbG9ja2VkTWFya2V0SGlzdG9yeS8pOwogIGFzc2VydC5tYXRjaChzcmMsIC8hbG9ja2VkTWFya2V0SGlzdG9yeSYmclwucmFjZVw/XC5vZGRzVHlwZT09PSflrp/jgqrjg4PjgronLyk7Cn0pOwoiIiIKUGF0aCgidGVzdHMvbWFya2V0LWV2LWNvbnNpc3RlbmN5LnRlc3QubWpzIikud3JpdGVfdGV4dCh0ZXN0LCBlbmNvZGluZz0idXRmLTgiKQo=
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-market-ev-v10
+          git worktree add --detach /tmp/chass-market-ev-v10 HEAD
+          cd /tmp/chass-market-ev-v10
+          printf '%s' "$PATCHER_B64" | base64 -d > /tmp/chass-market-ev-patcher.py
+          python3 /tmp/chass-market-ev-patcher.py
+
+          git status --porcelain=v1 -uall | sed -E 's/^.. //' | sort > /tmp/actual.txt
+          printf '%s\n' app.js tests/market-ev-consistency.test.mjs | sort > /tmp/allowed.txt
+          diff -u /tmp/allowed.txt /tmp/actual.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-market-ev-v10
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Market consistency tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-market-ev-v10
+          node --check app.js
+          node --test tests/market-ev-consistency.test.mjs
+          npm run check
+
+      - name: Verify expected screenshot examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const rows = [
+            {horse:4, odds:15.4, win:23.4, expected:3.6036},
+            {horse:12, odds:36.1, win:2.8, expected:1.0108},
+            {horse:13, odds:26.0, win:1.7, expected:0.4420},
+            {horse:9, odds:3.5, win:1.4, expected:0.0490}
+          ];
+          for (const r of rows) {
+            const actual = Number((r.odds * r.win / 100).toFixed(4));
+            if (Math.abs(actual - r.expected) > 1e-9) throw new Error(`EV check failed horse ${r.horse}`);
+          }
+          console.log('Screenshot EV consistency examples: PASS');
+          NODE
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Market EV Consistency Hotfix v1.0 - VALIDATION SUCCESS"
+            echo
+            echo "- Current odds x current AI win consistency: PASS"
+            echo "- Unchanged odds + changed AI prediction invalidation: PASS"
+            echo "- Old EV / 💎 / ⚠️ carry-over removal: PASS"
+            echo "- Active stored-race repair: PASS"
+            echo "- Validated historical snapshot protection: PASS"
+            echo "- Full regression: PASS"
+            echo "- Main commit: NOT PERFORMED"
+            echo "- Production deploy: NOT PERFORMED"
+            echo
+            echo "Next: rerun with mode=apply_and_deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "${{ steps.base.outputs.sha }}" = "$(git rev-parse origin/main)"
+
+      - name: Apply hotfix source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/chass-market-ev-v10/app.js app.js
+          cp /tmp/chass-market-ev-v10/tests/market-ev-consistency.test.mjs tests/market-ev-consistency.test.mjs
+
+          git diff --quiet --             worker.js jra-model.js jra-race-fetch.mjs jra-odds-fetch.mjs jra-result-fetch.mjs             jra-official-cache.mjs wrangler.jsonc migrations/ viewer/ mcp/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js tests/market-ev-consistency.test.mjs
+          git commit -m "Fix stale JRA market EV and value flags"
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+          echo "done=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PASS=0
+          for DELAY in 0 2 5 10; do
+            [ "$DELAY" -eq 0 ] || sleep "$DELAY"
+            CODE="$(curl -sS --max-time 20 -o /tmp/home.html -w '%{http_code}' "$PRODUCTION_BASE_URL/" || true)"
+            if [ "$CODE" = "200" ] && grep -Fq "チャス競馬研究所" /tmp/home.html; then
+              PASS=1
+              break
+            fi
+          done
+          test "$PASS" = "1"
+
+          for path in "/.git/config" "/worker.js" "/wrangler.jsonc" "/app.js"; do
+            CODE="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$PRODUCTION_BASE_URL$path")"
+            [ "$CODE" != "200" ]
+          done
+
+      - name: Roll back on production failure
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.done == 'true' }}
+        shell: bash
+        run: |
+          set +e
+          git fetch origin main
+          git checkout -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit "${{ steps.commit.outputs.sha }}"
+          git push origin HEAD:main
+          npx -y wrangler@4 deploy
+
+      - name: Production success summary
+        if: ${{ success() && inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Market EV Consistency Hotfix v1.0 - PRODUCTION SUCCESS"
+            echo
+            echo "- EV source: current odds x current AI win"
+            echo "- Same-odds / changed-model stale cache: FIXED"
+            echo "- Old EV / 💎 / ⚠️ carry-over on active races: REMOVED"
+            echo "- Active saved races: SAFE REPAIR ENABLED"
+            echo "- Validated historical races: PRESERVED"
+            echo "- Race/Odds/Result Bridges: UNCHANGED"
+            echo "- Prediction/TIME model: UNCHANGED"
+            echo "- NAR / Viewer / D1 schema: UNCHANGED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary worktree
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/chass-market-ev-v10 2>/dev/null
+          git worktree prune 2>/dev/null
