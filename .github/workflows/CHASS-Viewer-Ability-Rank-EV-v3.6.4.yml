@@ -1,0 +1,356 @@
+name: Fix CHASS Viewer Ability Rank & EV v3.6.4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-viewer-ability-rank-ev-v364
+  cancel-in-progress: false
+
+jobs:
+  fix-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify v3.6.3 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f viewer/viewer-app.js
+          test -f viewer/viewer-core.js
+          grep -Fq "viewer-ability-panel" viewer/viewer-app.js
+          grep -Fq "const markPriority = new Map([" viewer/viewer-app.js
+          grep -Fq "function evText(horse)" viewer/viewer-app.js
+          grep -Fq "function raceRanks(race)" viewer/viewer-app.js
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+          echo "v3.6.3 baseline OK"
+
+      - name: Apply v3.6.4 fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/chass-viewer-v364.py <<'PY'
+          from pathlib import Path
+
+          app_path = Path("viewer/viewer-app.js")
+          app = app_path.read_text(encoding="utf-8")
+
+          def replace_between(text, start, end, replacement, label):
+              start_i = text.find(start)
+              if start_i < 0:
+                  raise SystemExit(f"{label} start not found")
+              end_i = text.find(end, start_i)
+              if end_i < 0:
+                  raise SystemExit(f"{label} end not found")
+              return text[:start_i] + replacement + text[end_i:]
+
+          new_race_ranks = r"""function raceRanks(race) {
+            const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
+
+            const byTime = active
+              .map((horse) => ({ horse, value: timeSeconds(horse) }))
+              .filter((item) => item.value != null)
+              .sort((a, b) => a.value - b.value || Number(a.horse.horseNo || 999) - Number(b.horse.horseNo || 999));
+
+            const byWin = active
+              .filter((horse) => horse.aiWinRate != null && Number.isFinite(Number(horse.aiWinRate)))
+              .sort((a, b) => Number(b.aiWinRate) - Number(a.aiWinRate) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
+
+            const byAbility = active
+              .filter((horse) => horse.abilityScore != null && Number.isFinite(Number(horse.abilityScore)))
+              .sort((a, b) => Number(b.abilityScore) - Number(a.abilityScore) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
+
+            const timeRank = new Map();
+            let previousTime = null;
+            let currentTimeRank = 0;
+            byTime.forEach((item, index) => {
+              if (previousTime == null || Math.abs(item.value - previousTime) > 1e-9) currentTimeRank = index + 1;
+              timeRank.set(Number(item.horse.horseNo), currentTimeRank);
+              previousTime = item.value;
+            });
+
+            const winRank = new Map();
+            let previousWin = null;
+            let currentWinRank = 0;
+            byWin.forEach((horse, index) => {
+              const value = Number(horse.aiWinRate);
+              if (previousWin == null || Math.abs(value - previousWin) > 1e-12) currentWinRank = index + 1;
+              winRank.set(Number(horse.horseNo), currentWinRank);
+              previousWin = value;
+            });
+
+            const abilityRank = new Map();
+            let previousAbility = null;
+            let currentAbilityRank = 0;
+            byAbility.forEach((horse, index) => {
+              const value = Number(horse.abilityScore);
+              if (previousAbility == null || Math.abs(value - previousAbility) > 1e-9) currentAbilityRank = index + 1;
+              abilityRank.set(Number(horse.horseNo), currentAbilityRank);
+              previousAbility = value;
+            });
+
+            return { timeRank, winRank, abilityRank };
+          }"""
+          app = replace_between(app, "function raceRanks(race) {", "\n\nfunction timeGapInfo(horse, ranks) {", new_race_ranks, "raceRanks")
+
+          new_ev = r"""function liveExpectedValue(horse) {
+            if (horse.aiWinRate == null || horse.odds == null) return null;
+            const probability = Number(horse.aiWinRate);
+            const odds = Number(horse.odds);
+            if (!Number.isFinite(probability) || probability < 0) return null;
+            if (!Number.isFinite(odds) || odds <= 0) return null;
+            return Number((probability * odds).toFixed(2));
+          }
+
+          function evText(horse) {
+            const ev = liveExpectedValue(horse);
+            return ev == null ? '—' : `${formatViewerNumber(ev, 2)}×`;
+          }"""
+          app = replace_between(app, "function evText(horse) {", "\n\nfunction metric(label, value, emphasis = '') {", new_ev, "evText")
+
+          new_ability = r"""function resolvedAbilityRank(horse, ranks) {
+            const computed = ranks?.abilityRank?.get(Number(horse.horseNo));
+            if (computed != null) return computed;
+            const provided = Number(horse.abilityRank);
+            return Number.isFinite(provided) && provided > 0 ? provided : null;
+          }
+
+          function abilityBadge(horse, ranks = null) {
+            const panel = document.createElement('div');
+            panel.className = 'viewer-ability-panel';
+            panel.title = '公開用総合能力指数と能力順位';
+
+            const scoreBox = document.createElement('div');
+            scoreBox.className = 'viewer-ability-stat viewer-ability-score';
+
+            const scoreLabel = document.createElement('span');
+            scoreLabel.textContent = '能力';
+
+            const score = document.createElement('strong');
+            score.textContent = horse.abilityScore == null ? '—' : formatViewerNumber(horse.abilityScore, 1);
+            scoreBox.append(scoreLabel, score);
+
+            const rankBox = document.createElement('div');
+            rankBox.className = 'viewer-ability-stat viewer-ability-rank';
+
+            const rankLabel = document.createElement('span');
+            rankLabel.textContent = '順位';
+
+            const rank = document.createElement('strong');
+            const abilityRank = resolvedAbilityRank(horse, ranks);
+            rank.textContent = abilityRank == null ? '—' : `${abilityRank}位`;
+
+            rankBox.append(rankLabel, rank);
+            panel.append(scoreBox, rankBox);
+            return panel;
+          }"""
+          app = replace_between(app, "function abilityBadge(horse)", "\n\nfunction shortComment(horse, ranks) {", new_ability, "abilityBadge")
+
+          old = "  const ability = abilityBadge(horse);"
+          new = "  const ability = abilityBadge(horse, ranks);"
+          if old in app:
+              app = app.replace(old, new, 1)
+          elif new not in app:
+              raise SystemExit("abilityBadge call anchor not found")
+
+          old = """  if (horse.abilityRank != null && horse.abilityRank <= 3) {
+              facts.push(`能力${horse.abilityRank}位`);
+            }"""
+          new = """  const abilityRank = resolvedAbilityRank(horse, ranks);
+            if (abilityRank != null && abilityRank <= 3) {
+              facts.push(`能力${abilityRank}位`);
+            }"""
+          if old not in app:
+              raise SystemExit("shortComment ability anchor not found")
+          app = app.replace(old, new, 1)
+
+          old = """  if (horse.expectedValue != null && horse.expectedValue >= 1) {
+              facts.push(`EV ${formatViewerNumber(horse.expectedValue, 2)}×`);
+            }"""
+          new = """  const liveEv = liveExpectedValue(horse);
+            if (liveEv != null && liveEv >= 1) {
+              facts.push(`EV ${formatViewerNumber(liveEv, 2)}×`);
+            }"""
+          if old not in app:
+              raise SystemExit("shortComment EV anchor not found")
+          app = app.replace(old, new, 1)
+
+          old = """  const marketAvailable = horse.popularity != null
+              || horse.odds != null
+              || horse.expectedValue != null
+              || (horse.aiWinRate != null && horse.odds != null);"""
+          new = """  const marketAvailable = horse.popularity != null
+              || horse.odds != null;"""
+          if old not in app:
+              raise SystemExit("marketAvailable anchor not found")
+          app = app.replace(old, new, 1)
+
+          old = """      metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),"""
+          new = """      metric('EV', evText(horse), liveExpectedValue(horse) != null ? 'is-ev has-market' : 'is-ev'),"""
+          if old not in app:
+              raise SystemExit("EV metric anchor not found")
+          app = app.replace(old, new, 1)
+
+          old = "function secondaryHorses(race, primary) {"
+          new = "function secondaryHorses(race, primary, ranks = null) {"
+          if old in app:
+              app = app.replace(old, new, 1)
+          elif new not in app:
+              raise SystemExit("secondaryHorses signature anchor not found")
+
+          old = """      const abilityDiff = Number(a.abilityRank ?? 999) - Number(b.abilityRank ?? 999);
+                if (abilityDiff) return abilityDiff;"""
+          new = """      const aAbilityRank = resolvedAbilityRank(a, ranks) ?? 999;
+                const bAbilityRank = resolvedAbilityRank(b, ranks) ?? 999;
+                const abilityDiff = aAbilityRank - bAbilityRank;
+                if (abilityDiff) return abilityDiff;"""
+          if old not in app:
+              raise SystemExit("secondary ability sort anchor not found")
+          app = app.replace(old, new, 1)
+
+          old = """  const primary = primaryHorses(race);
+            const secondary = secondaryHorses(race, primary);
+            const ranks = raceRanks(race);"""
+          new = """  const ranks = raceRanks(race);
+            const primary = primaryHorses(race);
+            const secondary = secondaryHorses(race, primary, ranks);"""
+          if old not in app:
+              raise SystemExit("mobileRaceBody rank order anchor not found")
+          app = app.replace(old, new, 1)
+
+          app_path.write_text(app, encoding="utf-8")
+          print("Applied CHASS Viewer v3.6.4.")
+
+          PY
+          python3 /tmp/chass-viewer-v364.py
+
+          cat > tests/viewer-ability-rank-ev-v364.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          const app = fs.readFileSync(new URL('../viewer/viewer-app.js', import.meta.url), 'utf8');
+
+          test('v3.6.4 computes ability rank from public ability score', () => {
+            assert.match(app, /const byAbility = active/);
+            assert.match(app, /abilityRank = new Map\(\)/);
+            assert.match(app, /resolvedAbilityRank\(horse, ranks\)/);
+          });
+
+          test('v3.6.4 EV uses current AI win probability times current odds only', () => {
+            assert.match(app, /function liveExpectedValue\(horse\)/);
+            assert.match(app, /probability \* odds/);
+            const start = app.indexOf('function evText(horse)');
+            const end = app.indexOf('function metric(', start);
+            const block = app.slice(start, end);
+            assert.doesNotMatch(block, /horse\.expectedValue/);
+          });
+
+          test('v3.6.4 short comment uses live EV and resolved ability rank', () => {
+            assert.match(app, /const abilityRank = resolvedAbilityRank\(horse, ranks\)/);
+            assert.match(app, /const liveEv = liveExpectedValue\(horse\)/);
+          });
+
+          EOF
+
+      - name: Verify v3.6.4 source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "function liveExpectedValue(horse)" viewer/viewer-app.js
+          grep -Fq "probability * odds" viewer/viewer-app.js
+          grep -Fq "const byAbility = active" viewer/viewer-app.js
+          grep -Fq "resolvedAbilityRank(horse, ranks)" viewer/viewer-app.js
+          grep -Fq "secondaryHorses(race, primary, ranks)" viewer/viewer-app.js
+
+          if grep -RInE '/api/db/|/api/chass/context|CHASS_BRIDGE_TOKEN|internalModelWeights|rawIndices' viewer; then
+            echo "::error::Viewer references protected/internal surfaces."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp
+
+      - name: Run Viewer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check viewer/viewer-core.js
+          node --check viewer/viewer-app.js
+          node --test tests/viewer-foundation.test.mjs             tests/viewer-empty-date-v35.test.mjs             tests/viewer-hidden-state-v351.test.mjs             tests/viewer-ability-comment-v361.test.mjs             tests/viewer-ability-mark-order-v363.test.mjs             tests/viewer-ability-rank-ev-v364.test.mjs
+
+      - name: Run full regression check
+        run: npm run check
+
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Commit Viewer v3.6.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add viewer/viewer-app.js tests/viewer-ability-rank-ev-v364.test.mjs
+          if git diff --cached --quiet; then
+            echo "Viewer v3.6.4 already applied."
+          else
+            git commit -m "Fix viewer ability rank fallback and live EV"
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy
+        run: npx -y wrangler@4 deploy
+
+      - name: Production smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_URL="https://chass-keiba-lab7.h7625421.workers.dev"
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -H 'Cache-Control: no-cache' "$BASE_URL/viewer/viewer-app.js?v=$GITHUB_SHA" -o /tmp/app.js               && grep -Fq "function liveExpectedValue(horse)" /tmp/app.js               && grep -Fq "const byAbility = active" /tmp/app.js               && grep -Fq "resolvedAbilityRank(horse, ranks)" /tmp/app.js; then
+                echo "Production Viewer v3.6.4 OK"
+                exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Viewer v3.6.4 production smoke test failed."
+          exit 1
+
+      - name: Final summary
+        run: |
+          echo "✅ 能力順位—を公開能力指数から自動補完"
+          echo "✅ 同じ能力指数は同順位"
+          echo "✅ EVは表示中AI勝率×表示中オッズで再計算"
+          echo "✅ 保存済み旧EVは表示判断に使用しない"
+          echo "✅ オッズ未取得時はEV—"
+          echo "✅ 短評EVも画面表示と一致"
+          echo "✅ ○▲△内の能力順位ソートも補完順位を使用"
+          echo "✅ 既存UI・印・短評・公開境界は維持"
