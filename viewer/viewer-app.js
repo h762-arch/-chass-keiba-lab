@@ -196,16 +196,18 @@ function raceRanks(race) {
     .sort((a, b) => a.value - b.value || Number(a.horse.horseNo || 999) - Number(b.horse.horseNo || 999));
 
   const byWin = active
-    .filter((horse) => horse.aiWinRate != null)
+    .filter((horse) => horse.aiWinRate != null && Number.isFinite(Number(horse.aiWinRate)))
     .sort((a, b) => Number(b.aiWinRate) - Number(a.aiWinRate) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
+
+  const byAbility = active
+    .filter((horse) => horse.abilityScore != null && Number.isFinite(Number(horse.abilityScore)))
+    .sort((a, b) => Number(b.abilityScore) - Number(a.abilityScore) || Number(a.horseNo || 999) - Number(b.horseNo || 999));
 
   const timeRank = new Map();
   let previousTime = null;
   let currentTimeRank = 0;
   byTime.forEach((item, index) => {
-    if (previousTime == null || Math.abs(item.value - previousTime) > 1e-9) {
-      currentTimeRank = index + 1;
-    }
+    if (previousTime == null || Math.abs(item.value - previousTime) > 1e-9) currentTimeRank = index + 1;
     timeRank.set(Number(item.horse.horseNo), currentTimeRank);
     previousTime = item.value;
   });
@@ -215,14 +217,22 @@ function raceRanks(race) {
   let currentWinRank = 0;
   byWin.forEach((horse, index) => {
     const value = Number(horse.aiWinRate);
-    if (previousWin == null || Math.abs(value - previousWin) > 1e-12) {
-      currentWinRank = index + 1;
-    }
+    if (previousWin == null || Math.abs(value - previousWin) > 1e-12) currentWinRank = index + 1;
     winRank.set(Number(horse.horseNo), currentWinRank);
     previousWin = value;
   });
 
-  return { timeRank, winRank };
+  const abilityRank = new Map();
+  let previousAbility = null;
+  let currentAbilityRank = 0;
+  byAbility.forEach((horse, index) => {
+    const value = Number(horse.abilityScore);
+    if (previousAbility == null || Math.abs(value - previousAbility) > 1e-9) currentAbilityRank = index + 1;
+    abilityRank.set(Number(horse.horseNo), currentAbilityRank);
+    previousAbility = value;
+  });
+
+  return { timeRank, winRank, abilityRank };
 }
 
 function timeGapInfo(horse, ranks) {
@@ -242,12 +252,17 @@ function timeGapInfo(horse, ranks) {
   return null;
 }
 
+function liveExpectedValue(horse) {
+  if (horse.aiWinRate == null || horse.odds == null) return null;
+  const probability = Number(horse.aiWinRate);
+  const odds = Number(horse.odds);
+  if (!Number.isFinite(probability) || probability < 0) return null;
+  if (!Number.isFinite(odds) || odds <= 0) return null;
+  return Number((probability * odds).toFixed(2));
+}
+
 function evText(horse) {
-  const ev = horse.expectedValue ?? (
-    horse.aiWinRate != null && horse.odds != null
-      ? Number((horse.aiWinRate * horse.odds).toFixed(2))
-      : null
-  );
+  const ev = liveExpectedValue(horse);
   return ev == null ? '—' : `${formatViewerNumber(ev, 2)}×`;
 }
 
@@ -298,7 +313,7 @@ function primaryHorses(race) {
     .slice(0, Math.min(1, race.horses.length));
 }
 
-function secondaryHorses(race, primary) {
+function secondaryHorses(race, primary, ranks = null) {
   const primaryNos = new Set(primary.map((horse) => Number(horse.horseNo)));
   const markPriority = new Map([
     ['○', 0],
@@ -316,7 +331,9 @@ function secondaryHorses(race, primary) {
         - (markPriority.get(String(b.mark || '')) ?? 99);
       if (markDiff) return markDiff;
 
-      const abilityDiff = Number(a.abilityRank ?? 999) - Number(b.abilityRank ?? 999);
+      const aAbilityRank = resolvedAbilityRank(a, ranks) ?? 999;
+      const bAbilityRank = resolvedAbilityRank(b, ranks) ?? 999;
+      const abilityDiff = aAbilityRank - bAbilityRank;
       if (abilityDiff) return abilityDiff;
 
       const winDiff = Number(b.aiWinRate ?? -1) - Number(a.aiWinRate ?? -1);
@@ -347,7 +364,14 @@ function viewerLegend() {
   return legend;
 }
 
-function abilityBadge(horse) {
+function resolvedAbilityRank(horse, ranks) {
+  const computed = ranks?.abilityRank?.get(Number(horse.horseNo));
+  if (computed != null) return computed;
+  const provided = Number(horse.abilityRank);
+  return Number.isFinite(provided) && provided > 0 ? provided : null;
+}
+
+function abilityBadge(horse, ranks = null) {
   const panel = document.createElement('div');
   panel.className = 'viewer-ability-panel';
   panel.title = '公開用総合能力指数と能力順位';
@@ -359,10 +383,7 @@ function abilityBadge(horse) {
   scoreLabel.textContent = '能力';
 
   const score = document.createElement('strong');
-  score.textContent = horse.abilityScore == null
-    ? '—'
-    : formatViewerNumber(horse.abilityScore, 1);
-
+  score.textContent = horse.abilityScore == null ? '—' : formatViewerNumber(horse.abilityScore, 1);
   scoreBox.append(scoreLabel, score);
 
   const rankBox = document.createElement('div');
@@ -372,9 +393,8 @@ function abilityBadge(horse) {
   rankLabel.textContent = '順位';
 
   const rank = document.createElement('strong');
-  rank.textContent = horse.abilityRank == null
-    ? '—'
-    : `${horse.abilityRank}位`;
+  const abilityRank = resolvedAbilityRank(horse, ranks);
+  rank.textContent = abilityRank == null ? '—' : `${abilityRank}位`;
 
   rankBox.append(rankLabel, rank);
   panel.append(scoreBox, rankBox);
@@ -387,8 +407,9 @@ function shortComment(horse, ranks) {
   const aiRank = ranks?.winRank?.get(no);
   const timeRank = ranks?.timeRank?.get(no);
 
-  if (horse.abilityRank != null && horse.abilityRank <= 3) {
-    facts.push(`能力${horse.abilityRank}位`);
+  const abilityRank = resolvedAbilityRank(horse, ranks);
+  if (abilityRank != null && abilityRank <= 3) {
+    facts.push(`能力${abilityRank}位`);
   }
   if (aiRank != null && aiRank <= 3) {
     facts.push(`AI勝率${aiRank}位`);
@@ -396,8 +417,9 @@ function shortComment(horse, ranks) {
   if (timeRank != null && timeRank <= 3) {
     facts.push(`予想TIME${timeRank}位`);
   }
-  if (horse.expectedValue != null && horse.expectedValue >= 1) {
-    facts.push(`EV ${formatViewerNumber(horse.expectedValue, 2)}×`);
+  const liveEv = liveExpectedValue(horse);
+  if (liveEv != null && liveEv >= 1) {
+    facts.push(`EV ${formatViewerNumber(liveEv, 2)}×`);
   }
 
   const reasons = [];
@@ -442,13 +464,11 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
 
   identity.append(no, name);
 
-  const ability = abilityBadge(horse);
+  const ability = abilityBadge(horse, ranks);
   top.append(marks, identity, ability);
 
   const marketAvailable = horse.popularity != null
-    || horse.odds != null
-    || horse.expectedValue != null
-    || (horse.aiWinRate != null && horse.odds != null);
+    || horse.odds != null;
 
   if (marketAvailable) {
     const marketMetrics = document.createElement('div');
@@ -456,7 +476,7 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
     marketMetrics.append(
       metric('人気', horse.popularity == null ? '—' : `${horse.popularity}人気`, horse.popularity != null ? 'has-market' : ''),
       metric('オッズ', horse.odds == null ? '—' : formatViewerNumber(horse.odds, 1), horse.odds != null ? 'has-market' : ''),
-      metric('EV', evText(horse), horse.expectedValue != null || (horse.aiWinRate != null && horse.odds != null) ? 'is-ev has-market' : 'is-ev'),
+      metric('EV', evText(horse), liveExpectedValue(horse) != null ? 'is-ev has-market' : 'is-ev'),
     );
     card.append(top, marketMetrics);
   } else {
@@ -537,9 +557,9 @@ function mobileRaceBody(race) {
   const shell = document.createElement('div');
   shell.className = 'viewer-mobile-race-body';
 
-  const primary = primaryHorses(race);
-  const secondary = secondaryHorses(race, primary);
   const ranks = raceRanks(race);
+  const primary = primaryHorses(race);
+  const secondary = secondaryHorses(race, primary, ranks);
   const hasPrimarySignal = primary.some(horseHasPrimarySignal);
 
   const focusWrap = document.createElement('section');
