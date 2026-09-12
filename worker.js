@@ -7,6 +7,7 @@ import {handleJraMeetingPersistent,JRA_MEETING_CACHE_SCHEMA,runScheduledJraMeeti
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './similarity-intelligence.mjs';
 import {parseNarRaceList} from './meeting-discovery.mjs';
 import {enqueueResearchSync,runResearchSyncQueue} from './research-storage-sync.mjs';
+import {handleDriveReadHealth,handleDriveReadBridge} from './google-drive-readonly-api.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
@@ -696,10 +697,11 @@ export async function handleChassBridge(request,env){
  if(request.method==='OPTIONS')return new Response(null,{status:204,headers:cors});
  if(request.method!=='GET')return bridgeJson({ok:false,error:'method_not_allowed'},405,cors);
  if(u.pathname.endsWith('/openapi.json'))return env?.ASSETS?env.ASSETS.fetch(new Request(new URL('/openapi.json',u),request)):bridgeJson({ok:false,error:'openapi_unavailable'},404,cors);
- const allowedPaths=new Set(['/api/chass/context','/api/chass/v1/health','/api/chass/v1/context','/api/chass/v1/race','/api/chass/v1/research','/api/chass/v1/pending']);
+ const allowedPaths=new Set(['/api/chass/context','/api/chass/v1/health','/api/chass/v1/context','/api/chass/v1/race','/api/chass/v1/research','/api/chass/v1/pending','/api/chass/v1/drive']);
  if(!allowedPaths.has(u.pathname))return bridgeJson({ok:false,error:'not_found'},404,cors);
  const auth=bridgeTokenValid(request,env);if(!auth.ok)return bridgeJson({ok:false,error:auth.error},auth.status,cors);
  if(!bridgeRateAllowed(request))return bridgeJson({ok:false,error:'rate_limit_exceeded',retryAfterSeconds:60},429,{...cors,'retry-after':'60'});
+ if(u.pathname.endsWith('/drive'))return handleDriveReadBridge(request,env,cors);
  const DB=getResearchDb(env);if(!DB)return bridgeJson({ok:false,error:'d1_binding_unavailable'},503,cors);
  if(u.pathname.endsWith('/health')){try{await DB.prepare('SELECT 1 AS ok').first();return bridgeJson({ok:true,bridgeVersion:CHASS_BRIDGE_SCHEMA_VERSION,database:true,modelVersion:VERSION,source:'cloudflare_d1',generatedAt:new Date().toISOString()},200,cors)}catch{return bridgeJson({ok:false,error:'d1_query_failed',database:false},503,cors)}}
  let scope=u.searchParams.get('scope')||'latest';if(u.pathname.endsWith('/race'))scope='race';else if(u.pathname.endsWith('/research'))scope='research';else if(u.pathname.endsWith('/pending'))scope='pending';
@@ -747,6 +749,7 @@ export default{
   if(u.pathname==='/api/jra/race')return handleJraRaceRequest(request,env);
   if(u.pathname==='/api/jra/odds')return handleJraOddsRequest(request,env);
   if(u.pathname==='/api/jra/result')return handleJraResultRequest(request,env);
+  if(u.pathname==='/api/drive-read/health')return handleDriveReadHealth(request,env);
   if(u.pathname.startsWith('/api/chass/v1/public/'))return handlePublicApi(request,env);
   if(u.pathname==='/api/chass/context'||u.pathname.startsWith('/api/chass/v1/'))return handleChassBridge(request,env);
   if(u.pathname==='/api/db/historical-job'||u.pathname.startsWith('/api/db/historical-job/'))return handleHistoricalJobApi(request,env);

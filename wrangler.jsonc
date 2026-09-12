@@ -10,7 +10,8 @@
     "ENABLE_JRA_RESULT_FETCH": "true",
     "ENABLE_JRA_BACKGROUND_REFRESH": "false",
     "ENABLE_JRA_DIRECT_FETCH": "false",
-    "ENABLE_JRA_ODDS_DIRECT_FETCH": "false"
+    "ENABLE_JRA_ODDS_DIRECT_FETCH": "false",
+    "CHASS_DRIVE_SPREADSHEET_ID": "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
   },
   "assets": {
     "directory": "./",
