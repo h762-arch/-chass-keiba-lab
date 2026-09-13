@@ -1,0 +1,209 @@
+name: CHASS Workflow Consolidation v2.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "audit_only=確認のみ / apply=現在の作業ブランチで旧Workflowをarchiveへ移動"
+        required: true
+        default: "audit_only"
+        type: choice
+        options:
+          - audit_only
+          - apply
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-workflow-consolidation-v2-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Safety preflight
+        id: audit
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+
+          test "$MODE" = "audit_only" -o "$MODE" = "apply"
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+
+          # applyはmain直接変更を禁止。必ず作業branchで行う。
+          if [ "$MODE" = "apply" ] && [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "::error::apply on main is forbidden. Create/select a work branch first."
+            exit 1
+          fi
+
+          # replacement -> superseded files
+          cat > /tmp/chass-consolidation.tsv <<'EOF'
+          .github/workflows/CHASS-Google-Drive-ReadOnly-Import-v1.1.yml	.github/workflows/CHASS-Google-Drive-ReadOnly-Import-v1.yml	manual
+          .github/workflows/CHASS-JRA-Cloudflare-Runtime-Assets-Hotfix-v2.2.yml	.github/workflows/CHASS-JRA-Cloudflare-Runtime-Assets-Hotfix-v2.yml	manual
+          .github/workflows/CHASS-JRA-Cloudflare-Runtime-Assets-Hotfix-v2.2.yml	.github/workflows/CHASS-JRA-Cloudflare-Runtime-Assets-Hotfix-v2.1.yml	manual
+          .github/workflows/CHASS-JRA-Corner-Position-Safety-Hotfix-v1.1.yml	.github/workflows/CHASS-JRA-Corner-Position-Safety-Hotfix-v1.0.yml	manual
+          .github/workflows/CHASS-JRA-Drive-Fallback-Real-Data-Smoke-v1.0.1.yml	.github/workflows/CHASS-JRA-Drive-Fallback-Real-Data-Smoke-v1.0.yml	manual
+          .github/workflows/CHASS-JRA-External-Cache-Bridge-Security-v1.1.yml	.github/workflows/CHASS-JRA-External-Cache-Bridge-Security-v1.yml	manual
+          .github/workflows/CHASS-Maintenance-Runner-v1.2.yml	.github/workflows/CHASS-Maintenance-Runner-v1.0.yml	manual
+          .github/workflows/CHASS-Maintenance-Runner-v1.2.yml	.github/workflows/CHASS-Maintenance-Runner-v1.1.yml	manual
+          .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml	.github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.1.yml	scheduled_refresh
+          .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml	.github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.2.yml	scheduled_refresh
+          EOF
+
+          # v1.3 must cover BOTH old schedules and retain the D1-only production smoke.
+          test -f .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml
+          grep -Fq '15 21,0,3,6,9,12 * * *' .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml
+          grep -Fq 'official_only=1' .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml
+
+          SAFE=0
+          BLOCKED=0
+          MISSING=0
+
+          : > /tmp/chass-safe.tsv
+          : > /tmp/chass-blocked.tsv
+
+          while IFS=$'\t' read -r REPLACEMENT OLD TYPE; do
+            [ -n "$REPLACEMENT" ] || continue
+
+            if [ ! -f "$REPLACEMENT" ]; then
+              echo -e "BLOCKED\t$OLD\treplacement missing: $REPLACEMENT" >> /tmp/chass-blocked.tsv
+              BLOCKED=$((BLOCKED + 1))
+              continue
+            fi
+
+            if [ ! -f "$OLD" ]; then
+              echo -e "MISSING\t$OLD\talready archived/absent" >> /tmp/chass-blocked.tsv
+              MISSING=$((MISSING + 1))
+              continue
+            fi
+
+            # All non-refresh candidates must be manual-only.
+            if [ "$TYPE" = "manual" ]; then
+              if grep -Eq '^[[:space:]]*(schedule:|push:|pull_request:|workflow_call:)' "$OLD"; then
+                echo -e "BLOCKED\t$OLD\tautomatic trigger detected" >> /tmp/chass-blocked.tsv
+                BLOCKED=$((BLOCKED + 1))
+                continue
+              fi
+            fi
+
+            echo -e "$REPLACEMENT\t$OLD\t$TYPE" >> /tmp/chass-safe.tsv
+            SAFE=$((SAFE + 1))
+          done < /tmp/chass-consolidation.tsv
+
+          echo "safe=$SAFE" >> "$GITHUB_OUTPUT"
+          echo "blocked=$BLOCKED" >> "$GITHUB_OUTPUT"
+          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## CHASS Workflow Consolidation v2.0 — AUDIT"
+            echo
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Mode: \`$MODE\`"
+            echo "- Safe archive candidates: $SAFE"
+            echo "- Blocked: $BLOCKED"
+            echo "- Already absent: $MISSING"
+            echo
+            echo "### Safe candidates"
+            echo
+            echo "| Keep | Archive | Type |"
+            echo "|---|---|---|"
+            while IFS=$'\t' read -r REPLACEMENT OLD TYPE; do
+              [ -n "$OLD" ] || continue
+              echo "| \`$REPLACEMENT\` | \`$OLD\` | $TYPE |"
+            done < /tmp/chass-safe.tsv
+            echo
+            if [ -s /tmp/chass-blocked.tsv ]; then
+              echo "### Blocked / absent"
+              echo
+              echo "| Status | File | Reason |"
+              echo "|---|---|---|"
+              while IFS=$'\t' read -r STATUS FILE REASON; do
+                echo "| $STATUS | \`$FILE\` | $REASON |"
+              done < /tmp/chass-blocked.tsv
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$BLOCKED" -ne 0 ]; then
+            echo "::error::Blocked candidates exist. Nothing will be moved."
+            exit 1
+          fi
+
+      - name: Archive superseded workflows
+        if: ${{ inputs.mode == 'apply' }}
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SAFE="${{ steps.audit.outputs.safe }}"
+          test "$SAFE" -gt 0
+
+          STAMP="$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)"
+          DEST="archive/workflows/superseded/${STAMP}-consolidation-v2"
+          mkdir -p "$DEST"
+
+          MOVED=0
+          while IFS=$'\t' read -r REPLACEMENT OLD TYPE; do
+            [ -n "$OLD" ] || continue
+            [ -f "$OLD" ] || continue
+
+            BASENAME="$(basename "$OLD")"
+            git mv "$OLD" "$DEST/$BASENAME"
+            MOVED=$((MOVED + 1))
+          done < /tmp/chass-safe.tsv
+
+          test "$MOVED" -gt 0
+
+          # Never touch the retained replacements.
+          for KEEP in \
+            .github/workflows/CHASS-Google-Drive-ReadOnly-Import-v1.1.yml \
+            .github/workflows/CHASS-JRA-Cloudflare-Runtime-Assets-Hotfix-v2.2.yml \
+            .github/workflows/CHASS-JRA-Corner-Position-Safety-Hotfix-v1.1.yml \
+            .github/workflows/CHASS-JRA-Drive-Fallback-Real-Data-Smoke-v1.0.1.yml \
+            .github/workflows/CHASS-JRA-External-Cache-Bridge-Security-v1.1.yml \
+            .github/workflows/CHASS-Maintenance-Runner-v1.2.yml \
+            .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml
+          do
+            test -f "$KEEP"
+          done
+
+          git status --short
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git commit -m "chore: consolidate superseded workflows"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          echo "moved=$MOVED" >> "$GITHUB_OUTPUT"
+          echo "archive=$DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "### Result"
+            if [ "${{ inputs.mode }}" = "audit_only" ]; then
+              echo "✅ Audit only — repository was not modified."
+            else
+              echo "- Archived: ${{ steps.apply.outputs.moved || '0' }} workflow files"
+              echo "- Archive: \`${{ steps.apply.outputs.archive || 'n/a' }}\`"
+              echo "- main direct push: NO"
+              echo "- Next step: open a PR from this work branch to main."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
