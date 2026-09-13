@@ -389,7 +389,7 @@ jobs:
           console.log(`freshness=${x.bridgeCache.freshness}`);
           console.log(`source=${x.source}`);
           console.log(`horse_count=${x.quality.horseCount}`);
-NODE
+          NODE
 
           CACHE_HEADER="$(awk 'BEGIN{IGNORECASE=1} /^x-chass-jra-race-cache:/{gsub("\\r",""); print $2}' /tmp/jra-official-only.headers | tail -n 1)"
           case "$CACHE_HEADER" in
