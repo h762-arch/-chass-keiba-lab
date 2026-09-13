@@ -17,8 +17,6 @@ export async function readJraOfficialRaceCache(env, { date, track, race, nowMs =
   }
 
   if (!row) return null;
-  const expiresMs = Date.parse(row.expires_at || '');
-  if (!Number.isFinite(expiresMs) || expiresMs <= Number(nowMs)) return null;
 
   let body;
   try {
@@ -31,16 +29,104 @@ export async function readJraOfficialRaceCache(env, { date, track, race, nowMs =
     throw Object.assign(new Error('JRA_CACHE_CORRUPT'), { code: 'JRA_CACHE_CORRUPT' });
   }
 
+  const expiresMs = Date.parse(row.expires_at || '');
+  const expired = !Number.isFinite(expiresMs) || expiresMs <= Number(nowMs);
+  const bridgeCache = {
+    provider: 'github_actions_d1',
+    kind: 'race',
+    fetchedAt: row.fetched_at,
+    expiresAt: row.expires_at,
+    contentHash: row.content_hash || null,
+    expired,
+    freshness: expired ? 'saved' : 'current'
+  };
+
+  if (!expired) {
+    return {
+      body: {
+        ...body,
+        bridgeCache
+      }
+    };
+  }
+
+  const sourceHorses = Array.isArray(body.horses) ? body.horses : [];
+  const horses = sourceHorses.map(horse => ({
+    ...horse,
+    savedRunningStatus: horse?.runningStatus || 'unknown',
+    runningStatus: 'active',
+    liveStatusConfidence: 'unconfirmed',
+    jockey: '',
+    bodyWeight: null,
+    bodyWeightChange: null,
+    odds: null,
+    popularity: null
+  }));
+
+  const rate = key => horses.length
+    ? horses.filter(h => h?.[key] != null && h?.[key] !== '').length / horses.length
+    : 0;
+
+  const quality = {
+    ...(body.quality || {}),
+    raceParsed: body?.quality?.raceParsed === true,
+    horseCount: horses.length,
+    activeHorseCount: horses.length,
+    horseNameRate: rate('horseName'),
+    weightRate: rate('weightCarried'),
+    jockeyRate: 0,
+    pastRunRate: horses.length
+      ? horses.filter(h => Array.isArray(h?.pastRuns) && h.pastRuns.length > 0).length / horses.length
+      : 0
+  };
+
   return {
     body: {
       ...body,
-      bridgeCache: {
-        provider: 'github_actions_d1',
-        kind: 'race',
-        fetchedAt: row.fetched_at,
-        expiresAt: row.expires_at,
-        contentHash: row.content_hash || null
-      }
+      race: {
+        ...(body.race || {}),
+        trackCondition: '不明',
+        weather: ''
+      },
+      horses,
+      quality,
+      source: 'JRA_SAVED_OFFICIAL_BASE',
+      dataConfidence: 'medium',
+      liveFieldsVerified: false,
+      officialStatus: 'saved',
+      savedOfficialBase: {
+        schemaVersion: 'jra-saved-official-base-v1',
+        preservedFields: [
+          'race.date',
+          'race.racecourse',
+          'race.raceNo',
+          'race.raceName',
+          'race.postTime',
+          'race.surface',
+          'race.distance',
+          'race.direction',
+          'race.courseType',
+          'race.raceClass',
+          'horses.horseNo',
+          'horses.frameNo',
+          'horses.horseName',
+          'horses.sexAge',
+          'horses.weightCarried',
+          'horses.trainer',
+          'horses.pastRuns'
+        ],
+        unconfirmedLiveFields: [
+          'horses.runningStatus',
+          'horses.jockey',
+          'horses.bodyWeight',
+          'horses.bodyWeightChange',
+          'race.trackCondition',
+          'race.weather',
+          'horses.odds',
+          'horses.popularity'
+        ]
+      },
+      bridgeCache
     }
   };
 }

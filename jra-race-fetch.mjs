@@ -294,7 +294,10 @@ export function createJraRaceService({fetchImpl=globalThis.fetch,now=Date.now,ti
   if(env?.DB){
     try{
       const cached=await readJraOfficialRaceCache(env,{date,track,race,nowMs:now()});
-      if(cached)return send(cached.body,200,'D1-HIT');
+      if(cached){
+        const freshness=cached.body?.bridgeCache?.freshness;
+        return send(cached.body,200,freshness==='saved'?'D1-SAVED':'D1-HIT');
+      }
     }catch(error){
       return send({ok:false,organization:'JRA',date,track,race,error:error?.code||'JRA_CACHE_READ_FAILED'},503,'D1-ERROR');
     }
