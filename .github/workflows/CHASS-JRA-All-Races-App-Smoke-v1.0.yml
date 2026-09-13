@@ -1,0 +1,266 @@
+name: CHASS JRA All Races App Smoke v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "確認日 YYYY-MM-DD"
+        required: true
+        default: "2026-09-13"
+        type: string
+      track_a:
+        description: "開催場A"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      track_b:
+        description: "開催場B"
+        required: true
+        default: "阪神"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-all-races-app-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_DATE: ${{ inputs.date }}
+      TRACK_A: ${{ inputs.track_a }}
+      TRACK_B: ${{ inputs.track_b }}
+
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$INPUT_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          test -n "$TRACK_A"
+          test -n "$TRACK_B"
+          test "$TRACK_A" != "$TRACK_B"
+
+      - name: Check all 24 races through app route
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESULTS=/tmp/chass-jra-all-races.tsv
+          : > "$RESULTS"
+
+          PASS_COUNT=0
+          FAIL_COUNT=0
+          TOTAL=0
+
+          for TRACK in "$TRACK_A" "$TRACK_B"; do
+            for RACE in $(seq 1 12); do
+              TOTAL=$((TOTAL + 1))
+
+              BODY="/tmp/chass-${TRACK}-${RACE}.json"
+              HEADERS="/tmp/chass-${TRACK}-${RACE}.headers"
+              : > "$BODY"
+              : > "$HEADERS"
+
+              CODE="$(curl -sS --max-time 25 \
+                -D "$HEADERS" \
+                --get "$PRODUCTION_BASE_URL/api/jra/race" \
+                --data-urlencode "date=$INPUT_DATE" \
+                --data-urlencode "track=$TRACK" \
+                --data-urlencode "race=$RACE" \
+                -o "$BODY" \
+                -w '%{http_code}' || true)"
+
+              RESULT="$(TRACK="$TRACK" RACE="$RACE" CODE="$CODE" BODY="$BODY" node <<'NODE'
+          const fs = require('fs');
+
+          const track = process.env.TRACK;
+          const race = Number(process.env.RACE);
+          const code = String(process.env.CODE || '');
+          const bodyPath = process.env.BODY;
+
+          let x = null;
+          let parseError = '';
+          try {
+            x = JSON.parse(fs.readFileSync(bodyPath, 'utf8'));
+          } catch (e) {
+            parseError = 'INVALID_JSON';
+          }
+
+          let pass = true;
+          const reasons = [];
+
+          if (code !== '200') {
+            pass = false;
+            reasons.push(`HTTP_${code || '000'}`);
+          }
+
+          if (!x) {
+            pass = false;
+            reasons.push(parseError || 'NO_BODY');
+          }
+
+          if (x) {
+            if (x.ok !== true) {
+              pass = false;
+              reasons.push(x.error || 'NOT_OK');
+            }
+            if (x.organization !== 'JRA') {
+              pass = false;
+              reasons.push('NOT_JRA');
+            }
+            if (x.quality?.raceParsed !== true) {
+              pass = false;
+              reasons.push('RACE_NOT_PARSED');
+            }
+            if (Number(x.quality?.horseCount || 0) < 2) {
+              pass = false;
+              reasons.push('HORSE_COUNT_LT_2');
+            }
+
+            const actualTrack = String(x.race?.racecourse || '');
+            const actualRace = Number(x.race?.raceNo);
+            if (actualTrack !== track) {
+              pass = false;
+              reasons.push(`TRACK_MISMATCH:${actualTrack || 'blank'}`);
+            }
+            if (actualRace !== race) {
+              pass = false;
+              reasons.push(`RACE_MISMATCH:${Number.isFinite(actualRace) ? actualRace : 'blank'}`);
+            }
+
+            const validSources = new Set([
+              'JRA_OFFICIAL',
+              'JRA_SAVED_OFFICIAL_BASE',
+              'JRA_DRIVE_FRIDAY_BASE'
+            ]);
+            if (!validSources.has(String(x.source || ''))) {
+              pass = false;
+              reasons.push(`UNEXPECTED_SOURCE:${x.source || 'blank'}`);
+            }
+
+            if (x.source === 'JRA_SAVED_OFFICIAL_BASE' && x.liveFieldsVerified !== false) {
+              pass = false;
+              reasons.push('SAVED_LIVE_FIELDS_NOT_UNVERIFIED');
+            }
+          }
+
+          const source = x?.source || '';
+          const freshness =
+            x?.bridgeCache?.freshness ||
+            (source === 'JRA_DRIVE_FRIDAY_BASE' ? 'drive' : '');
+          const driveStatus = x?.driveInput?.status || '';
+          const horseCount = Number(x?.quality?.horseCount || 0);
+          const reason = reasons.join(',') || '-';
+
+          process.stdout.write([
+            pass ? 'PASS' : 'FAIL',
+            code || '000',
+            source,
+            freshness,
+            driveStatus,
+            String(horseCount),
+            reason
+          ].join('\t'));
+          NODE
+              )"
+
+              STATUS="$(printf '%s' "$RESULT" | cut -f1)"
+              HTTP="$(printf '%s' "$RESULT" | cut -f2)"
+              SOURCE="$(printf '%s' "$RESULT" | cut -f3)"
+              FRESHNESS="$(printf '%s' "$RESULT" | cut -f4)"
+              DRIVE_STATUS="$(printf '%s' "$RESULT" | cut -f5)"
+              HORSES="$(printf '%s' "$RESULT" | cut -f6)"
+              REASON="$(printf '%s' "$RESULT" | cut -f7-)"
+
+              printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$TRACK" "$RACE" "$STATUS" "$HTTP" "$SOURCE" "$FRESHNESS" "$DRIVE_STATUS" "$HORSES|$REASON" \
+                >> "$RESULTS"
+
+              echo "$TRACK ${RACE}R -> $STATUS / HTTP=$HTTP / source=$SOURCE / freshness=$FRESHNESS / drive=$DRIVE_STATUS / horses=$HORSES / reason=$REASON"
+
+              if [ "$STATUS" = "PASS" ]; then
+                PASS_COUNT=$((PASS_COUNT + 1))
+              else
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+              fi
+            done
+          done
+
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "pass_count=$PASS_COUNT" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL_COUNT" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## CHASS JRA All Races App Smoke v1.0"
+            echo
+            echo "- Date: $INPUT_DATE"
+            echo "- Tracks: $TRACK_A / $TRACK_B"
+            echo "- Total: $TOTAL"
+            echo "- PASS: $PASS_COUNT"
+            echo "- FAIL: $FAIL_COUNT"
+            echo "- Endpoint: normal app route (/api/jra/race)"
+            echo "- Accepted sources: JRA_OFFICIAL / JRA_SAVED_OFFICIAL_BASE / JRA_DRIVE_FRIDAY_BASE"
+            echo
+            echo "| 競馬場 | R | 判定 | HTTP | source | freshness | Drive状態 | 頭数 / 理由 |"
+            echo "|---|---:|---|---:|---|---|---|---|"
+
+            while IFS=$'\t' read -r TRACK RACE STATUS HTTP SOURCE FRESHNESS DRIVE_STATUS EXTRA; do
+              HORSES="${EXTRA%%|*}"
+              REASON="${EXTRA#*|}"
+              echo "| $TRACK | ${RACE}R | $STATUS | $HTTP | ${SOURCE:--} | ${FRESHNESS:--} | ${DRIVE_STATUS:--} | $HORSES / $REASON |"
+            done < "$RESULTS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAIL_COUNT" -ne 0 ]; then
+            echo "::error::${FAIL_COUNT} race(s) failed app-read smoke."
+            exit 1
+          fi
+
+          if [ "$PASS_COUNT" -ne 24 ]; then
+            echo "::error::Expected 24 PASS races but got $PASS_COUNT."
+            exit 1
+          fi
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "### 判定"
+            if [ "${{ steps.smoke.outputs.fail_count || '24' }}" = "0" ] && [ "${{ steps.smoke.outputs.pass_count || '0' }}" = "24" ]; then
+              echo "✅ 24/24 PASS — 指定日の2開催全レースをアプリ経路で読取可能"
+            else
+              echo "❌ 一部レースで読取失敗 — 上の表で対象Rとsourceを確認"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
