@@ -1,0 +1,458 @@
+name: CHASS Maintenance Runner v1.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "audit_only=検証のみ / apply_and_pr=現在の作業ブランチへ適用してPR作成"
+        required: true
+        default: "audit_only"
+        type: choice
+        options:
+          - audit_only
+          - apply_and_pr
+      patch_path:
+        description: "_chass_patch.py または maintenance/patches/ 配下のPython patch"
+        required: true
+        default: "_chass_patch.py"
+        type: string
+      manifest_path:
+        description: "_chass_manifest.json または maintenance/patches/ 配下のmanifest JSON"
+        required: true
+        default: "_chass_manifest.json"
+        type: string
+      full_regression:
+        description: "npm run check を実行する"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: chass-maintenance-v11-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Safety preflight
+        id: preflight
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PATCH_PATH: ${{ inputs.patch_path }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+
+          BRANCH="${GITHUB_REF_NAME}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          # apply_and_pr は main では絶対に実行しない。
+          if [ "$MODE" = "apply_and_pr" ] && [ "$BRANCH" = "main" ]; then
+            echo "::error::apply_and_pr must run from a non-main branch."
+            exit 10
+          fi
+
+          # iPhone運用では一時ファイルをrootへ置ける。適用後は自動削除。
+          case "$PATCH_PATH" in
+            _chass_patch.py|maintenance/patches/*) ;;
+            *) echo "::error::patch_path must be _chass_patch.py or under maintenance/patches/"; exit 11 ;;
+          esac
+
+          case "$MANIFEST_PATH" in
+            _chass_manifest.json|maintenance/patches/*) ;;
+            *) echo "::error::manifest_path must be _chass_manifest.json or under maintenance/patches/"; exit 12 ;;
+          esac
+
+          if printf '%s\n%s\n' "$PATCH_PATH" "$MANIFEST_PATH" | grep -q '\.\.'; then
+            echo "::error::Parent path traversal is not allowed."
+            exit 13
+          fi
+
+          test -f "$PATCH_PATH" || { echo "::error::Missing patch: $PATCH_PATH"; exit 14; }
+          test -f "$MANIFEST_PATH" || { echo "::error::Missing manifest: $MANIFEST_PATH"; exit 15; }
+
+          python3 -m py_compile "$PATCH_PATH"
+
+          node <<'NODE'
+          const fs = require('fs');
+          const path = process.env.MANIFEST_PATH;
+          const x = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+          const required = ['patch_id', 'title', 'summary', 'allowed_files'];
+          for (const key of required) {
+            if (!(key in x)) throw new Error(`manifest missing ${key}`);
+          }
+
+          if (!/^[a-z0-9][a-z0-9._-]{2,79}$/i.test(x.patch_id)) {
+            throw new Error('invalid patch_id');
+          }
+
+          if (!Array.isArray(x.allowed_files) || !x.allowed_files.length) {
+            throw new Error('allowed_files must be a non-empty array');
+          }
+
+          for (const file of x.allowed_files) {
+            if (typeof file !== 'string' || !file || file.startsWith('/') || file.includes('..')) {
+              throw new Error(`invalid allowed file: ${file}`);
+            }
+          }
+
+          const allowWorkflowChanges = x.allow_workflow_changes === true;
+
+          const permanentlyBlocked = [
+            'wrangler.jsonc',
+            'd1-schema.sql',
+            'package.json',
+            'package-lock.json',
+            'mcp/package.json',
+            'mcp/package-lock.json',
+            '.github/workflows/CHASS-Maintenance-Runner-v1.0.yml',
+            '.github/workflows/CHASS-Maintenance-Runner-v1.1.yml',
+            '.github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.0.yml',
+            '.github/workflows/CHASS-Workflow-Cleanup-Consolidation-v1.1.yml',
+          ];
+
+          for (const file of x.allowed_files) {
+            if (permanentlyBlocked.includes(file)) {
+              throw new Error(`permanently protected path: ${file}`);
+            }
+            if (file.startsWith('.github/')) {
+              if (!allowWorkflowChanges) {
+                throw new Error(`workflow changes require allow_workflow_changes=true: ${file}`);
+              }
+              if (!file.startsWith('.github/workflows/')) {
+                throw new Error(`only .github/workflows/ may be changed: ${file}`);
+              }
+            }
+          }
+
+          console.log(`manifest OK: ${x.patch_id}`);
+          NODE
+
+      - name: Capture baseline regression
+        id: baseline
+        if: ${{ inputs.full_regression }}
+        shell: bash
+        run: |
+          set +e
+          npm run check > /tmp/chass-maint-baseline.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-maint-baseline.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+          echo "Baseline regression: exit=$CODE fail=$FAIL"
+
+      - name: Build isolated patched tree
+        id: patch
+        shell: bash
+        env:
+          PATCH_PATH: ${{ inputs.patch_path }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/chass-maint-worktree
+          git worktree add --detach /tmp/chass-maint-worktree HEAD
+
+          ABS_PATCH="$GITHUB_WORKSPACE/$PATCH_PATH"
+          ABS_MANIFEST="$GITHUB_WORKSPACE/$MANIFEST_PATH"
+
+          cd /tmp/chass-maint-worktree
+          python3 "$ABS_PATCH"
+
+          # 新規ファイルも含めて検証対象にする。
+          git add -A
+          git diff --cached --check
+          git diff --cached --name-only > /tmp/chass-maint-changed.txt
+
+          if [ ! -s /tmp/chass-maint-changed.txt ]; then
+            echo "::error::Patch produced no changes."
+            exit 20
+          fi
+
+          # manifest の allowlist 以外の変更を拒否。
+          python3 - "$ABS_MANIFEST" /tmp/chass-maint-changed.txt <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          allowed = set(manifest['allowed_files'])
+          changed = [x.strip() for x in Path(sys.argv[2]).read_text(encoding='utf-8').splitlines() if x.strip()]
+
+          extra = [x for x in changed if x not in allowed]
+          missing = [x for x in allowed if x not in changed]
+
+          print("Changed files:")
+          for x in changed:
+              print(" -", x)
+
+          if extra:
+              raise SystemExit("Unexpected changed files: " + ", ".join(extra))
+
+          # allowed_files は「変更してよいファイル」なので、全件変更必須にはしない。
+          if missing:
+              print("Allowed but unchanged:")
+              for x in missing:
+                  print(" -", x)
+          PY
+
+          # 変更した JavaScript 系ファイルは構文チェック。
+          while IFS= read -r file; do
+            case "$file" in
+              *.js|*.mjs|*.cjs)
+                node --check "$file"
+                ;;
+            esac
+          done < /tmp/chass-maint-changed.txt
+
+          # Workflow YAML は最低限の構文と必須キーを確認。
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/*.yml|.github/workflows/*.yaml)
+                grep -Eq '^name:[[:space:]]+' "$file"
+                grep -Eq '^("?on"?):[[:space:]]*$' "$file"
+                if command -v ruby >/dev/null 2>&1; then
+                  ruby -e "require 'yaml'; YAML.load_file(ARGV[0], aliases: true)" "$file"
+                fi
+                ;;
+            esac
+          done < /tmp/chass-maint-changed.txt
+
+          git diff --cached --binary > /tmp/chass-maint.patch
+
+          echo "changed_count=$(wc -l < /tmp/chass-maint-changed.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Patched regression comparison
+        id: regression
+        if: ${{ inputs.full_regression }}
+        shell: bash
+        env:
+          BASE_FAIL: ${{ steps.baseline.outputs.fail_count }}
+        run: |
+          set +e
+          cd /tmp/chass-maint-worktree
+          npm run check > /tmp/chass-maint-patched.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-maint-patched.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+
+          echo "Baseline failures: ${BASE_FAIL:-9999}"
+          echo "Patched failures:  $FAIL"
+
+          if [ "$FAIL" -gt "${BASE_FAIL:-9999}" ]; then
+            echo "::error::Patch increased regression failures."
+            tail -n 160 /tmp/chass-maint-patched.log || true
+            exit 30
+          fi
+
+      - name: Audit summary
+        if: ${{ inputs.mode == 'audit_only' }}
+        shell: bash
+        env:
+          PATCH_PATH: ${{ inputs.patch_path }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          BASE_FAIL: ${{ steps.baseline.outputs.fail_count }}
+          PATCH_FAIL: ${{ steps.regression.outputs.fail_count }}
+        run: |
+          set -euo pipefail
+
+          PATCH_ID="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).patch_id")"
+          TITLE="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).title")"
+
+          {
+            echo "## CHASS Maintenance Runner v1.1 — AUDIT PASS"
+            echo
+            echo "- Patch ID: \`$PATCH_ID\`"
+            echo "- Title: $TITLE"
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Patch: \`$PATCH_PATH\`"
+            echo "- Changed files: ${{ steps.patch.outputs.changed_count }}"
+            echo "- Baseline failures: ${BASE_FAIL:-not_run}"
+            echo "- Patched failures: ${PATCH_FAIL:-not_run}"
+            echo "- main modified: NO"
+            echo "- commit: NO"
+            echo "- PR: NO"
+            echo
+            echo "### Next"
+            echo "問題がなければ同じブランチ・同じ patch / manifest で \`apply_and_pr\` を実行してください。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply tested diff to current branch
+        if: ${{ inputs.mode == 'apply_and_pr' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REF_NAME" != "main"
+
+          git apply --index /tmp/chass-maint.patch
+          git diff --cached --check
+
+      - name: Commit and push current branch
+        if: ${{ inputs.mode == 'apply_and_pr' }}
+        id: commit
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+
+          PATCH_ID="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).patch_id")"
+          TITLE="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).title")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "fix: $TITLE [$PATCH_ID]"
+          SHA="$(git rev-parse HEAD)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: ${{ inputs.mode == 'apply_and_pr' }}
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+
+          PATCH_ID="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).patch_id")"
+          TITLE="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).title")"
+          SUMMARY="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).summary")"
+
+          EXISTING="$(gh pr list \
+            --base main \
+            --head "$GITHUB_REF_NAME" \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty' || true)"
+
+          if [ -n "$EXISTING" ]; then
+            echo "url=$EXISTING" >> "$GITHUB_OUTPUT"
+            echo "Existing PR: $EXISTING"
+            exit 0
+          fi
+
+          BODY_FILE=/tmp/chass-maint-pr.md
+          cat > "$BODY_FILE" <<EOF
+          ## CHASS Maintenance Runner
+
+          **Patch ID:** \`$PATCH_ID\`
+
+          $SUMMARY
+
+          ### Safety
+          - main direct push: NO
+          - isolated patch validation: PASS
+          - changed-file allowlist: PASS
+          - syntax checks: PASS
+          - regression comparison: PASS
+          - production deploy: NOT PERFORMED
+
+          ### Commit
+          \`${{ steps.commit.outputs.sha }}\`
+          EOF
+
+          set +e
+          URL="$(gh pr create \
+            --base main \
+            --head "$GITHUB_REF_NAME" \
+            --title "$TITLE" \
+            --body-file "$BODY_FILE" 2>/tmp/chass-maint-pr-error.log)"
+          RC=$?
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::Automatic PR creation was not permitted."
+            cat /tmp/chass-maint-pr-error.log || true
+            echo "url=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "PR created: $URL"
+
+      - name: Remove applied maintenance package from branch
+        if: ${{ inputs.mode == 'apply_and_pr' && success() }}
+        shell: bash
+        env:
+          PATCH_PATH: ${{ inputs.patch_path }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" != "main"
+
+          git rm -f -- "$PATCH_PATH" "$MANIFEST_PATH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove applied maintenance package"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Final summary
+        if: ${{ inputs.mode == 'apply_and_pr' && success() }}
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          BASE_FAIL: ${{ steps.baseline.outputs.fail_count }}
+          PATCH_FAIL: ${{ steps.regression.outputs.fail_count }}
+        run: |
+          set -euo pipefail
+
+          PATCH_ID="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).patch_id")"
+          TITLE="$(node -p "JSON.parse(require('fs').readFileSync('$MANIFEST_PATH','utf8')).title")"
+
+          {
+            echo "## CHASS Maintenance Runner v1.1 — APPLIED TO BRANCH"
+            echo
+            echo "- Patch ID: \`$PATCH_ID\`"
+            echo "- Title: $TITLE"
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${{ steps.commit.outputs.sha }}\`"
+            echo "- Baseline failures: ${BASE_FAIL:-not_run}"
+            echo "- Patched failures: ${PATCH_FAIL:-not_run}"
+            echo "- main direct push: NO"
+            echo "- production deploy: NO"
+            echo "- maintenance patch package: REMOVED FROM BRANCH AFTER APPLY"
+            if [ -n "${PR_URL:-}" ]; then
+              echo "- PR: $PR_URL"
+            else
+              echo "- PR: 自動作成不可。GitHub画面から \`${GITHUB_REF_NAME}\` → \`main\` のPRを作成してください。"
+            fi
+            echo
+            echo "### Important"
+            echo "PRを確認するまでは main へマージしないでください。"
+          } >> "$GITHUB_STEP_SUMMARY"
