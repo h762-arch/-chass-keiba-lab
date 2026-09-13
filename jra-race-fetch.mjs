@@ -106,7 +106,7 @@ function parsePast(cell){
     time:/^\d+:\d{2}\.\d$/.test(time)?time:'',
     trackCondition:strip(pick(cell,'condition'))||'不明',
     bodyWeight:number(pick(cell,'h_weight')),
-    cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\s]+/).map(Number).filter(Number.isFinite),
+    cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\s]+/).filter(Boolean).map(Number).filter(n=>Number.isInteger(n)&&n>0),
     last3F:number(pick(cell,'f3')),
     historicalStatus:/除外/.test(place)?'excluded':/取消/.test(place)?'scratched':/中止/.test(place)?'dnf':'finished'
   };

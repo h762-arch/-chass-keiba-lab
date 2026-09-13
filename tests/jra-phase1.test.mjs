@@ -123,3 +123,34 @@ test('JRA result provenance, condition delta and automatic validation remain exp
  assert.match(source,/単勝オッズ/);
  assert.match(source,/人気順/);
 });
+// CHASS-JRA-CORNER-NORMALIZER-MODEL-REGRESSION-v1
+test('JRA corner normalization rejects empty null and zero while preserving valid positions',()=>{
+  for(const value of ['', '   ', [], [''], [null], [0], [null,'',0]]){
+    const data=fixture({market:false});
+    data.horses[0].pastRuns[0].cornerPositions=value;
+    const normalized=N.normalizeJraData(data);
+    assert.deepEqual(Array.from(normalized.horses[0].pastRuns[0].cornerPositions),[]);
+  }
+
+  const valid=fixture({market:false});
+  valid.horses[0].pastRuns[0].cornerPositions='3-4-4';
+  const normalized=N.normalizeJraData(valid);
+  assert.deepEqual(Array.from(normalized.horses[0].pastRuns[0].cornerPositions),[3,4,4]);
+});
+
+test('missing corner evidence cannot create false escape or forward running style',()=>{
+  const missing=fixture({market:false});
+  missing.horses[0].pastRuns=[
+    {...missing.horses[0].pastRuns[0],cornerPositions:''}
+  ];
+  const missingResult=M.calculate(N.normalizeJraData(missing));
+  assert.equal(missingResult.horses.find(h=>h.horseNo===1).runningStyle,'不明');
+
+  const mixed=fixture({market:false});
+  mixed.horses[0].pastRuns=[
+    {...mixed.horses[0].pastRuns[0],cornerPositions:''},
+    {...mixed.horses[0].pastRuns[1],cornerPositions:[8]}
+  ];
+  const mixedResult=M.calculate(N.normalizeJraData(mixed));
+  assert.equal(mixedResult.horses.find(h=>h.horseNo===1).runningStyle,'中団');
+});

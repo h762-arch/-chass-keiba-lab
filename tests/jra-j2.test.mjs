@@ -22,3 +22,10 @@ const complete={ok:true,dataConfidence:'high',quality:{raceParsed:true,horseCoun
 test('manual official-load commits a high quality card',async()=>{const c=client(async()=>Response.json(complete));await c.api.load();assert.equal(c.commits,1);assert.match(c.elements.jraStatus.textContent,/予想計算完了/);});
 test('low quality and stale responses never commit prediction',async()=>{const low=client(async()=>Response.json({...complete,dataConfidence:'low'}));await low.api.load();assert.equal(low.commits,0);let release;const stale=client(()=>new Promise(r=>release=r));const pending=stale.api.load();stale.change();release(Response.json(complete));await pending;assert.equal(stale.commits,0);});
 test('auto race fetch stays off by default and debounces only when explicitly enabled',async()=>{let calls=0;const off=client(async()=>{calls++;return Response.json(complete)});off.api.selectionChanged();await new Promise(r=>setTimeout(r,450));assert.equal(calls,0);const on=client(async()=>{calls++;return Response.json(complete)},{ENABLE_JRA_AUTO_FETCH:true});on.api.selectionChanged();on.api.selectionChanged();await new Promise(r=>setTimeout(r,450));assert.equal(calls,1);assert.equal(on.commits,1);});
+// CHASS-JRA-CORNER-SAFETY-REGRESSION-v1
+test('empty official historical corner positions stay empty instead of becoming zero',()=>{
+  const data=parseJraRaceCard(html,query);
+  const run=data.horses.find(x=>x.horseNo===9).pastRuns[0];
+  assert.deepEqual(run.cornerPositions,[]);
+  assert.equal(run.historicalStatus,'excluded');
+});

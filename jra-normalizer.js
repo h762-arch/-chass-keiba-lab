@@ -5,7 +5,7 @@ const numberOrNull=value=>{if(value==null||String(value).trim()==='')return null
 const text=value=>value==null?'':String(value).trim();
 const isoDate=value=>{const s=text(value).replaceAll('/','-');return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:''};
 const timeSeconds=value=>{if(Number.isFinite(Number(value)))return Number(value);const m=text(value).match(/^(?:(\d+):)?(\d{1,2})(?:\.(\d))?$/);if(!m)return null;return Number(m[1]||0)*60+Number(m[2])+Number(m[3]||0)/10};
-const corners=value=>Array.isArray(value)?value.map(Number).filter(Number.isFinite):text(value).split(/[-→>\s]+/).map(Number).filter(Number.isFinite);
+const corners=value=>{const raw=Array.isArray(value)?value:text(value).split(/[-→>\s]+/);return raw.map(v=>typeof v==='string'?v.trim():v).filter(v=>v!==''&&v!=null).map(Number).filter(n=>Number.isInteger(n)&&n>0);};
 function parseJsonMaybe(value,fallback=[]){if(Array.isArray(value))return value;if(!text(value))return fallback;try{const parsed=JSON.parse(value);return Array.isArray(parsed)?parsed:fallback}catch{return fallback}}
 function normalizeSurface(value){const s=text(value);return /ダ|dirt/i.test(s)?'ダート':/芝|turf/i.test(s)?'芝':''}
 function normalizeCondition(value){const s=text(value);if(/稍/.test(s))return '稍重';if(/不良/.test(s))return '不良';if(/^重$|重馬場/.test(s))return '重';if(/良/.test(s))return '良';return s||'不明'}
