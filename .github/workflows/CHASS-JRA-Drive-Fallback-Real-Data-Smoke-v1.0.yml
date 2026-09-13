@@ -1,0 +1,356 @@
+name: CHASS JRA Drive Fallback Real Data Smoke v1.0
+
+"on":
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Drive事前データの開催日 (YYYY-MM-DD)"
+        required: true
+        default: "2026-09-13"
+        type: string
+      track:
+        description: "JRA競馬場"
+        required: true
+        default: "阪神"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "レース番号"
+        required: true
+        default: "7"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+      require_any_past_run:
+        description: "過去走が1頭以上Driveに保存済みであることを必須にする"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-drive-real-data-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Real Drive -> Fallback -> Normalizer -> JRA Model
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON }}
+      ENABLE_DRIVE_READ_IMPORT: "true"
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+      TEST_DATE: ${{ inputs.date }}
+      TEST_TRACK: ${{ inputs.track }}
+      TEST_RACE: ${{ inputs.race }}
+      REQUIRE_ANY_PAST_RUN: ${{ inputs.require_any_past_run }}
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Read-only safety preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for f in \
+            google-drive-readonly-import.mjs \
+            jra-drive-prediction-input.mjs \
+            jra-normalizer.js \
+            jra-model.js \
+            jra-adapter.js
+          do
+            test -f "$f" || { echo "::error::Missing required file: $f"; exit 1; }
+          done
+
+          test -n "${GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:-}" || {
+            echo "::error::GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON is not configured."
+            exit 1
+          }
+
+          grep -q "JRA_DRIVE_FRIDAY_BASE" jra-drive-prediction-input.mjs
+          grep -q "JRA_DRIVE_PAST_RUN_LIMIT = 10" jra-drive-prediction-input.mjs
+
+          echo "Read-only smoke test: no official JRA request, no D1 write, no Drive write, no deploy."
+
+      - name: Verify real Drive fallback and run JRA model
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/chass-jra-drive-real-smoke.mjs <<'NODE'
+          import fs from 'node:fs';
+          import vm from 'node:vm';
+          import {
+            getDriveReadReadiness,
+            readChassArchiveSheet,
+          } from './google-drive-readonly-import.mjs';
+          import {
+            JRA_DRIVE_INDEX_SHEET,
+            JRA_DRIVE_PAST_RUN_LIMIT,
+            extractJraDriveRaceRows,
+            createDriveJraFallback,
+          } from './jra-drive-prediction-input.mjs';
+
+          const env = {
+            ENABLE_DRIVE_READ_IMPORT: process.env.ENABLE_DRIVE_READ_IMPORT,
+            CHASS_DRIVE_SPREADSHEET_ID: process.env.CHASS_DRIVE_SPREADSHEET_ID,
+            GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON,
+          };
+
+          const context = {
+            date: String(process.env.TEST_DATE || '').trim(),
+            track: String(process.env.TEST_TRACK || '').trim(),
+            race: Number(process.env.TEST_RACE),
+          };
+
+          const mustHavePastRun = /^(1|true|yes|on)$/i.test(String(process.env.REQUIRE_ANY_PAST_RUN || ''));
+
+          const fail = (message) => {
+            console.error(`::error::${message}`);
+            process.exitCode = 1;
+            throw new Error(message);
+          };
+
+          const readiness = getDriveReadReadiness(env);
+          if (!readiness.enabled || !readiness.configured) {
+            fail(`Drive reader is not ready: ${JSON.stringify({
+              enabled: readiness.enabled,
+              configured: readiness.configured,
+              missing: readiness.missing,
+              credentialErrorCode: readiness.credentialErrorCode
+            })}`);
+          }
+
+          const sheet = await readChassArchiveSheet(
+            env,
+            JRA_DRIVE_INDEX_SHEET,
+            { organization: 'JRA', maxRows: 5000, maxColumn: 'AZ' },
+          );
+
+          const rows = extractJraDriveRaceRows(sheet.records, context);
+          if (rows.length < 2) {
+            fail(`Drive race rows not found or incomplete: ${context.date} ${context.track} ${context.race}R rows=${rows.length}`);
+          }
+
+          // IMPORTANT:
+          // This directly constructs the fallback from Drive rows.
+          // It does NOT call the JRA official handler.
+          const fallback = createDriveJraFallback(
+            context,
+            rows,
+            'SMOKE_OFFICIAL_DISABLED',
+          );
+
+          if (fallback.source !== 'JRA_DRIVE_FRIDAY_BASE') {
+            fail(`Unexpected fallback source: ${fallback.source}`);
+          }
+          if (fallback.officialStatus !== 'unavailable') {
+            fail(`officialStatus must be unavailable in forced Drive-only smoke: ${fallback.officialStatus}`);
+          }
+          if (fallback.driveInput?.status !== 'fallback') {
+            fail(`driveInput.status must be fallback: ${fallback.driveInput?.status}`);
+          }
+          if (fallback.dataConfidence !== 'high') {
+            fail(`Drive fallback dataConfidence is not high: ${fallback.dataConfidence}`);
+          }
+          if (!fallback.quality?.raceParsed) {
+            fail('Drive fallback raceParsed=false');
+          }
+          if (fallback.quality.horseCount < 2) {
+            fail(`Invalid horseCount: ${fallback.quality.horseCount}`);
+          }
+          if (fallback.quality.horseNameRate !== 1) {
+            fail(`horseNameRate=${fallback.quality.horseNameRate}`);
+          }
+          if (fallback.quality.weightRate !== 1) {
+            fail(`weightRate=${fallback.quality.weightRate}`);
+          }
+          if (fallback.quality.jockeyRate !== 1) {
+            fail(`jockeyRate=${fallback.quality.jockeyRate}`);
+          }
+
+          const horseNos = fallback.horses.map(h => Number(h.horseNo));
+          if (new Set(horseNos).size !== horseNos.length) {
+            fail('Duplicate horseNo detected in Drive fallback.');
+          }
+          if (fallback.horses.some(h => h.odds != null || h.popularity != null)) {
+            fail('Drive forecast market leaked into ability odds/popularity.');
+          }
+          if (fallback.horses.some(h => (h.pastRuns?.length || 0) > JRA_DRIVE_PAST_RUN_LIMIT)) {
+            fail('A horse has more than 10 past runs.');
+          }
+
+          const pastRunHorseCount = fallback.horses.filter(
+            h => (h.pastRuns?.length || 0) > 0,
+          ).length;
+
+          const pastRunCounts = fallback.horses.map(h => ({
+            horseNo: h.horseNo,
+            horseName: h.horseName,
+            count: h.pastRuns?.length || 0,
+          }));
+
+          if (mustHavePastRun && pastRunHorseCount === 0) {
+            fail('require_any_past_run=true but no Drive horse has historical runs.');
+          }
+
+          // Run the exact JRA browser model stack in Node, same style as existing tests.
+          const repoRoot = new URL(`file://${process.cwd().replace(/\\/g, '/')}/`);
+          const modelContext = vm.createContext({
+            console, Date, Math, JSON, Number, String, Array, Object, Map, Set, RegExp, Intl,
+          });
+          modelContext.globalThis = modelContext;
+
+          for (const file of ['jra-normalizer.js', 'jra-model.js', 'jra-adapter.js']) {
+            vm.runInContext(
+              fs.readFileSync(new URL(file, repoRoot), 'utf8'),
+              modelContext,
+              { filename: file },
+            );
+          }
+
+          const N = modelContext.CHASS_JRA_NORMALIZER;
+          const A = modelContext.CHASS_JRA_ADAPTER;
+
+          if (!N?.normalizeJraData || !A?.run) {
+            fail('JRA normalizer/adapter could not be loaded.');
+          }
+
+          const normalized = N.normalizeJraData(fallback);
+          if (!normalized.validation?.ok) {
+            fail(`JRA normalizer rejected Drive fallback: ${JSON.stringify(normalized.validation)}`);
+          }
+
+          const result = A.run(normalized);
+          const predicted = result?.prediction?.horses || [];
+
+          if (predicted.length !== fallback.horses.length) {
+            fail(`Model horse count mismatch: fallback=${fallback.horses.length}, prediction=${predicted.length}`);
+          }
+
+          const winTotal = Number(result?.prediction?.quality?.winProbabilityTotal);
+          const placeTotal = Number(result?.prediction?.quality?.placeProbabilityTotal);
+
+          if (!Number.isFinite(winTotal) || Math.abs(winTotal - 100) >= 0.05) {
+            fail(`Win probability total invalid: ${winTotal}`);
+          }
+          if (!Number.isFinite(placeTotal) || Math.abs(placeTotal - 300) >= 0.10) {
+            fail(`Place probability total invalid: ${placeTotal}`);
+          }
+          if (result?.prediction?.quality?.probabilityInvariant !== true) {
+            fail('Probability invariant failed.');
+          }
+
+          const ranked = [...predicted]
+            .sort((a, b) => (b.win ?? 0) - (a.win ?? 0))
+            .slice(0, 5)
+            .map(h => ({
+              horseNo: h.horseNo,
+              horseName: h.horseName,
+              win: h.win,
+              place: h.place,
+              overall: h.overall,
+              predictedTime: h.predictedTime || '',
+            }));
+
+          const report = {
+            ok: true,
+            mode: 'DRIVE_ONLY_NO_OFFICIAL_REQUEST',
+            testedAt: new Date().toISOString(),
+            context,
+            source: fallback.source,
+            officialStatus: fallback.officialStatus,
+            driveInputStatus: fallback.driveInput?.status,
+            driveStoredAt: fallback.driveStoredAt || '',
+            rowCount: rows.length,
+            horseCount: fallback.quality.horseCount,
+            activeHorseCount: fallback.quality.activeHorseCount,
+            dataConfidence: fallback.dataConfidence,
+            pastRunLimit: JRA_DRIVE_PAST_RUN_LIMIT,
+            pastRunHorseCount,
+            pastRunCoverage: Number((pastRunHorseCount / fallback.horses.length).toFixed(4)),
+            pastRunCounts,
+            marketLeak: false,
+            model: {
+              horseCount: predicted.length,
+              winProbabilityTotal: winTotal,
+              placeProbabilityTotal: placeTotal,
+              probabilityInvariant: true,
+              top5ByAiWin: ranked,
+            },
+          };
+
+          fs.writeFileSync(
+            '/tmp/chass-jra-drive-real-smoke-report.json',
+            JSON.stringify(report, null, 2),
+          );
+
+          const summary = process.env.GITHUB_STEP_SUMMARY;
+          fs.appendFileSync(summary, [
+            '# CHASS JRA Drive Real Data Smoke - PASS',
+            '',
+            `- 対象: ${context.date} ${context.track} ${context.race}R`,
+            '- JRA公式アクセス: **実行していません**',
+            `- Drive source: **${fallback.source}**`,
+            `- Drive rows / horses: **${rows.length} / ${fallback.quality.horseCount}**`,
+            `- dataConfidence: **${fallback.dataConfidence}**`,
+            `- 過去走保存あり: **${pastRunHorseCount}/${fallback.horses.length}頭**`,
+            `- 過去走上限: **${JRA_DRIVE_PAST_RUN_LIMIT}走**`,
+            '- Drive予想オッズ・人気の能力計算流入: **なし**',
+            `- AI勝率合計: **${winTotal.toFixed(2)}%**`,
+            `- AI複勝率合計: **${placeTotal.toFixed(2)}%**`,
+            '- Normalizer -> JRA Model: **PASS**',
+            '',
+            pastRunHorseCount === 0
+              ? '> ⚠️ 現在の対象レースにはDrive過去走がありません。フォールバック経路とモデル実行は確認できましたが、最大10走保存の実データ確認は次回金曜保存後に再実行してください。'
+              : '> Driveに保存された過去走を実際に読み込み、モデル投入まで確認できました。',
+          ].join('\n') + '\n');
+
+          console.log(JSON.stringify(report, null, 2));
+          NODE
+
+          node /tmp/chass-jra-drive-real-smoke.mjs
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chass-jra-drive-real-smoke-${{ inputs.date }}-${{ inputs.track }}-${{ inputs.race }}R
+          path: /tmp/chass-jra-drive-real-smoke-report.json
+          if-no-files-found: ignore
+          retention-days: 14
