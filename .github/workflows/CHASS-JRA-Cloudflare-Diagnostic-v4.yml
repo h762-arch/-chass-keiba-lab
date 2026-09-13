@@ -1,0 +1,419 @@
+name: CHASS JRA Cloudflare Diagnostic v4
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "診断モード"
+        required: true
+        default: "service_safe"
+        type: choice
+        options:
+          - service_safe
+          - transport_1042
+      date:
+        description: "JRA開催日 YYYY-MM-DD"
+        required: true
+        default: "2026-09-13"
+        type: string
+      track:
+        description: "競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options: [札幌, 函館, 福島, 新潟, 東京, 中山, 中京, 京都, 阪神, 小倉]
+      race:
+        description: "レース番号"
+        required: true
+        default: "1"
+        type: choice
+        options: ["1","2","3","4","5","6","7","8","9","10","11","12"]
+      production_base_url:
+        description: "本番Worker URL（読取確認のみ）"
+        required: true
+        default: "https://chass-keiba-lab7.h7625421.workers.dev"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-cloudflare-diagnostic-v4-${{ inputs.mode }}
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  PRODUCTION_WORKER_NAME: chass-keiba-lab7
+
+jobs:
+  service_safe:
+    if: ${{ inputs.mode == 'service_safe' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout selected ref read-only
+        id: safety
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Safety and authentication preflight
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE_SHA="$(git rev-parse HEAD)"
+          echo "baseline_sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test -f jra-race-fetch.mjs
+          test -f jra-meeting-discovery.mjs
+          test -f wrangler.jsonc
+          test -z "$(git status --porcelain=v1)"
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami >/dev/null
+
+          DIAG_WORKER="chass-jra-diag-v4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$DIAG_WORKER" != "$PRODUCTION_WORKER_NAME"
+          echo "diag_worker=$DIAG_WORKER" >> "$GITHUB_OUTPUT"
+
+      - name: Build current-source isolated service diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-jra-diag-v4
+          mkdir -p /tmp/chass-jra-diag-v4
+          cp jra-race-fetch.mjs jra-meeting-discovery.mjs /tmp/chass-jra-diag-v4/
+
+          cat > /tmp/chass-jra-diag-v4/diagnostic-worker.mjs <<'EOF'
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+
+          const clip = (s,n=280)=>String(s||'').replace(/\s+/g,' ').slice(0,n);
+          const safeUrl = input => {
+            try {
+              const u = new URL(typeof input === 'string' ? input : input.url);
+              return `${u.origin}${u.pathname}${u.search}`;
+            } catch { return 'unparseable-url'; }
+          };
+
+          export default {
+            async fetch(request) {
+              const incoming = new URL(request.url);
+              if (incoming.pathname !== '/probe') return Response.json({ok:false,error:'NOT_FOUND'},{status:404});
+              const date=incoming.searchParams.get('date')||'';
+              const track=incoming.searchParams.get('track')||'';
+              const race=incoming.searchParams.get('race')||'';
+              const trace=[];
+
+              const tracedFetch=async(input,init={})=>{
+                const started=Date.now();
+                const method=String(init?.method||(input instanceof Request?input.method:'GET')).toUpperCase();
+                try {
+                  const response=await fetch(input,init);
+                  let bodyPrefix=null;
+                  try { bodyPrefix=clip(await response.clone().text()); } catch {}
+                  trace.push({
+                    method,url:safeUrl(input),status:response.status,ok:response.ok,
+                    location:response.headers.get('location'),server:response.headers.get('server'),
+                    cfRay:response.headers.get('cf-ray'),elapsedMs:Date.now()-started,bodyPrefix
+                  });
+                  return response;
+                } catch(error) {
+                  trace.push({method,url:safeUrl(input),ok:false,error:String(error?.message||error),elapsedMs:Date.now()-started});
+                  throw error;
+                }
+              };
+
+              const service=createJraRaceService({fetchImpl:tracedFetch,timeoutMs:20000});
+              const target=new URL('https://diagnostic.invalid/api/jra/race');
+              target.searchParams.set('date',date); target.searchParams.set('track',track); target.searchParams.set('race',race);
+              let serviceStatus=null, serviceBody=null, serviceError=null;
+              try {
+                const response=await service(new Request(target),{ENABLE_JRA_AUTO_FETCH:false});
+                serviceStatus=response.status;
+                const text=await response.text();
+                try { serviceBody=JSON.parse(text); } catch { serviceBody={rawPrefix:clip(text,800)}; }
+              } catch(error) {
+                serviceError={name:error?.name||'Error',message:String(error?.message||error)};
+              }
+              return Response.json({
+                ok:serviceBody?.ok===true, runtime:'cloudflare-worker-current-source',
+                target:{date,track,race:Number(race)}, serviceStatus,serviceBody,serviceError,trace
+              });
+            }
+          };
+          EOF
+
+          cat > /tmp/chass-jra-diag-v4/wrangler.jsonc <<EOF
+          {
+            "name": "${{ steps.preflight.outputs.diag_worker }}",
+            "main": "diagnostic-worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "workers_dev": true,
+            "preview_urls": false,
+            "observability": { "enabled": false }
+          }
+          EOF
+
+          node --check /tmp/chass-jra-diag-v4/diagnostic-worker.mjs
+          node --check /tmp/chass-jra-diag-v4/jra-race-fetch.mjs
+
+      - name: GitHub Runner current-source probe
+        id: runner
+        shell: bash
+        env:
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_TRACK: ${{ inputs.track }}
+          TARGET_RACE: ${{ inputs.race }}
+        run: |
+          set +e
+          cd /tmp/chass-jra-diag-v4
+          node --input-type=module <<'NODE' > /tmp/runner-v4.json
+          import { createJraRaceService } from './jra-race-fetch.mjs';
+          const trace=[];
+          const traced=async(input,init={})=>{
+            const started=Date.now();
+            try {
+              const r=await fetch(input,init);
+              trace.push({url:typeof input==='string'?input:input.url,status:r.status,ok:r.ok,elapsedMs:Date.now()-started});
+              return r;
+            } catch(e) {
+              trace.push({url:typeof input==='string'?input:input.url,ok:false,error:String(e?.message||e)});
+              throw e;
+            }
+          };
+          const service=createJraRaceService({fetchImpl:traced,timeoutMs:20000});
+          const u=new URL('https://diagnostic.invalid/api/jra/race');
+          u.searchParams.set('date',process.env.TARGET_DATE);
+          u.searchParams.set('track',process.env.TARGET_TRACK);
+          u.searchParams.set('race',process.env.TARGET_RACE);
+          try {
+            const r=await service(new Request(u),{ENABLE_JRA_AUTO_FETCH:false});
+            const body=await r.json();
+            console.log(JSON.stringify({ok:body.ok===true,status:r.status,error:body.error??null,quality:body.quality??null,trace},null,2));
+          } catch(e) {
+            console.log(JSON.stringify({ok:false,error:String(e?.message||e),trace},null,2));
+          }
+          NODE
+          STATUS=$?
+          RUNNER_OK="$(node -e "const x=require('/tmp/runner-v4.json');process.stdout.write(String(x.ok===true))" 2>/dev/null || echo false)"
+          echo "ok=$RUNNER_OK" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Deploy isolated diagnostic Worker
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-diag-v4
+          node -e "const c=require('./wrangler.jsonc'); if(c.name===process.env.PRODUCTION_WORKER_NAME) process.exit(2)"
+          npx -y wrangler@4 deploy --config wrangler.jsonc 2>&1 | tee /tmp/diag-v4-deploy.log
+          URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/diag-v4-deploy.log | tail -n1 || true)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Cloudflare current-source probe
+        id: cf
+        shell: bash
+        env:
+          DIAG_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set +e
+          HTTP="$(curl -sS --max-time 35 --get "$DIAG_URL/probe" \
+            --data-urlencode "date=${{ inputs.date }}" \
+            --data-urlencode "track=${{ inputs.track }}" \
+            --data-urlencode "race=${{ inputs.race }}" \
+            -o /tmp/cf-v4.json -w '%{http_code}')"
+          CF_OK="$(node -e "const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/cf-v4.json','utf8'));process.stdout.write(String(x.ok===true))}catch{process.stdout.write('false')}" 2>/dev/null)"
+          echo "http=$HTTP" >> "$GITHUB_OUTPUT"
+          echo "ok=$CF_OK" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Read-only production/assets audit and summary
+        if: always()
+        shell: bash
+        env:
+          PRODUCTION_BASE_URL: ${{ inputs.production_base_url }}
+        run: |
+          set +e
+          ROOT_RISK="$(node - <<'NODE'
+          const fs=require('fs');
+          const raw=fs.readFileSync('wrangler.jsonc','utf8').replace(/^\s*\/\/.*$/gm,'').replace(/\/\*[\s\S]*?\*\//g,'');
+          const c=JSON.parse(raw);
+          process.stdout.write(String(c?.assets?.directory==='.'||c?.assets?.directory==='./'));
+          NODE
+          )"
+          GIT_HTTP="$(curl -sS --max-time 12 -o /tmp/git-config-probe.bin -w '%{http_code}' "$PRODUCTION_BASE_URL/.git/config" || true)"
+          rm -f /tmp/git-config-probe.bin
+
+          {
+            echo "## CHASS JRA Cloudflare Diagnostic v4 — service_safe"
+            echo
+            echo "- Current-source Runner JRA: ${{ steps.runner.outputs.ok || 'unknown' }}"
+            echo "- Current-source Cloudflare JRA: ${{ steps.cf.outputs.ok || 'unknown' }}"
+            echo "- Cloudflare diagnostic endpoint HTTP: ${{ steps.cf.outputs.http || 'unknown' }}"
+            echo "- Repository-root assets risk: $ROOT_RISK"
+            echo "- Production /.git/config HTTP: $GIT_HTTP (body not logged)"
+            echo
+            echo "### Safety"
+            echo "- Repository write: NO"
+            echo "- Production deploy: NO"
+            echo "- D1 change: NO"
+            echo "- Temporary diagnostic Worker only: YES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Delete temporary Worker
+        if: always() && steps.preflight.outputs.diag_worker != ''
+        shell: bash
+        run: |
+          set +e
+          cd /tmp/chass-jra-diag-v4 2>/dev/null || exit 0
+          printf 'y\n' | npx -y wrangler@4 delete \
+            --name "${{ steps.preflight.outputs.diag_worker }}" \
+            --config wrangler.jsonc
+          exit 0
+
+      - name: Final immutability check
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.preflight.outputs.baseline_sha }}"
+          test -z "$(git status --porcelain=v1)"
+
+  transport_1042:
+    if: ${{ inputs.mode == 'transport_1042' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Cloudflare authentication preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami >/dev/null
+
+      - name: Build transport diagnostic Worker
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chass-transport-v4
+          NAME="chass-jra-transport-v4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+          cat > /tmp/chass-transport-v4/worker.mjs <<'EOF'
+          const clean=s=>String(s||'').replace(/[\r\n\t]+/g,' ').replace(/\s+/g,' ').slice(0,240);
+          async function probe(url,init={}) {
+            const started=Date.now();
+            try {
+              const r=await fetch(url,{
+                ...init,redirect:'manual',
+                headers:{
+                  'user-agent':'Mozilla/5.0 (compatible; CHASS-Diagnostic/4.0)',
+                  'accept':'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+                  'accept-language':'ja,en;q=0.7',...(init.headers||{})
+                }
+              });
+              let body=''; try{body=await r.text();}catch{}
+              return {ok:true,status:r.status,url,method:init.method||'GET',location:r.headers.get('location'),
+                server:r.headers.get('server'),cfRay:r.headers.get('cf-ray'),bodyPrefix:clean(body),elapsedMs:Date.now()-started};
+            } catch(e) {
+              return {ok:false,url,method:init.method||'GET',error:String(e?.message||e),elapsedMs:Date.now()-started};
+            }
+          }
+          export default {
+            async fetch(request) {
+              const p=new URL(request.url).pathname;
+              if(p==='/__health') return Response.json({ok:true});
+              if(p==='/self') return Response.json({probe:'self',result:await probe(new URL('/__health',request.url).toString())});
+              if(p==='/cloudflare') return Response.json({probe:'cloudflare',result:await probe('https://www.cloudflare.com/')});
+              if(p==='/jra-root') return Response.json({probe:'jra-root',result:await probe('https://www.jra.go.jp/')});
+              if(p==='/jra-get') return Response.json({probe:'jra-get',result:await probe('https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3')});
+              if(p==='/jra-post') {
+                const body=new URLSearchParams({cname:'pw01dli00/F3'}).toString();
+                return Response.json({probe:'jra-post',result:await probe(
+                  'https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dli00/F3',
+                  {method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','referer':'https://www.jra.go.jp/'},body}
+                )});
+              }
+              return Response.json({ok:false},{status:404});
+            }
+          };
+          EOF
+
+          cat > /tmp/chass-transport-v4/wrangler.jsonc <<EOF
+          {
+            "name": "$NAME",
+            "main": "worker.mjs",
+            "compatibility_date": "2026-08-27",
+            "compatibility_flags": ["global_fetch_strictly_public"],
+            "workers_dev": true,
+            "preview_urls": false,
+            "observability": { "enabled": false }
+          }
+          EOF
+          node --check /tmp/chass-transport-v4/worker.mjs
+
+      - name: Deploy transport diagnostic Worker
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-transport-v4
+          npx -y wrangler@4 deploy --config wrangler.jsonc 2>&1 | tee /tmp/transport-deploy.log
+          URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/transport-deploy.log | tail -n1 || true)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Run transport matrix
+        id: matrix
+        shell: bash
+        env:
+          DIAG_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set +e
+          : > /tmp/transport-results.tsv
+          for ITEM in "self:/self" "cloudflare:/cloudflare" "jra_root:/jra-root" "jra_get:/jra-get" "jra_post:/jra-post"; do
+            NAME="${ITEM%%:*}"; PATHX="${ITEM#*:}"
+            CODE="$(curl -sS --max-time 30 -o "/tmp/${NAME}.json" -w '%{http_code}' "$DIAG_URL$PATHX" || true)"
+            OK="$(NAME="$NAME" node - <<'NODE'
+          const fs=require('fs');
+          const n=process.env.NAME;
+          try {
+            const x=JSON.parse(fs.readFileSync(`/tmp/${n}.json`,'utf8'));
+            process.stdout.write(String(x?.result?.ok===true));
+          } catch { process.stdout.write('false'); }
+          NODE
+            )"
+            printf '%s\t%s\t%s\n' "$NAME" "$CODE" "$OK" >> /tmp/transport-results.tsv
+          done
+
+          {
+            echo "## CHASS JRA Cloudflare Diagnostic v4 — transport_1042"
+            echo
+            echo "| Probe | Endpoint HTTP | Outbound fetch completed |"
+            echo "|---|---:|---|"
+            while IFS=$'\t' read -r NAME CODE OK; do echo "| $NAME | $CODE | $OK |"; done < /tmp/transport-results.tsv
+            echo
+            echo "- Production Worker modified: NO"
+            echo "- D1 modified: NO"
+            echo "- Temporary diagnostic Worker only: YES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Delete temporary Worker
+        if: always() && steps.build.outputs.name != ''
+        shell: bash
+        run: |
+          set +e
+          curl -sS --max-time 20 -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/${{ steps.build.outputs.name }}?force=true" \
+            >/dev/null
+          exit 0
