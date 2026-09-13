@@ -150,6 +150,7 @@ jobs:
               --data-urlencode "date=${{ steps.fetch.outputs.smoke_date }}" \
               --data-urlencode "track=${{ steps.fetch.outputs.smoke_track }}" \
               --data-urlencode "race=${{ steps.fetch.outputs.smoke_race }}" \
+              --data-urlencode "official_only=1" \
               -o /tmp/jra-production-cache.json \
               -w '%{http_code}' || true)"
 
@@ -201,4 +202,5 @@ jobs:
             echo "- Failed races: ${{ steps.fetch.outputs.failure_count }}"
             echo "- Cache destination: Cloudflare D1"
             echo "- Cloudflare Worker -> JRA direct fetch: not used"
+            echo "- Production smoke: official_only=1 (Drive merge/fallback bypassed)"
           } >> "$GITHUB_STEP_SUMMARY"
