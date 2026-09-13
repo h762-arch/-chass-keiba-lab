@@ -1,0 +1,411 @@
+name: CHASS JRA Corner Position Safety Hotfix v1.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード。最初は audit_only、確認後に apply_fix を推奨"
+        required: true
+        default: "audit_only"
+        type: choice
+        options:
+          - audit_only
+          - apply_fix
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-corner-position-safety-hotfix-v11
+  cancel-in-progress: false
+
+jobs:
+  corner-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          for file in \
+            jra-race-fetch.mjs \
+            jra-normalizer.js \
+            jra-model.js \
+            jra-race-card-fixture.html \
+            tests/jra-j2.test.mjs \
+            tests/jra-phase1.test.mjs \
+            mcp/package.json \
+            mcp/package-lock.json
+          do
+            test -f "$file" || {
+              echo "::error::Required file missing: $file"
+              exit 1
+            }
+          done
+
+          git diff --quiet
+          git diff --cached --quiet
+
+          echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Audit current corner-position handling
+        id: audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          race = Path("jra-race-fetch.mjs").read_text()
+          norm = Path("jra-normalizer.js").read_text()
+          fixture = Path("jra-race-card-fixture.html").read_text()
+
+          vulnerable_race = (
+              "cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\\s]+/)"
+              ".map(Number).filter(Number.isFinite),"
+          )
+          fixed_race = (
+              "cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\\s]+/)"
+              ".filter(Boolean).map(Number)"
+              ".filter(n=>Number.isInteger(n)&&n>0),"
+          )
+
+          vulnerable_norm = (
+              "const corners=value=>Array.isArray(value)?value.map(Number)"
+              ".filter(Number.isFinite):text(value).split(/[-→>\\s]+/)"
+              ".map(Number).filter(Number.isFinite);"
+          )
+          fixed_norm = (
+              "const corners=value=>{const raw=Array.isArray(value)?value:"
+              "text(value).split(/[-→>\\s]+/);return raw"
+              ".map(v=>typeof v==='string'?v.trim():v)"
+              ".filter(v=>v!==''&&v!=null).map(Number)"
+              ".filter(n=>Number.isInteger(n)&&n>0);};"
+          )
+
+          race_state = "vulnerable" if vulnerable_race in race else "fixed" if fixed_race in race else "unknown"
+          norm_state = "vulnerable" if vulnerable_norm in norm else "fixed" if fixed_norm in norm else "unknown"
+          fixture_has_empty = '<div class="corner_list">&nbsp;</div>' in fixture
+
+          print(f"jra-race-fetch.mjs: {race_state}")
+          print(f"jra-normalizer.js: {norm_state}")
+          print(f"official fixture empty corner example: {fixture_has_empty}")
+
+          if race_state == "unknown":
+              raise SystemExit("jra-race-fetch.mjs pattern is unknown; refusing automatic patch")
+          if norm_state == "unknown":
+              raise SystemExit("jra-normalizer.js pattern is unknown; refusing automatic patch")
+          if not fixture_has_empty:
+              raise SystemExit("Expected official empty-corner fixture is missing; refusing automatic patch")
+
+          with open("/tmp/chass_corner_audit.env", "w") as f:
+              f.write(f"RACE_STATE={race_state}\n")
+              f.write(f"NORM_STATE={norm_state}\n")
+          PY
+
+          source /tmp/chass_corner_audit.env
+          echo "race_state=$RACE_STATE" >> "$GITHUB_OUTPUT"
+          echo "norm_state=$NORM_STATE" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## CHASS JRA Corner Position Safety Hotfix v1.1"
+            echo
+            echo "### Audit"
+            echo "- Mode: \`${{ inputs.mode }}\`"
+            echo "- Base SHA: \`$BASE_SHA\`"
+            echo "- jra-race-fetch.mjs: **$RACE_STATE**"
+            echo "- jra-normalizer.js: **$NORM_STATE**"
+            echo "- JRA公式DOM由来fixtureの空corner例: **確認済み**"
+            echo
+            echo "### 修正方針"
+            echo "- 空文字 / null / 0 をコーナー順位として採用しない"
+            echo "- 有効値は正の整数のみ"
+            echo "- 公式HTML・JSON/CSV正規化の両経路を修正"
+            echo "- runStyle の誤った逃げ/先行化を回帰テストで防止"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply confirmed fix and regression tests
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          race_path = Path("jra-race-fetch.mjs")
+          norm_path = Path("jra-normalizer.js")
+          j2_path = Path("tests/jra-j2.test.mjs")
+          phase1_path = Path("tests/jra-phase1.test.mjs")
+
+          race = race_path.read_text()
+          norm = norm_path.read_text()
+
+          vulnerable_race = (
+              "cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\\s]+/)"
+              ".map(Number).filter(Number.isFinite),"
+          )
+          fixed_race = (
+              "cornerPositions:strip(pick(cell,'corner_list')).split(/[-→\\s]+/)"
+              ".filter(Boolean).map(Number)"
+              ".filter(n=>Number.isInteger(n)&&n>0),"
+          )
+
+          vulnerable_norm = (
+              "const corners=value=>Array.isArray(value)?value.map(Number)"
+              ".filter(Number.isFinite):text(value).split(/[-→>\\s]+/)"
+              ".map(Number).filter(Number.isFinite);"
+          )
+          fixed_norm = (
+              "const corners=value=>{const raw=Array.isArray(value)?value:"
+              "text(value).split(/[-→>\\s]+/);return raw"
+              ".map(v=>typeof v==='string'?v.trim():v)"
+              ".filter(v=>v!==''&&v!=null).map(Number)"
+              ".filter(n=>Number.isInteger(n)&&n>0);};"
+          )
+
+          if vulnerable_race in race:
+              race = race.replace(vulnerable_race, fixed_race, 1)
+          elif fixed_race not in race:
+              raise SystemExit("jra-race-fetch.mjs changed unexpectedly; automatic patch aborted")
+
+          if vulnerable_norm in norm:
+              norm = norm.replace(vulnerable_norm, fixed_norm, 1)
+          elif fixed_norm not in norm:
+              raise SystemExit("jra-normalizer.js changed unexpectedly; automatic patch aborted")
+
+          race_path.write_text(race)
+          norm_path.write_text(norm)
+
+          j2_marker = "// CHASS-JRA-CORNER-SAFETY-REGRESSION-v1"
+          j2_test = r'''
+
+          // CHASS-JRA-CORNER-SAFETY-REGRESSION-v1
+          test('empty official historical corner positions stay empty instead of becoming zero',()=>{
+            const data=parseJraRaceCard(html,query);
+            const run=data.horses.find(x=>x.horseNo===9).pastRuns[0];
+            assert.deepEqual(run.cornerPositions,[]);
+            assert.equal(run.historicalStatus,'excluded');
+          });
+          '''
+          j2 = j2_path.read_text()
+          if j2_marker not in j2:
+              j2_path.write_text(j2.rstrip() + "\n" + j2_test.strip() + "\n")
+
+          phase1_marker = "// CHASS-JRA-CORNER-NORMALIZER-MODEL-REGRESSION-v1"
+          phase1_test = r'''
+
+          // CHASS-JRA-CORNER-NORMALIZER-MODEL-REGRESSION-v1
+          test('JRA corner normalization rejects empty null and zero while preserving valid positions',()=>{
+            for(const value of ['', '   ', [], [''], [null], [0], [null,'',0]]){
+              const data=fixture({market:false});
+              data.horses[0].pastRuns[0].cornerPositions=value;
+              const normalized=N.normalizeJraData(data);
+              assert.deepEqual(Array.from(normalized.horses[0].pastRuns[0].cornerPositions),[]);
+            }
+
+            const valid=fixture({market:false});
+            valid.horses[0].pastRuns[0].cornerPositions='3-4-4';
+            const normalized=N.normalizeJraData(valid);
+            assert.deepEqual(Array.from(normalized.horses[0].pastRuns[0].cornerPositions),[3,4,4]);
+          });
+
+          test('missing corner evidence cannot create false escape or forward running style',()=>{
+            const missing=fixture({market:false});
+            missing.horses[0].pastRuns=[
+              {...missing.horses[0].pastRuns[0],cornerPositions:''}
+            ];
+            const missingResult=M.calculate(N.normalizeJraData(missing));
+            assert.equal(missingResult.horses.find(h=>h.horseNo===1).runningStyle,'不明');
+
+            const mixed=fixture({market:false});
+            mixed.horses[0].pastRuns=[
+              {...mixed.horses[0].pastRuns[0],cornerPositions:''},
+              {...mixed.horses[0].pastRuns[1],cornerPositions:[8]}
+            ];
+            const mixedResult=M.calculate(N.normalizeJraData(mixed));
+            assert.equal(mixedResult.horses.find(h=>h.horseNo===1).runningStyle,'中団');
+          });
+          '''
+          phase1 = phase1_path.read_text()
+          if phase1_marker not in phase1:
+              phase1_path.write_text(phase1.rstrip() + "\n" + phase1_test.strip() + "\n")
+          PY
+
+      - name: Confirm patch scope
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only)
+          allowed=(
+            "jra-race-fetch.mjs"
+            "jra-normalizer.js"
+            "tests/jra-j2.test.mjs"
+            "tests/jra-phase1.test.mjs"
+          )
+
+          is_allowed() {
+            local file="$1"
+            local candidate
+            for candidate in "${allowed[@]}"; do
+              [ "$file" = "$candidate" ] && return 0
+            done
+            return 1
+          }
+
+          for file in "${changed[@]}"; do
+            if ! is_allowed "$file"; then
+              echo "::error::Unexpected modified file: $file"
+              exit 1
+            fi
+          done
+
+          git diff --check
+
+          {
+            echo
+            echo "### 差分"
+            if [ "${#changed[@]}" -eq 0 ]; then
+              echo "- 変更なし（既に修正済み）"
+            else
+              printf -- '- `%s`\n' "${changed[@]}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Syntax checks
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check jra-race-fetch.mjs
+          node --check jra-normalizer.js
+          node --check jra-model.js
+          node --check tests/jra-j2.test.mjs
+          node --check tests/jra-phase1.test.mjs
+
+      - name: Targeted regression tests
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/jra-j2.test.mjs tests/jra-phase1.test.mjs
+
+      - name: Install MCP test dependencies
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Full repository verification includes tests/mcp-live-integration.test.mjs.
+          # The MCP package is intentionally isolated under mcp/, so install its
+          # locked dependencies before running the root-wide test command.
+          npm ci --prefix mcp
+
+          test -d mcp/node_modules/@modelcontextprotocol/sdk || {
+            echo "::error::MCP SDK dependency was not installed."
+            exit 1
+          }
+
+      - name: Full repository verification
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Verify semantic fix after tests
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          race = Path("jra-race-fetch.mjs").read_text()
+          norm = Path("jra-normalizer.js").read_text()
+
+          bad = [
+              "split(/[-→\\s]+/).map(Number).filter(Number.isFinite)",
+              "Array.isArray(value)?value.map(Number).filter(Number.isFinite):text(value).split(/[-→>\\s]+/).map(Number).filter(Number.isFinite)"
+          ]
+          for pattern in bad:
+              if pattern in (race + "\n" + norm):
+                  raise SystemExit(f"Vulnerable corner parser pattern still present: {pattern}")
+
+          if ".filter(n=>Number.isInteger(n)&&n>0)" not in race:
+              raise SystemExit("Positive-integer guard missing from jra-race-fetch.mjs")
+          if ".filter(n=>Number.isInteger(n)&&n>0)" not in norm:
+              raise SystemExit("Positive-integer guard missing from jra-normalizer.js")
+          PY
+
+      - name: Commit and push only after all verification passes
+        if: ${{ inputs.mode == 'apply_fix' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet; then
+            echo "No changes to commit; repository is already fixed."
+            {
+              echo
+              echo "### 結果"
+              echo "- 既に修正済みのため commit なし"
+              echo "- 対象テスト・全体検証: PASS"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 実行開始後に main が別更新されていたら自動pushしない。
+          git fetch origin main
+          REMOTE_SHA="$(git rev-parse origin/main)"
+          if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
+            echo "::error::main moved during this workflow. BASE=$BASE_SHA CURRENT=$REMOTE_SHA"
+            echo "::error::To avoid overwriting a newer change, no commit/push was performed."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            jra-race-fetch.mjs \
+            jra-normalizer.js \
+            tests/jra-j2.test.mjs \
+            tests/jra-phase1.test.mjs
+
+          git commit -m "fix(jra): reject invalid empty corner positions"
+          git push origin HEAD:main
+
+          NEW_SHA="$(git rev-parse HEAD)"
+          {
+            echo
+            echo "### 適用完了"
+            echo "- Commit: \`$NEW_SHA\`"
+            echo "- 空欄 / null / 0 の cornerPositions 誤混入を防止"
+            echo "- JRA公式HTML・JSON/CSV正規化の両経路を修正"
+            echo "- 脚質誤判定（不明→逃げ、8番手→先行）を回帰テストで固定"
+            echo "- 対象テスト: PASS"
+            echo "- MCP依存関係: package-lock準拠でインストール済み"
+            echo "- 全リポジトリ検証: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
