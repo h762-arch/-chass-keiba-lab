@@ -1,0 +1,486 @@
+name: CHASS JRA D1 Retention v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "audit_only=確認のみ / apply=Drive確認済み候補だけ削除"
+        required: true
+        default: "audit_only"
+        type: choice
+        options:
+          - audit_only
+          - apply
+      retention_days:
+        description: "D1に保持する日数"
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "30"
+          - "45"
+          - "60"
+          - "90"
+      max_delete_rows:
+        description: "1回の最大削除行数"
+        required: true
+        default: "200"
+        type: choice
+        options:
+          - "50"
+          - "100"
+          - "200"
+  schedule:
+    # 毎週火曜 05:30 JST（月曜 20:30 UTC）
+    # schedule実行時は retention=30日 / max=200 / apply
+    - cron: "30 20 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-d1-retention
+  cancel-in-progress: false
+
+jobs:
+  retention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      D1_DATABASE_NAME: chass-keiba-research-db
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
+      GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Resolve safety settings
+        id: settings
+        shell: bash
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_RETENTION_DAYS: ${{ inputs.retention_days }}
+          INPUT_MAX_DELETE_ROWS: ${{ inputs.max_delete_rows }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE="apply"
+            RETENTION_DAYS="30"
+            MAX_DELETE_ROWS="200"
+          else
+            MODE="${INPUT_MODE:-audit_only}"
+            RETENTION_DAYS="${INPUT_RETENTION_DAYS:-30}"
+            MAX_DELETE_ROWS="${INPUT_MAX_DELETE_ROWS:-200}"
+          fi
+
+          case "$MODE" in
+            audit_only|apply) ;;
+            *) echo "::error::Invalid mode"; exit 1 ;;
+          esac
+
+          case "$RETENTION_DAYS" in
+            30|45|60|90) ;;
+            *) echo "::error::Invalid retention_days"; exit 1 ;;
+          esac
+
+          case "$MAX_DELETE_ROWS" in
+            50|100|200) ;;
+            *) echo "::error::Invalid max_delete_rows"; exit 1 ;;
+          esac
+
+          CUTOFF="$(TZ=Asia/Tokyo date -d "-${RETENTION_DAYS} days" +%F)"
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "retention_days=$RETENTION_DAYS" >> "$GITHUB_OUTPUT"
+          echo "max_delete_rows=$MAX_DELETE_ROWS" >> "$GITHUB_OUTPUT"
+          echo "cutoff=$CUTOFF" >> "$GITHUB_OUTPUT"
+
+          echo "Mode: $MODE"
+          echo "Retention: $RETENTION_DAYS days"
+          echo "Cutoff: $CUTOFF"
+          echo "Max delete rows: $MAX_DELETE_ROWS"
+
+      - name: Validate credentials safely
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          test -n "${CHASS_DRIVE_SPREADSHEET_ID:-}"
+          test -n "${GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:-}"
+
+          node --input-type=module <<'NODE'
+          const raw = process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON || '';
+          let x;
+          try {
+            x = JSON.parse(raw);
+          } catch {
+            console.error('::error::GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON is invalid JSON.');
+            process.exit(1);
+          }
+          if (
+            x?.type !== 'service_account' ||
+            typeof x?.client_email !== 'string' ||
+            typeof x?.private_key !== 'string'
+          ) {
+            console.error('::error::Drive service account secret is incomplete.');
+            process.exit(1);
+          }
+          console.log('Drive read credential: structurally valid.');
+          NODE
+
+          npx -y wrangler@4 whoami >/dev/null
+
+      - name: Audit D1 size and retention candidates
+        id: audit
+        shell: bash
+        env:
+          CUTOFF: ${{ steps.settings.outputs.cutoff }}
+          MAX_DELETE_ROWS: ${{ steps.settings.outputs.max_delete_rows }}
+        run: |
+          set -euo pipefail
+          export NO_COLOR=1
+
+          SQL="SELECT kind, COUNT(*) AS row_count, COALESCE(SUM(LENGTH(payload_json)),0) AS payload_bytes FROM jra_official_cache GROUP BY kind ORDER BY kind;"
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command="$SQL" > /tmp/d1-kind-audit.txt
+
+          CANDIDATE_SQL="SELECT cache_key,race_date,track,race_no,LENGTH(payload_json) AS payload_bytes FROM jra_official_cache WHERE kind='race' AND race_date IS NOT NULL AND race_date < '$CUTOFF' ORDER BY race_date ASC,track ASC,race_no ASC LIMIT $MAX_DELETE_ROWS;"
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --command="$CANDIDATE_SQL" > /tmp/d1-candidates.txt
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          function extractWranglerJson(path) {
+            const raw = fs.readFileSync(path, 'utf8').replace(/\u001b\[[0-9;]*m/g, '');
+            const starts = [];
+            for (let i = 0; i < raw.length; i++) {
+              if (raw[i] === '[') starts.push(i);
+            }
+            for (let i = starts.length - 1; i >= 0; i--) {
+              const part = raw.slice(starts[i]).trim();
+              try {
+                const x = JSON.parse(part);
+                if (Array.isArray(x)) return x;
+              } catch {}
+            }
+            throw new Error(`Could not parse Wrangler JSON from ${path}`);
+          }
+
+          const kindRaw = extractWranglerJson('/tmp/d1-kind-audit.txt');
+          const candRaw = extractWranglerJson('/tmp/d1-candidates.txt');
+
+          const kindRows = kindRaw.flatMap(x => Array.isArray(x?.results) ? x.results : []);
+          const candidates = candRaw.flatMap(x => Array.isArray(x?.results) ? x.results : []);
+
+          fs.writeFileSync('/tmp/d1-kind-audit.json', JSON.stringify(kindRows, null, 2));
+          fs.writeFileSync('/tmp/d1-candidates.json', JSON.stringify(candidates, null, 2));
+
+          const raceRows = kindRows.find(x => x.kind === 'race')?.row_count || 0;
+          const raceBytes = kindRows.find(x => x.kind === 'race')?.payload_bytes || 0;
+          console.log(`D1 race rows: ${raceRows}`);
+          console.log(`D1 race payload MB: ${(Number(raceBytes) / 1024 / 1024).toFixed(2)}`);
+          console.log(`Retention candidates: ${candidates.length}`);
+          NODE
+
+          CANDIDATE_COUNT="$(node -p "JSON.parse(require('fs').readFileSync('/tmp/d1-candidates.json','utf8')).length")"
+          CANDIDATE_BYTES="$(node -p "JSON.parse(require('fs').readFileSync('/tmp/d1-candidates.json','utf8')).reduce((s,x)=>s+Number(x.payload_bytes||0),0)")"
+
+          echo "candidate_count=$CANDIDATE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "candidate_bytes=$CANDIDATE_BYTES" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Drive fallback for every candidate
+        id: drive
+        if: ${{ steps.audit.outputs.candidate_count != '0' }}
+        shell: bash
+        env:
+          CUTOFF: ${{ steps.settings.outputs.cutoff }}
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'NODE'
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+
+          const candidates = JSON.parse(fs.readFileSync('/tmp/d1-candidates.json','utf8'));
+          const spreadsheetId = process.env.CHASS_DRIVE_SPREADSHEET_ID;
+          const rawCredential = process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON || '';
+          const credential = JSON.parse(rawCredential);
+
+          const b64url = value =>
+            Buffer.from(typeof value === 'string' ? value : JSON.stringify(value))
+              .toString('base64url');
+
+          const now = Math.floor(Date.now() / 1000);
+          const header = { alg: 'RS256', typ: 'JWT' };
+          const payload = {
+            iss: credential.client_email,
+            scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+            aud: 'https://oauth2.googleapis.com/token',
+            iat: now - 30,
+            exp: now + 3600,
+          };
+
+          const unsigned = `${b64url(header)}.${b64url(payload)}`;
+          const signer = crypto.createSign('RSA-SHA256');
+          signer.update(unsigned);
+          signer.end();
+          const assertion = `${unsigned}.${signer.sign(credential.private_key).toString('base64url')}`;
+
+          const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+              assertion,
+            }),
+          });
+
+          const tokenJson = await tokenResponse.json();
+          if (!tokenResponse.ok || !tokenJson?.access_token) {
+            console.error('::error::Could not obtain Google read-only access token.');
+            process.exit(1);
+          }
+
+          const token = tokenJson.access_token;
+          const apiBase = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values`;
+          const auth = { authorization: `Bearer ${token}` };
+
+          // Current app reader uses maxRows=5000. Retention uses the same visible range
+          // so D1 is never deleted based on Drive rows the app itself cannot read.
+          const headerRange = encodeURIComponent(`JRA_指数マスター!A1:AZ1`);
+          const headerResponse = await fetch(`${apiBase}/${headerRange}`, { headers: auth });
+          const headerJson = await headerResponse.json();
+          if (!headerResponse.ok) {
+            console.error('::error::Could not read JRA_指数マスター header.');
+            process.exit(1);
+          }
+
+          const headers = headerJson?.values?.[0] || [];
+          const required = ['開催日','主催','競馬場','R','馬番'];
+
+          function colLetter(indexZero) {
+            let n = indexZero + 1;
+            let out = '';
+            while (n > 0) {
+              const r = (n - 1) % 26;
+              out = String.fromCharCode(65 + r) + out;
+              n = Math.floor((n - 1) / 26);
+            }
+            return out;
+          }
+
+          const cols = {};
+          for (const key of required) {
+            const idx = headers.indexOf(key);
+            if (idx < 0) {
+              console.error(`::error::Drive header missing: ${key}`);
+              process.exit(1);
+            }
+            cols[key] = colLetter(idx);
+          }
+
+          const ranges = required.map(key =>
+            `JRA_指数マスター!${cols[key]}2:${cols[key]}5001`
+          );
+
+          const params = new URLSearchParams();
+          for (const range of ranges) params.append('ranges', range);
+          params.set('majorDimension', 'COLUMNS');
+
+          const batchResponse = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGet?${params}`,
+            { headers: auth }
+          );
+          const batchJson = await batchResponse.json();
+
+          if (!batchResponse.ok || !Array.isArray(batchJson?.valueRanges)) {
+            console.error('::error::Could not read Drive fallback columns.');
+            process.exit(1);
+          }
+
+          const columns = {};
+          for (let i = 0; i < required.length; i++) {
+            columns[required[i]] = batchJson.valueRanges[i]?.values?.[0] || [];
+          }
+
+          const maxLen = Math.max(...required.map(k => columns[k].length));
+          const index = new Map();
+
+          const normalizeDate = value => {
+            const s = String(value ?? '').trim().replaceAll('/', '-');
+            const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+            if (!m) return s;
+            return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+          };
+
+          for (let i = 0; i < maxLen; i++) {
+            const org = String(columns['主催'][i] ?? '').trim().toUpperCase();
+            if (org !== 'JRA') continue;
+
+            const date = normalizeDate(columns['開催日'][i]);
+            const track = String(columns['競馬場'][i] ?? '').trim();
+            const race = Number(columns['R'][i]);
+            const horseNo = Number(columns['馬番'][i]);
+
+            if (!date || !track || !Number.isInteger(race) || !Number.isInteger(horseNo)) continue;
+
+            const key = `${date}|${track}|${race}`;
+            if (!index.has(key)) index.set(key, new Set());
+            index.get(key).add(horseNo);
+          }
+
+          const verified = [];
+          const blocked = [];
+
+          for (const c of candidates) {
+            const key = `${normalizeDate(c.race_date)}|${String(c.track || '').trim()}|${Number(c.race_no)}`;
+            const horses = index.get(key);
+            const driveHorseCount = horses?.size || 0;
+
+            const item = {
+              cache_key: c.cache_key,
+              race_date: normalizeDate(c.race_date),
+              track: c.track,
+              race_no: Number(c.race_no),
+              payload_bytes: Number(c.payload_bytes || 0),
+              drive_horse_count: driveHorseCount,
+            };
+
+            if (driveHorseCount >= 2) verified.push(item);
+            else blocked.push({ ...item, reason: 'DRIVE_FALLBACK_NOT_VERIFIED_IN_APP_VISIBLE_RANGE' });
+          }
+
+          fs.writeFileSync('/tmp/d1-retention-verified.json', JSON.stringify(verified, null, 2));
+          fs.writeFileSync('/tmp/d1-retention-blocked.json', JSON.stringify(blocked, null, 2));
+
+          console.log(`Drive-verified delete candidates: ${verified.length}`);
+          console.log(`Blocked / kept in D1: ${blocked.length}`);
+
+          // Fail closed if Drive verification unexpectedly yields zero verified rows
+          // while candidates exist. Nothing is deleted.
+          if (candidates.length > 0 && verified.length === 0) {
+            console.error('::warning::No candidate was Drive-verified. D1 deletion will be skipped.');
+          }
+          NODE
+
+          VERIFIED_COUNT="$(node -p "JSON.parse(require('fs').readFileSync('/tmp/d1-retention-verified.json','utf8')).length")"
+          BLOCKED_COUNT="$(node -p "JSON.parse(require('fs').readFileSync('/tmp/d1-retention-blocked.json','utf8')).length")"
+          VERIFIED_BYTES="$(node -p "JSON.parse(require('fs').readFileSync('/tmp/d1-retention-verified.json','utf8')).reduce((s,x)=>s+Number(x.payload_bytes||0),0)")"
+
+          echo "verified_count=$VERIFIED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "blocked_count=$BLOCKED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "verified_bytes=$VERIFIED_BYTES" >> "$GITHUB_OUTPUT"
+
+      - name: Delete only Drive-verified D1 race cache rows
+        id: cleanup
+        if: ${{ steps.settings.outputs.mode == 'apply' && steps.drive.outputs.verified_count != '0' }}
+        shell: bash
+        env:
+          CUTOFF: ${{ steps.settings.outputs.cutoff }}
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const cutoff = process.env.CUTOFF;
+          const verified = JSON.parse(fs.readFileSync('/tmp/d1-retention-verified.json','utf8'));
+
+          const sqlText = value =>
+            `CAST(X'${Buffer.from(String(value),'utf8').toString('hex')}' AS TEXT)`;
+
+          const sql = [];
+          for (const item of verified) {
+            sql.push(
+              `DELETE FROM jra_official_cache ` +
+              `WHERE kind='race' ` +
+              `AND cache_key=${sqlText(item.cache_key)} ` +
+              `AND race_date < ${sqlText(cutoff)};`
+            );
+          }
+
+          fs.writeFileSync('/tmp/d1-retention-delete.sql', sql.join('\n') + '\n');
+          console.log(`Prepared ${sql.length} guarded DELETE statements.`);
+          NODE
+
+          # Safety: race cache only. No odds/result/meeting/prediction tables are touched.
+          if grep -Eiv '^[[:space:]]*(DELETE FROM jra_official_cache|$)' /tmp/d1-retention-delete.sql; then
+            echo "::error::Unexpected SQL detected."
+            exit 1
+          fi
+
+          if grep -Eiv "WHERE kind='race'.*race_date <" /tmp/d1-retention-delete.sql | grep -Ev '^[[:space:]]*$'; then
+            echo "::error::Unguarded retention DELETE detected."
+            exit 1
+          fi
+
+          npx -y wrangler@4 d1 execute "$D1_DATABASE_NAME" \
+            --remote \
+            --file=/tmp/d1-retention-delete.sql
+
+          echo "deleted_count=${{ steps.drive.outputs.verified_count }}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          MODE: ${{ steps.settings.outputs.mode }}
+          RETENTION_DAYS: ${{ steps.settings.outputs.retention_days }}
+          CUTOFF: ${{ steps.settings.outputs.cutoff }}
+          CANDIDATE_COUNT: ${{ steps.audit.outputs.candidate_count }}
+          CANDIDATE_BYTES: ${{ steps.audit.outputs.candidate_bytes }}
+          VERIFIED_COUNT: ${{ steps.drive.outputs.verified_count }}
+          VERIFIED_BYTES: ${{ steps.drive.outputs.verified_bytes }}
+          BLOCKED_COUNT: ${{ steps.drive.outputs.blocked_count }}
+          DELETED_COUNT: ${{ steps.cleanup.outputs.deleted_count }}
+        run: |
+          set -euo pipefail
+
+          fmt_mb() {
+            node -e "console.log((Number(process.argv[1]||0)/1024/1024).toFixed(2))" "$1"
+          }
+
+          {
+            echo "## CHASS JRA D1 Retention v1.0"
+            echo
+            echo "- Mode: ${MODE:-unknown}"
+            echo "- D1 retention: ${RETENTION_DAYS:-30} days"
+            echo "- Cutoff: ${CUTOFF:-unknown}"
+            echo "- Candidates older than cutoff: ${CANDIDATE_COUNT:-0}"
+            echo "- Candidate payload: $(fmt_mb "${CANDIDATE_BYTES:-0}") MB"
+            echo "- Drive-verified / safe to delete: ${VERIFIED_COUNT:-0}"
+            echo "- Verified payload: $(fmt_mb "${VERIFIED_BYTES:-0}") MB"
+            echo "- Blocked / kept in D1: ${BLOCKED_COUNT:-0}"
+            echo "- Deleted this run: ${DELETED_COUNT:-0}"
+            echo
+            echo "### Safety"
+            echo "- JRA race cache only"
+            echo "- odds / result / meeting / prediction data: untouched"
+            echo "- Drive source: JRA_指数マスター"
+            echo "- Drive verification range: rows 2-5001 (same 5000-row ceiling as current app reader)"
+            echo "- Minimum Drive backup: 2 unique horse numbers for the exact date × track × race"
+            echo "- Drive verification failure: fail closed / keep D1"
+            echo "- Schedule: every Tuesday 05:30 JST"
+            echo "- Scheduled mode: apply / 30 days / max 200 rows"
+            echo
+            if [ "${MODE:-audit_only}" = "audit_only" ]; then
+              echo "✅ Audit only — D1 was not modified."
+            else
+              echo "✅ Apply mode completed. Only Drive-verified race cache rows were eligible for deletion."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
