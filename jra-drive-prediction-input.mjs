@@ -558,6 +558,10 @@ async function tryDriveFallback(request, env, officialError) {
 
 export async function handleJraRaceRequest(request, env = {}) {
   const officialResponse = await handleOfficialJraRaceRequest(request, env);
+  const requestUrl = new URL(request.url);
+  const officialOnly = requestUrl.searchParams.get('official_only') === '1';
+
+  if (officialOnly) return officialResponse;
 
   let official = null;
   try {

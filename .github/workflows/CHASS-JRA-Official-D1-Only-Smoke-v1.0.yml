@@ -1,0 +1,162 @@
+name: CHASS JRA Official D1 Only Smoke v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "日付 YYYY-MM-DD。空欄なら日本時間の今日"
+        required: false
+        default: ""
+        type: string
+      track:
+        description: "JRA競馬場"
+        required: true
+        default: "中山"
+        type: choice
+        options:
+          - 札幌
+          - 函館
+          - 福島
+          - 新潟
+          - 東京
+          - 中山
+          - 中京
+          - 京都
+          - 阪神
+          - 小倉
+      race:
+        description: "レース番号"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+      expected_freshness:
+        description: "ANY=current/savedどちらでも可"
+        required: true
+        default: "ANY"
+        type: choice
+        options:
+          - ANY
+          - current
+          - saved
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-official-d1-only-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_DATE: ${{ inputs.date }}
+      INPUT_TRACK: ${{ inputs.track }}
+      INPUT_RACE: ${{ inputs.race }}
+      EXPECTED_FRESHNESS: ${{ inputs.expected_freshness }}
+
+    steps:
+      - name: Resolve date
+        id: date
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATE_ARG="${INPUT_DATE:-}"
+          if [ -z "$DATE_ARG" ]; then
+            DATE_ARG="$(TZ=Asia/Tokyo date +%F)"
+          fi
+          printf '%s' "$DATE_ARG" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          echo "value=$DATE_ARG" >> "$GITHUB_OUTPUT"
+
+      - name: Call official-only endpoint
+        id: call
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : > /tmp/jra-official-only.json
+          : > /tmp/jra-official-only.headers
+
+          CODE="$(curl -sS --max-time 25 \
+            -D /tmp/jra-official-only.headers \
+            --get "$PRODUCTION_BASE_URL/api/jra/race" \
+            --data-urlencode "date=${{ steps.date.outputs.value }}" \
+            --data-urlencode "track=$INPUT_TRACK" \
+            --data-urlencode "race=$INPUT_RACE" \
+            --data-urlencode "official_only=1" \
+            -o /tmp/jra-official-only.json \
+            -w '%{http_code}' || true)"
+
+          echo "HTTP=$CODE"
+          grep -iE '^(HTTP/|x-chass-jra-race-cache:|x-chass-jra-source:|cf-ray:|server:)' /tmp/jra-official-only.headers || true
+          cat /tmp/jra-official-only.json
+          test "$CODE" = "200"
+
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('fs');
+          const x = JSON.parse(fs.readFileSync('/tmp/jra-official-only.json','utf8'));
+          if (x.ok !== true) throw new Error('official_only_not_ok');
+          if (x.organization !== 'JRA') throw new Error('not_jra');
+          if (!x.quality?.raceParsed || Number(x.quality?.horseCount) < 2) throw new Error('race_quality_incomplete');
+          if (x.bridgeCache?.provider !== 'github_actions_d1') throw new Error('not_d1_official_cache');
+          if (!['current','saved'].includes(x.bridgeCache?.freshness)) throw new Error('invalid_freshness');
+          if (!['JRA_OFFICIAL','JRA_SAVED_OFFICIAL_BASE'].includes(x.source)) throw new Error(`unexpected_source:${x.source}`);
+          if (x.driveInput != null) throw new Error('drive_fallback_or_merge_detected');
+
+          if (x.bridgeCache.freshness === 'saved') {
+            if (x.source !== 'JRA_SAVED_OFFICIAL_BASE') throw new Error('saved_source_mismatch');
+            if (x.liveFieldsVerified !== false) throw new Error('saved_live_fields_not_marked_unverified');
+          }
+
+          console.log(`freshness=${x.bridgeCache.freshness}`);
+          console.log(`source=${x.source}`);
+          console.log(`horse_count=${x.quality.horseCount}`);
+          NODE
+
+          CACHE_HEADER="$(awk 'BEGIN{IGNORECASE=1} /^x-chass-jra-race-cache:/{gsub("\r",""); print $2}' /tmp/jra-official-only.headers | tail -n 1)"
+          case "$CACHE_HEADER" in
+            D1-HIT|D1-SAVED) ;;
+            *) echo "::error::Unexpected X-CHASS-JRA-Race-Cache: $CACHE_HEADER"; exit 1 ;;
+          esac
+
+      - name: Verify expected freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EXPECTED_FRESHNESS" != "ANY" ] && [ "$EXPECTED_FRESHNESS" != "${{ steps.call.outputs.freshness }}" ]; then
+            echo "::error::Expected $EXPECTED_FRESHNESS but got ${{ steps.call.outputs.freshness }}"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Official D1 Only Smoke v1.0"
+            echo
+            echo "- Date: ${{ steps.date.outputs.value }}"
+            echo "- Track: $INPUT_TRACK"
+            echo "- Race: ${INPUT_RACE}R"
+            echo "- Official D1 freshness: ${{ steps.call.outputs.freshness || 'unknown' }}"
+            echo "- Source: ${{ steps.call.outputs.source || 'unknown' }}"
+            echo "- Horse count: ${{ steps.call.outputs.horse_count || 'unknown' }}"
+            echo "- Drive merge/fallback: NOT USED"
+            echo "- Purpose: JRA公式D1だけで読めるかを独立確認"
+          } >> "$GITHUB_STEP_SUMMARY"
