@@ -2,6 +2,14 @@
 'use strict';
 let jraMeetingSelector=null,jraRaceClient=null,jraOddsClient=null,jraResultClient=null;
 const APP_VERSION='10.0.1';
+// CHASS-JRA-AUTO-LOAD-v1.5.2
+if(typeof window!=='undefined'){
+  window.CHASS_FEATURES=window.CHASS_FEATURES||{};
+  if(window.CHASS_FEATURES.ENABLE_JRA_AUTO_FETCH==null){
+    window.CHASS_FEATURES.ENABLE_JRA_AUTO_FETCH=true;
+  }
+}
+
 const ENABLE_LONGSHOT_SCENARIO=typeof window==='undefined'||window.CHASS_FEATURES?.ENABLE_LONGSHOT_SCENARIO!==false;
 const ENABLE_CALIBRATION_RESEARCH=typeof window==='undefined'||window.CHASS_FEATURES?.ENABLE_CALIBRATION_RESEARCH!==false;
 const BACKUP_SCHEMA_VERSION=1;
