@@ -1,4 +1,4 @@
-name: CHASS Workflow Consolidation v2.0
+name: CHASS Workflow Consolidation v2.0.1
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chass-workflow-consolidation-v2-${{ github.ref_name }}
+  group: chass-workflow-consolidation-v201-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -90,9 +90,44 @@ jobs:
             fi
 
             # All non-refresh candidates must be manual-only.
+            # v2.0 used grep over the whole YAML, which could falsely detect
+            # "schedule:" / "push:" strings inside shell heredocs.
+            # v2.1 inspects only the TOP-LEVEL "on:" block and its direct child keys.
             if [ "$TYPE" = "manual" ]; then
-              if grep -Eq '^[[:space:]]*(schedule:|push:|pull_request:|workflow_call:)' "$OLD"; then
-                echo -e "BLOCKED\t$OLD\tautomatic trigger detected" >> /tmp/chass-blocked.tsv
+              AUTO_TRIGGER="$(node --input-type=module - "$OLD" <<'NODE'
+          import fs from 'node:fs';
+
+          const file = process.argv[2];
+          const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+
+          let inOn = false;
+          const triggers = [];
+
+          for (const line of lines) {
+            if (!inOn) {
+              if (/^(?:"on"|on):\s*$/.test(line)) {
+                inOn = true;
+              }
+              continue;
+            }
+
+            // Stop at the next non-empty, non-comment top-level YAML key.
+            if (/^[^\s#][^:]*:\s*/.test(line)) break;
+
+            const m = /^ {2}([A-Za-z0-9_-]+):\s*/.exec(line);
+            if (!m) continue;
+
+            if (['schedule', 'push', 'pull_request', 'workflow_call'].includes(m[1])) {
+              triggers.push(m[1]);
+            }
+          }
+
+          process.stdout.write(triggers.join(','));
+          NODE
+              )"
+
+              if [ -n "$AUTO_TRIGGER" ]; then
+                echo -e "BLOCKED\t$OLD\ttop-level automatic trigger: $AUTO_TRIGGER" >> /tmp/chass-blocked.tsv
                 BLOCKED=$((BLOCKED + 1))
                 continue
               fi
@@ -107,7 +142,7 @@ jobs:
           echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## CHASS Workflow Consolidation v2.0 — AUDIT"
+            echo "## CHASS Workflow Consolidation v2.0.1 — AUDIT"
             echo
             echo "- Branch: \`${GITHUB_REF_NAME}\`"
             echo "- Mode: \`$MODE\`"
@@ -135,9 +170,15 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$BLOCKED" -ne 0 ]; then
+          # audit_only should report blockers without turning the audit itself red.
+          # apply remains fail-closed: any blocked candidate stops all moves.
+          if [ "$MODE" = "apply" ] && [ "$BLOCKED" -ne 0 ]; then
             echo "::error::Blocked candidates exist. Nothing will be moved."
             exit 1
+          fi
+
+          if [ "$MODE" = "audit_only" ] && [ "$BLOCKED" -ne 0 ]; then
+            echo "::warning::$BLOCKED blocked candidate(s) found. Audit completed without changes."
           fi
 
       - name: Archive superseded workflows
@@ -199,7 +240,7 @@ jobs:
             echo
             echo "### Result"
             if [ "${{ inputs.mode }}" = "audit_only" ]; then
-              echo "✅ Audit only — repository was not modified."
+              echo "✅ Audit only — repository was not modified. Blocked items, if any, are reported above."
             else
               echo "- Archived: ${{ steps.apply.outputs.moved || '0' }} workflow files"
               echo "- Archive: \`${{ steps.apply.outputs.archive || 'n/a' }}\`"
