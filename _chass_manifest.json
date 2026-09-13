@@ -1,0 +1,16 @@
+{
+  "patch_id": "jra-official-saved-base-v1.2",
+  "title": "Harden JRA official D1 cache with saved-base fallback",
+  "summary": "JRA公式D1キャッシュの6時間TTLは維持し、期限切れ行はSAVED_OFFICIAL_BASEとして固定情報だけ再利用。RefreshをJST 06:15/09:15/12:15/15:15/18:15/21:15へ拡張し、旧v1.1の自動scheduleは停止。official_only=1でDriveを完全に迂回するOfficial D1専用Smokeも追加する。",
+  "allow_workflow_changes": true,
+  "allowed_files": [
+    ".github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.1.yml",
+    ".github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.2.yml",
+    ".github/workflows/CHASS-JRA-Official-D1-Only-Smoke-v1.0.yml",
+    "jra-official-cache.mjs",
+    "jra-race-fetch.mjs",
+    "jra-drive-prediction-input.mjs",
+    "jra-race-client.js",
+    "tests/jra-official-saved-base.test.mjs"
+  ]
+}
