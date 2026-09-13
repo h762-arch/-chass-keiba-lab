@@ -1,0 +1,229 @@
+name: CHASS JRA Saved Odds Overlay Fallback v1.9.9.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "validate_only=検証のみ / apply_and_deploy=修正・main反映・本番デプロイ"
+        required: true
+        default: apply_and_deploy
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+      smoke_date:
+        description: "本番確認用日付"
+        required: true
+        default: "2026-09-12"
+        type: string
+      smoke_track:
+        description: "本番確認用競馬場"
+        required: true
+        default: "中山"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-saved-odds-overlay-fallback-v1991
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+      INPUT_MODE: ${{ inputs.mode }}
+      SMOKE_DATE: ${{ inputs.smoke_date }}
+      SMOKE_TRACK: ${{ inputs.smoke_track }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Validate v1.9.8 baseline and saved-market architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f jra-odds-client.js
+          test -f jra-odds-fetch.mjs
+          test -f worker.js
+          test -f tests/jra-j3.test.mjs
+          test -f tests/jra-saved-market-contract-v19.test.mjs
+          test -f package.json
+          test -f wrangler.jsonc
+          grep -Fq "window.CHASS_JRA_ODDS_CLIENT" jra-odds-client.js
+          grep -Fq "readJraOfficialOddsCache" jra-odds-fetch.mjs
+          if grep -Fq "readJraOfficialOddsCacheForViewer" jra-odds-fetch.mjs; then
+            echo "::error::Strict current odds service already contains viewer fallback. Refusing unsafe baseline."
+            exit 11
+          fi
+          grep -Fq "async function publicViewerMarketOverlay(day,races,env)" worker.js
+          grep -Fq "readJraOfficialOddsCacheForViewer" worker.js
+          grep -Fq "viewerMarketOverlay=await publicViewerMarketOverlay(day,races,env)" worker.js
+          node --check jra-odds-client.js
+          node --check jra-odds-fetch.mjs
+          node --check worker.js
+
+      - name: Install saved-odds overlay fallback client
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp jra-odds-client.js /tmp/jra-odds-client.before-v1991.js
+          cat > /tmp/jra-odds-client-v1991.b64 <<'B64'
+          KCgpID0+IHsKICd1c2Ugc3RyaWN0JzsKIC8vIENIQVNTLUpSQS1TQVZFRC1PRERTLU9WRVJMQVktRkFMTEJBQ0stdjEuOS45LjEKIGNvbnN0IGZvcm1hdE9kZHNUaW1lPXZhbHVlPT57CiAgaWYoIXZhbHVlKXJldHVybiAnJzsKICBjb25zdCBkPW5ldyBEYXRlKHZhbHVlKTsKICBpZihOdW1iZXIuaXNOYU4oZC5nZXRUaW1lKCkpKXJldHVybiAnJzsKICB0cnl7cmV0dXJuIG5ldyBJbnRsLkRhdGVUaW1lRm9ybWF0KCdqYS1KUCcse3RpbWVab25lOidBc2lhL1Rva3lvJyx5ZWFyOidudW1lcmljJyxtb250aDonMi1kaWdpdCcsZGF5OicyLWRpZ2l0Jyxob3VyOicyLWRpZ2l0JyxtaW51dGU6JzItZGlnaXQnLGhvdXIxMjpmYWxzZX0pLmZvcm1hdChkKX1jYXRjaHtyZXR1cm4gZC50b0lTT1N0cmluZygpfQogfTsKIGNvbnN0IG9kZHNNZXRhPWRhdGE9PnsKICBjb25zdCByYXc9U3RyaW5nKGRhdGE/Lm9kZHNGcmVzaG5lc3N8fCcnKS50b0xvd2VyQ2FzZSgpLHNuYXBzaG90PVN0cmluZyhkYXRhPy5vZGRzU25hcHNob3RUeXBlfHwnJykudG9Mb3dlckNhc2UoKTsKICBjb25zdCBmcmVzaG5lc3M9c25hcHNob3Q9PT0nZmluYWwnfHxyYXc9PT0nZmluYWwnPydmaW5hbCc6c25hcHNob3Q9PT0nc2F2ZWQnfHxyYXc9PT0nc2F2ZWQnPydzYXZlZCc6J2N1cnJlbnQnOwogIGNvbnN0IGxhYmVsPWZyZXNobmVzcz09PSdmaW5hbCc/J+acgOe1guOCquODg+OCuic6ZnJlc2huZXNzPT09J3NhdmVkJz8n5L+d5a2Y44Kq44OD44K6Jzon54++5Zyo44Kq44OD44K6JzsKICBjb25zdCBhY3F1aXJlZEF0PWRhdGE/Lm9kZHNBY3F1aXJlZEF0fHxkYXRhPy5hY3F1aXJlZEF0fHwnJzsKICByZXR1cm4ge2ZyZXNobmVzcyxsYWJlbCxhY3F1aXJlZEF0LHRpbWU6Zm9ybWF0T2Rkc1RpbWUoYWNxdWlyZWRBdCl9OwogfTsKIGNvbnN0IHVzYWJsZU92ZXJsYXlTdGF0dXM9dmFsdWU9PlsnYXZhaWxhYmxlJywnZmluYWwnLCdzYXZlZCddLmluY2x1ZGVzKFN0cmluZyh2YWx1ZXx8JycpLnRvTG93ZXJDYXNlKCkpOwogZnVuY3Rpb24gc2F2ZWRPdmVybGF5UGF5bG9hZChwYXlsb2FkLHNlbGVjdGlvbil7CiAgY29uc3Qgb3ZlcmxheXM9QXJyYXkuaXNBcnJheShwYXlsb2FkPy52aWV3ZXJNYXJrZXRPdmVybGF5KT9wYXlsb2FkLnZpZXdlck1hcmtldE92ZXJsYXk6W107CiAgY29uc3QgcmFjZT1vdmVybGF5cy5maW5kKHg9Pk51bWJlcih4Py5yYWNlTnVtYmVyKT09PU51bWJlcihzZWxlY3Rpb24/LnJhY2UpKTsKICBpZighcmFjZXx8IUFycmF5LmlzQXJyYXkocmFjZS5ob3JzZXMpKXJldHVybiBudWxsOwogIGNvbnN0IHJvd3M9cmFjZS5ob3JzZXMuZmlsdGVyKGg9Pntjb25zdCBvZGRzPU51bWJlcihoPy5vZGRzKTtyZXR1cm4gdXNhYmxlT3ZlcmxheVN0YXR1cyhoPy5vZGRzU3RhdHVzKSYmTnVtYmVyLmlzRmluaXRlKG9kZHMpJiZvZGRzPjB9KTsKICBpZighcm93cy5sZW5ndGgpcmV0dXJuIG51bGw7CiAgY29uc3Qgc3RhdHVzZXM9cm93cy5tYXAoaD0+U3RyaW5nKGg/Lm9kZHNTdGF0dXN8fCcnKS50b0xvd2VyQ2FzZSgpKSxhbGxGaW5hbD1zdGF0dXNlcy5ldmVyeSh4PT54PT09J2ZpbmFsJyksYW55U2F2ZWQ9c3RhdHVzZXMuc29tZSh4PT54PT09J3NhdmVkJyk7CiAgY29uc3Qgb2Rkc1NuYXBzaG90VHlwZT1hbGxGaW5hbD8nZmluYWwnOmFueVNhdmVkPydzYXZlZCc6J2xpdmUnOwogIGNvbnN0IHRpbWVzPXJvd3MubWFwKGg9PkRhdGUucGFyc2UoaD8ub2Rkc0ZldGNoZWRBdHx8JycpKS5maWx0ZXIoTnVtYmVyLmlzRmluaXRlKSxhY3F1aXJlZEF0PXRpbWVzLmxlbmd0aD9uZXcgRGF0ZShNYXRoLm1heCguLi50aW1lcykpLnRvSVNPU3RyaW5nKCk6Jyc7CiAgaWYob2Rkc1NuYXBzaG90VHlwZT09PSdzYXZlZCcmJiFhY3F1aXJlZEF0KXJldHVybiBudWxsOwogIGNvbnN0IG9kZHM9cm93cy5tYXAoaD0+KHtob3JzZU5vOk51bWJlcihoLmhvcnNlTnVtYmVyPz9oLmhvcnNlTm8pLG9kZHM6TnVtYmVyKGgub2RkcykscG9wdWxhcml0eTpOdW1iZXIuaXNGaW5pdGUoTnVtYmVyKGgucG9wdWxhcml0eSkpP051bWJlcihoLnBvcHVsYXJpdHkpOm51bGx9KSkuZmlsdGVyKGg9Pk51bWJlci5pc0ludGVnZXIoaC5ob3JzZU5vKSYmaC5ob3JzZU5vPjApOwogIGlmKCFvZGRzLmxlbmd0aClyZXR1cm4gbnVsbDsKICBjb25zdCB0b3RhbD1NYXRoLm1heChyYWNlLmhvcnNlcy5sZW5ndGgsb2Rkcy5sZW5ndGgpOwogIHJldHVybiB7b2s6dHJ1ZSxvcmdhbml6YXRpb246J0pSQScsZGF0ZTpTdHJpbmcoc2VsZWN0aW9uPy5kYXRlfHwnJyksdHJhY2s6U3RyaW5nKHNlbGVjdGlvbj8udHJhY2t8fCcnKSxyYWNlOk51bWJlcihzZWxlY3Rpb24/LnJhY2UpLG9kZHMscXVhbGl0eTp7YWN0aXZlSG9yc2VDb3VudDp0b3RhbCxvZGRzSG9yc2VDb3VudDpvZGRzLmxlbmd0aCxvZGRzQ292ZXJhZ2U6dG90YWw/TnVtYmVyKChvZGRzLmxlbmd0aC90b3RhbCkudG9GaXhlZCg0KSk6MCxjb21wbGV0ZTpvZGRzLmxlbmd0aD09PXRvdGFsfSxvZGRzU25hcHNob3RUeXBlLG9kZHNGcmVzaG5lc3M6b2Rkc1NuYXBzaG90VHlwZT09PSdzYXZlZCc/J3NhdmVkJzpvZGRzU25hcHNob3RUeXBlPT09J2ZpbmFsJz8nZmluYWwnOidjdXJyZW50JyxhY3F1aXJlZEF0LG9kZHNBY3F1aXJlZEF0OmFjcXVpcmVkQXQsaXNTYXZlZE9kZHM6b2Rkc1NuYXBzaG90VHlwZT09PSdzYXZlZCcsc291cmNlOidDSEFTU19QVUJMSUNfVklFV0VSX01BUktFVF9PVkVSTEFZJyxtYXJrZXREYXRhU291cmNlOm9kZHNTbmFwc2hvdFR5cGU9PT0nc2F2ZWQnPydKUkFfUEVSU0lTVEVEX1NBVkVEX09ERFMnOm9kZHNTbmFwc2hvdFR5cGU9PT0nZmluYWwnPydKUkFfUEVSU0lTVEVEX0ZJTkFMX09ERFMnOidKUkFfUEVSU0lTVEVEX0FWQUlMQUJMRV9PRERTJ307CiB9CiB3aW5kb3cuQ0hBU1NfSlJBX09ERFNfQ0xJRU5UPXtjcmVhdGUoe2lzQWN0aXZlLGdldFNlbGVjdGlvbixnZXRHZW5lcmF0aW9uLGFwcGx5fSl7CiAgY29uc3QgYnV0dG9uPWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdsaXZlT2Rkc1N5bmMnKSxzdGF0dXM9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2xpdmVPZGRzU3RhdHVzJyk7CiAgbGV0IGFjdGl2ZT1mYWxzZSx0b2tlbj0wLGNvbnRyb2xsZXIsYXV0b1RpbWVyOwogIGNvbnN0IGlkbGVMYWJlbD0nSlJB5YWs5byP44GL44KJ5Yip55So5Y+v6IO944Gq44Kq44OD44K644KS5Y+W5b6XJzsKICBjb25zdCBjYW5jZWw9KCk9Pnt0b2tlbisrO2NsZWFyVGltZW91dChhdXRvVGltZXIpO2NvbnRyb2xsZXI/LmFib3J0KCk7Y29udHJvbGxlcj1udWxsO2lmKGFjdGl2ZSYmYnV0dG9uKXtidXR0b24uZGlzYWJsZWQ9ZmFsc2U7YnV0dG9uLnRleHRDb250ZW50PWlkbGVMYWJlbH19OwogIGNvbnN0IHNob3dBcHBsaWVkPShkYXRhLGdlbmVyYXRpb24pPT57CiAgIGlmKCFkYXRhPy5vZGRzPy5sZW5ndGh8fCFkYXRhPy5xdWFsaXR5Py5vZGRzSG9yc2VDb3VudCl0aHJvdyBFcnJvcignSlJBX09ERFNfVU5BVkFJTEFCTEUnKTsKICAgY29uc3QgYXBwbGllZD1hcHBseShkYXRhLGdlbmVyYXRpb24pOwogICBpZihhcHBsaWVkPT09ZmFsc2UpdGhyb3cgRXJyb3IoJ0pSQV9PRERTX1JBQ0VfSURFTlRJVFlfTUlTTUFUQ0gnKTsKICAgY29uc3QgbWV0YT1vZGRzTWV0YShkYXRhKSx0aW1lUGFydD1tZXRhLnRpbWU/YO+9nOWPluW+lyAke21ldGEudGltZX1gOicnLHNhdmVkTm90ZT1tZXRhLmZyZXNobmVzcz09PSdzYXZlZCc/J++9nOePvuWcqOWApOOBp+OBr+OBguOCiuOBvuOBm+OCkyc6Jyc7CiAgIGlmKHN0YXR1cylzdGF0dXMudGV4dENvbnRlbnQ9YEpSQeWFrOW8jyDljZjli53jgqrjg4PjgrogJHtkYXRhLnF1YWxpdHkub2Rkc0hvcnNlQ291bnR9LyR7ZGF0YS5xdWFsaXR5LmFjdGl2ZUhvcnNlQ291bnR96aCt5Y+N5pig772cJHttZXRhLmxhYmVsfSR7dGltZVBhcnR9JHtzYXZlZE5vdGV9YDsKICAgcmV0dXJuIHRydWU7CiAgfTsKICBhc3luYyBmdW5jdGlvbiBsb2FkKCl7CiAgIGNhbmNlbCgpO2lmKCFhY3RpdmV8fCFpc0FjdGl2ZSgpKXJldHVybjsKICAgY29uc3Qgb3duPXRva2VuLGdlbmVyYXRpb249Z2V0R2VuZXJhdGlvbigpLHNlbGVjdGlvbj1nZXRTZWxlY3Rpb24oKTtjb250cm9sbGVyPW5ldyBBYm9ydENvbnRyb2xsZXIoKTsKICAgaWYoYnV0dG9uKXtidXR0b24uZGlzYWJsZWQ9dHJ1ZTtidXR0b24udGV4dENvbnRlbnQ9J+OCquODg+OCuuWPluW+l+S4reKApid9aWYoc3RhdHVzKXN0YXR1cy50ZXh0Q29udGVudD0nSlJB5YWs5byP44Gu5Yip55So5Y+v6IO944Gq5Y2Y5Yud44Kq44OD44K644KS56K66KqN5Lit4oCmJzsKICAgY29uc3QgdGltZW91dD1zZXRUaW1lb3V0KCgpPT5jb250cm9sbGVyLmFib3J0KCksMTAwMDApO2xldCBwcmltYXJ5Q29kZT0nSlJBX09GRklDSUFMX1VOQVZBSUxBQkxFJzsKICAgdHJ5ewogICAgY29uc3QgY3VycmVudFE9bmV3IFVSTFNlYXJjaFBhcmFtcyh7ZGF0ZTpzZWxlY3Rpb24uZGF0ZSx0cmFjazpzZWxlY3Rpb24udHJhY2sscmFjZTpTdHJpbmcoc2VsZWN0aW9uLnJhY2UpfSk7CiAgICB0cnl7CiAgICAgY29uc3QgcmVzcG9uc2U9YXdhaXQgZmV0Y2goJy9hcGkvanJhL29kZHM/JytjdXJyZW50USx7Y2FjaGU6J25vLXN0b3JlJyxzaWduYWw6Y29udHJvbGxlci5zaWduYWx9KSxkYXRhPWF3YWl0IHJlc3BvbnNlLmpzb24oKTsKICAgICBpZihvd24hPT10b2tlbnx8IWFjdGl2ZXx8IWlzQWN0aXZlKCl8fGdlbmVyYXRpb24hPT1nZXRHZW5lcmF0aW9uKCkpcmV0dXJuOwogICAgIGlmKHJlc3BvbnNlLm9rJiZkYXRhPy5vayYmZGF0YT8ub2Rkcz8ubGVuZ3RoJiZkYXRhPy5xdWFsaXR5Py5vZGRzSG9yc2VDb3VudCl7c2hvd0FwcGxpZWQoZGF0YSxnZW5lcmF0aW9uKTtyZXR1cm59CiAgICAgcHJpbWFyeUNvZGU9ZGF0YT8uZXJyb3J8fCdKUkFfT0REU19VTkFWQUlMQUJMRSc7CiAgICB9Y2F0Y2goZXJyb3IpewogICAgIGlmKG93biE9PXRva2VufHwhYWN0aXZlfHwhaXNBY3RpdmUoKXx8Z2VuZXJhdGlvbiE9PWdldEdlbmVyYXRpb24oKSlyZXR1cm47CiAgICAgaWYoZXJyb3I/Lm5hbWU9PT0nQWJvcnRFcnJvcicpdGhyb3cgZXJyb3I7CiAgICAgcHJpbWFyeUNvZGU9ZXJyb3I/Lm1lc3NhZ2V8fCdKUkFfT0ZGSUNJQUxfVU5BVkFJTEFCTEUnOwogICAgfQogICAgY29uc3Qgc2F2ZWRRPW5ldyBVUkxTZWFyY2hQYXJhbXMoe2RhdGU6c2VsZWN0aW9uLmRhdGUsdHJhY2s6c2VsZWN0aW9uLnRyYWNrLG9yZ2FuaXphdGlvbjonSlJBJyxmb3JtYXQ6J3RhYnVsYXInLHZpZXdlck1hcmtldDonMSd9KTsKICAgIGNvbnN0IGZhbGxiYWNrUmVzcG9uc2U9YXdhaXQgZmV0Y2goJy9hcGkvY2hhc3MvdjEvcHVibGljL2RheS1haT8nK3NhdmVkUSx7Y2FjaGU6J25vLXN0b3JlJyxzaWduYWw6Y29udHJvbGxlci5zaWduYWx9KSxmYWxsYmFja0pzb249YXdhaXQgZmFsbGJhY2tSZXNwb25zZS5qc29uKCk7CiAgICBpZihvd24hPT10b2tlbnx8IWFjdGl2ZXx8IWlzQWN0aXZlKCl8fGdlbmVyYXRpb24hPT1nZXRHZW5lcmF0aW9uKCkpcmV0dXJuOwogICAgaWYoZmFsbGJhY2tSZXNwb25zZS5vayYmZmFsbGJhY2tKc29uPy5vayl7Y29uc3QgZmFsbGJhY2s9c2F2ZWRPdmVybGF5UGF5bG9hZChmYWxsYmFja0pzb24sc2VsZWN0aW9uKTtpZihmYWxsYmFjayl7c2hvd0FwcGxpZWQoZmFsbGJhY2ssZ2VuZXJhdGlvbik7cmV0dXJufX0KICAgIHRocm93IEVycm9yKHByaW1hcnlDb2RlKTsKICAgfWNhdGNoKGVycm9yKXsKICAgIGlmKG93biE9PXRva2VufHwhYWN0aXZlfHwhaXNBY3RpdmUoKSlyZXR1cm47CiAgICBjb25zdCBjb2RlPWVycm9yPy5uYW1lPT09J0Fib3J0RXJyb3InPydKUkFfRkVUQ0hfVElNRU9VVCc6ZXJyb3I/Lm1lc3NhZ2V8fCdKUkFfT0ZGSUNJQUxfVU5BVkFJTEFCTEUnOwogICAgaWYoc3RhdHVzKXN0YXR1cy50ZXh0Q29udGVudD1jb2RlPT09J0pSQV9PRERTX0ZFVENIX0RJU0FCTEVEJz8nSlJB44Kq44OD44K65Y+W5b6X44Gv54++5ZyoT0ZG44Gn44GZ44CC5L+d5a2Y44Kq44OD44K644KC56K66KqN44Gn44GN44G+44Gb44KT44Gn44GX44Gf44CCJzpjb2RlPT09J0pSQV9PRERTX0NBQ0hFX01JU1MnPydKUkHjgqrjg4PjgrrmnKrlj5blvpfvvZznj77lnKjlgKTjg7vlj5blvpfmmYLliLvku5jjgY3kv53lrZjlgKTjga7jganjgaHjgonjgoLopovjgaTjgYvjgorjgb7jgZvjgpPjgafjgZfjgZ/jgIInOmNvZGU9PT0nSlJBX09ERFNfVU5BVkFJTEFCTEUnPydKUkHljZjli53jgqrjg4Pjgrrjga/jgb7jgaDlhazplovjgZXjgozjgabjgYrjgonjgZrjgIHlj5blvpfmmYLliLvku5jjgY3kv53lrZjlgKTjgoLjgYLjgorjgb7jgZvjgpPjgIInOmNvZGU9PT0nSlJBX09ERFNfUkFDRV9JREVOVElUWV9NSVNNQVRDSCc/J+mBuOaKnuS4reODrOODvOOCueOBqOWPluW+l+OCquODg+OCuuOBjOS4gOiHtOOBl+OBquOBhOOBn+OCgeWPjeaYoOOCkuS4reatouOBl+OBvuOBl+OBn+OAgic6YEpSQeOCquODg+OCuuWPluW+l+OCqOODqeODvO+9nCR7Y29kZX1gOwogICB9ZmluYWxseXtjbGVhclRpbWVvdXQodGltZW91dCk7aWYob3duPT09dG9rZW4pe2NvbnRyb2xsZXI9bnVsbDtpZihidXR0b24pe2J1dHRvbi5kaXNhYmxlZD1mYWxzZTtidXR0b24udGV4dENvbnRlbnQ9aWRsZUxhYmVsfX19CiAgfQogIGNvbnN0IHNhbWVTZWxlY3Rpb249KGRldGFpbCxjdXJyZW50KT0+U3RyaW5nKGRldGFpbD8uZGF0ZXx8JycpPT09U3RyaW5nKGN1cnJlbnQ/LmRhdGV8fCcnKSYmU3RyaW5nKGRldGFpbD8udHJhY2t8fCcnKT09PVN0cmluZyhjdXJyZW50Py50cmFja3x8JycpJiZOdW1iZXIoZGV0YWlsPy5yYWNlKT09PU51bWJlcihjdXJyZW50Py5yYWNlKTsKICBjb25zdCBvblJhY2VSZWFkeT1ldmVudD0+e2lmKCFhY3RpdmV8fCFpc0FjdGl2ZSgpKXJldHVybjtjb25zdCBjdXJyZW50PWdldFNlbGVjdGlvbigpO2lmKCFzYW1lU2VsZWN0aW9uKGV2ZW50Py5kZXRhaWwsY3VycmVudCkpcmV0dXJuO2NsZWFyVGltZW91dChhdXRvVGltZXIpO2lmKHN0YXR1cylzdGF0dXMudGV4dENvbnRlbnQ9J0pSQeWFrOW8j+WHuummrOihqOOCkuWPluW+l+OBl+OBvuOBl+OBn+OAguWIqeeUqOWPr+iDveOBquWNmOWLneOCquODg+OCuuOCkuiHquWLlemAo+WLleOBl+OBpuOBhOOBvuOBmeKApic7YXV0b1RpbWVyPXNldFRpbWVvdXQobG9hZCw4MCl9OwogIGlmKHR5cGVvZiB3aW5kb3cuYWRkRXZlbnRMaXN0ZW5lcj09PSdmdW5jdGlvbicpd2luZG93LmFkZEV2ZW50TGlzdGVuZXIoJ2NoYXNzOmpyYS1yYWNlLXJlYWR5JyxvblJhY2VSZWFkeSk7CiAgcmV0dXJuIHtsb2FkLGNhbmNlbCxzZXRBY3RpdmUodmFsdWUpe2FjdGl2ZT12YWx1ZTtpZighdmFsdWUpY2FuY2VsKCk7ZWxzZXtpZihidXR0b24pe2J1dHRvbi5kaXNhYmxlZD1mYWxzZTtidXR0b24udGV4dENvbnRlbnQ9aWRsZUxhYmVsfWlmKHN0YXR1cylzdGF0dXMudGV4dENvbnRlbnQ9J0pSQeWHuummrOihqOWPluW+l+W+jOOBr+ePvuWcqOOCquODg+OCuuOCkuWEquWFiOOBl+OAgeacquWPluW+l+aZguOBr+WPluW+l+aZguWIu+S7mOOBjeS/neWtmOOCquODg+OCuuOCkuWIqeeUqOOBl+OBvuOBmeOAgid9fX07CiB9fTsKfSkoKTsK
+          B64
+          base64 -d /tmp/jra-odds-client-v1991.b64 > jra-odds-client.js
+          node --check jra-odds-client.js
+          grep -Fq "CHASS-JRA-SAVED-ODDS-OVERLAY-FALLBACK-v1.9.9.1" jra-odds-client.js
+          grep -Fq "/api/jra/odds?" jra-odds-client.js
+          grep -Fq "/api/chass/v1/public/day-ai?" jra-odds-client.js
+          grep -Fq "viewerMarket" jra-odds-client.js
+          grep -Fq "保存オッズ" jra-odds-client.js
+          grep -Fq "現在値ではありません" jra-odds-client.js
+          grep -Fq "if(applied===false)" jra-odds-client.js
+          if grep -Fq "readJraOfficialOddsCacheForViewer" jra-odds-fetch.mjs; then
+            echo "::error::Viewer fallback leaked into strict current odds service."
+            exit 12
+          fi
+          git diff -- jra-odds-client.js
+
+      - name: Add v1.9.9.1 regression guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/v1991-test.b64 <<'B64'
+          aW1wb3J0IHRlc3QgZnJvbSAnbm9kZTp0ZXN0JzsKaW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgZnMgZnJvbSAnbm9kZTpmcyc7CmltcG9ydCB2bSBmcm9tICdub2RlOnZtJzsKY29uc3QgY2xpZW50U291cmNlPWZzLnJlYWRGaWxlU3luYyhuZXcgVVJMKCcuLi9qcmEtb2Rkcy1jbGllbnQuanMnLGltcG9ydC5tZXRhLnVybCksJ3V0ZjgnKTsKY29uc3Qgb2Rkc0ZldGNoU291cmNlPWZzLnJlYWRGaWxlU3luYyhuZXcgVVJMKCcuLi9qcmEtb2Rkcy1mZXRjaC5tanMnLGltcG9ydC5tZXRhLnVybCksJ3V0ZjgnKTsKY29uc3Qgc2VsZWN0aW9uPXtkYXRlOicyMDI2LTA5LTA1Jyx0cmFjazon5Lit5bGxJyxyYWNlOjV9OwpmdW5jdGlvbiBoYXJuZXNzKGZldGNoSW1wbCxhcHBseUltcGwpewogY2xhc3MgRXtjb25zdHJ1Y3Rvcigpe3RoaXMuZGlzYWJsZWQ9ZmFsc2U7dGhpcy50ZXh0Q29udGVudD0nJ319CiBjb25zdCBlbGVtZW50cz17bGl2ZU9kZHNTeW5jOm5ldyBFKCksbGl2ZU9kZHNTdGF0dXM6bmV3IEUoKX07bGV0IGFjdGl2ZT10cnVlLGdlbmVyYXRpb249MSxhcHBsaWVkPVtdOwogY29uc3QgY29udGV4dD17d2luZG93OnthZGRFdmVudExpc3RlbmVyKCl7fX0sZG9jdW1lbnQ6e2dldEVsZW1lbnRCeUlkOmlkPT5lbGVtZW50c1tpZF19LGZldGNoOmZldGNoSW1wbCxBYm9ydENvbnRyb2xsZXIsVVJMU2VhcmNoUGFyYW1zLHNldFRpbWVvdXQsY2xlYXJUaW1lb3V0fTsKIHZtLnJ1bkluTmV3Q29udGV4dChjbGllbnRTb3VyY2UsY29udGV4dCx7ZmlsZW5hbWU6J2pyYS1vZGRzLWNsaWVudC5qcyd9KTsKIGNvbnN0IGFwaT1jb250ZXh0LndpbmRvdy5DSEFTU19KUkFfT0REU19DTElFTlQuY3JlYXRlKHtpc0FjdGl2ZTooKT0+YWN0aXZlLGdldFNlbGVjdGlvbjooKT0+c2VsZWN0aW9uLGdldEdlbmVyYXRpb246KCk9PmdlbmVyYXRpb24sYXBwbHk6ZGF0YT0+e2FwcGxpZWQucHVzaChkYXRhKTtyZXR1cm4gYXBwbHlJbXBsP2FwcGx5SW1wbChkYXRhKTp1bmRlZmluZWR9fSk7YXBpLnNldEFjdGl2ZSh0cnVlKTsKIHJldHVybiB7YXBpLGVsZW1lbnRzLGFwcGxpZWQsc3RhbGUoKXtnZW5lcmF0aW9uKyt9LG9mZigpe2FjdGl2ZT1mYWxzZTthcGkuc2V0QWN0aXZlKGZhbHNlKX19Owp9CmNvbnN0IHByaW1hcnlQYXlsb2FkPXtvazp0cnVlLGRhdGU6c2VsZWN0aW9uLmRhdGUsdHJhY2s6c2VsZWN0aW9uLnRyYWNrLHJhY2U6c2VsZWN0aW9uLnJhY2Usb2Rkczpbe2hvcnNlTm86MSxvZGRzOjMuMixwb3B1bGFyaXR5OjF9XSxxdWFsaXR5OntvZGRzSG9yc2VDb3VudDoxLGFjdGl2ZUhvcnNlQ291bnQ6MX0sb2Rkc1NuYXBzaG90VHlwZTonbGl2ZScsYWNxdWlyZWRBdDonMjAyNi0wOS0wNVQwMzowMDowMC4wMDBaJ307CmZ1bmN0aW9uIG92ZXJsYXlQYXlsb2FkKHtzdGF0dXM9J3NhdmVkJyx0aW1lPScyMDI2LTA5LTA1VDAzOjE1OjAwLjAwMFonLHJhY2U9NX09e30pe3JldHVybiB7b2s6dHJ1ZSx2aWV3ZXJNYXJrZXRPdmVybGF5Olt7cmFjZU51bWJlcjpyYWNlLGhvcnNlczpbe2hvcnNlTnVtYmVyOjEsaG9yc2VOYW1lOifppqwxJyxvZGRzOjMuNCxwb3B1bGFyaXR5OjEsb2Rkc1N0YXR1czpzdGF0dXMsb2Rkc0ZldGNoZWRBdDp0aW1lfSx7aG9yc2VOdW1iZXI6Mixob3JzZU5hbWU6J+mmrDInLG9kZHM6NS42LHBvcHVsYXJpdHk6MixvZGRzU3RhdHVzOnN0YXR1cyxvZGRzRmV0Y2hlZEF0OnRpbWV9XX1dfX0KdGVzdCgncHJpbWFyeSBjdXJyZW50IG9kZHMgcmVtYWluIGZpcnN0IGFuZCBubyBmYWxsYmFjayByZXF1ZXN0IGlzIG1hZGUnLGFzeW5jKCk9Pntjb25zdCBjYWxscz1bXSxoPWhhcm5lc3MoYXN5bmMgdXJsPT57Y2FsbHMucHVzaChTdHJpbmcodXJsKSk7cmV0dXJuIFJlc3BvbnNlLmpzb24ocHJpbWFyeVBheWxvYWQpfSk7YXdhaXQgaC5hcGkubG9hZCgpO2Fzc2VydC5lcXVhbChjYWxscy5sZW5ndGgsMSk7YXNzZXJ0Lm1hdGNoKGNhbGxzWzBdLC9eXC9hcGlcL2pyYVwvb2Rkc1w/Lyk7YXNzZXJ0LmVxdWFsKGguYXBwbGllZC5sZW5ndGgsMSk7YXNzZXJ0LmVxdWFsKGguYXBwbGllZFswXS5vZGRzU25hcHNob3RUeXBlLCdsaXZlJyk7YXNzZXJ0Lm1hdGNoKGguZWxlbWVudHMubGl2ZU9kZHNTdGF0dXMudGV4dENvbnRlbnQsLzFcLzHpoK3lj43mmKAvKTthc3NlcnQubWF0Y2goaC5lbGVtZW50cy5saXZlT2Rkc1N0YXR1cy50ZXh0Q29udGVudCwv54++5Zyo44Kq44OD44K6Lyl9KTsKdGVzdCgnc3RyaWN0IGNhY2hlIG1pc3MgZmFsbHMgYmFjayB0byBleGFjdC1yYWNlIHNhdmVkIG92ZXJsYXkgd2l0aCB0aW1lc3RhbXAnLGFzeW5jKCk9Pntjb25zdCBjYWxscz1bXSxoPWhhcm5lc3MoYXN5bmMgdXJsPT57Y2FsbHMucHVzaChTdHJpbmcodXJsKSk7aWYoU3RyaW5nKHVybCkuc3RhcnRzV2l0aCgnL2FwaS9qcmEvb2Rkcz8nKSlyZXR1cm4gUmVzcG9uc2UuanNvbih7b2s6ZmFsc2UsZXJyb3I6J0pSQV9PRERTX0NBQ0hFX01JU1MnfSx7c3RhdHVzOjUwM30pO3JldHVybiBSZXNwb25zZS5qc29uKG92ZXJsYXlQYXlsb2FkKCkpfSk7YXdhaXQgaC5hcGkubG9hZCgpO2Fzc2VydC5lcXVhbChjYWxscy5sZW5ndGgsMik7YXNzZXJ0Lm1hdGNoKGNhbGxzWzFdLC92aWV3ZXJNYXJrZXQ9MS8pO2Fzc2VydC5lcXVhbChoLmFwcGxpZWQubGVuZ3RoLDEpO2Fzc2VydC5lcXVhbChoLmFwcGxpZWRbMF0ucmFjZSw1KTthc3NlcnQuZXF1YWwoaC5hcHBsaWVkWzBdLm9kZHNTbmFwc2hvdFR5cGUsJ3NhdmVkJyk7YXNzZXJ0LmVxdWFsKGguYXBwbGllZFswXS5hY3F1aXJlZEF0LCcyMDI2LTA5LTA1VDAzOjE1OjAwLjAwMFonKTthc3NlcnQubWF0Y2goaC5lbGVtZW50cy5saXZlT2Rkc1N0YXR1cy50ZXh0Q29udGVudCwv5L+d5a2Y44Kq44OD44K6Lyk7YXNzZXJ0Lm1hdGNoKGguZWxlbWVudHMubGl2ZU9kZHNTdGF0dXMudGV4dENvbnRlbnQsL+WPluW+ly8pO2Fzc2VydC5tYXRjaChoLmVsZW1lbnRzLmxpdmVPZGRzU3RhdHVzLnRleHRDb250ZW50LC/nj77lnKjlgKTjgafjga/jgYLjgorjgb7jgZvjgpMvKX0pOwp0ZXN0KCdzYXZlZCBvdmVybGF5IHdpdGhvdXQgYWNxdWlzaXRpb24gdGltZSBpcyBub3QgYXBwbGllZCcsYXN5bmMoKT0+e2NvbnN0IGg9aGFybmVzcyhhc3luYyB1cmw9PlN0cmluZyh1cmwpLnN0YXJ0c1dpdGgoJy9hcGkvanJhL29kZHM/Jyk/UmVzcG9uc2UuanNvbih7b2s6ZmFsc2UsZXJyb3I6J0pSQV9PRERTX0NBQ0hFX01JU1MnfSx7c3RhdHVzOjUwM30pOlJlc3BvbnNlLmpzb24ob3ZlcmxheVBheWxvYWQoe3RpbWU6Jyd9KSkpO2F3YWl0IGguYXBpLmxvYWQoKTthc3NlcnQuZXF1YWwoaC5hcHBsaWVkLmxlbmd0aCwwKTthc3NlcnQubWF0Y2goaC5lbGVtZW50cy5saXZlT2Rkc1N0YXR1cy50ZXh0Q29udGVudCwv5Y+W5b6X5pmC5Yi75LuY44GN5L+d5a2Y5YCkLyl9KTsKdGVzdCgnd3JvbmctcmFjZSBvdmVybGF5IGlzIG5ldmVyIGFwcGxpZWQnLGFzeW5jKCk9Pntjb25zdCBoPWhhcm5lc3MoYXN5bmMgdXJsPT5TdHJpbmcodXJsKS5zdGFydHNXaXRoKCcvYXBpL2pyYS9vZGRzPycpP1Jlc3BvbnNlLmpzb24oe29rOmZhbHNlLGVycm9yOidKUkFfT0REU19DQUNIRV9NSVNTJ30se3N0YXR1czo1MDN9KTpSZXNwb25zZS5qc29uKG92ZXJsYXlQYXlsb2FkKHtyYWNlOjZ9KSkpO2F3YWl0IGguYXBpLmxvYWQoKTthc3NlcnQuZXF1YWwoaC5hcHBsaWVkLmxlbmd0aCwwKTthc3NlcnQubWF0Y2goaC5lbGVtZW50cy5saXZlT2Rkc1N0YXR1cy50ZXh0Q29udGVudCwv5pyq5Y+W5b6XLyl9KTsKdGVzdCgnZmluYWwgcGVyc2lzdGVkIG92ZXJsYXkgc3RheXMgZmluYWwnLGFzeW5jKCk9Pntjb25zdCBoPWhhcm5lc3MoYXN5bmMgdXJsPT5TdHJpbmcodXJsKS5zdGFydHNXaXRoKCcvYXBpL2pyYS9vZGRzPycpP1Jlc3BvbnNlLmpzb24oe29rOmZhbHNlLGVycm9yOidKUkFfT0REU19DQUNIRV9NSVNTJ30se3N0YXR1czo1MDN9KTpSZXNwb25zZS5qc29uKG92ZXJsYXlQYXlsb2FkKHtzdGF0dXM6J2ZpbmFsJ30pKSk7YXdhaXQgaC5hcGkubG9hZCgpO2Fzc2VydC5lcXVhbChoLmFwcGxpZWQubGVuZ3RoLDEpO2Fzc2VydC5lcXVhbChoLmFwcGxpZWRbMF0ub2Rkc1NuYXBzaG90VHlwZSwnZmluYWwnKTthc3NlcnQubWF0Y2goaC5lbGVtZW50cy5saXZlT2Rkc1N0YXR1cy50ZXh0Q29udGVudCwv5pyA57WC44Kq44OD44K6Lyl9KTsKdGVzdCgnY2xpZW50IGFjY2VwdHMgbGVnYWN5IGFwcGx5IGNhbGxiYWNrcyB0aGF0IHJldHVybiB6ZXJvJyxhc3luYygpPT57bGV0IGNvdW50PTA7Y2xhc3MgRXtjb25zdHJ1Y3Rvcigpe3RoaXMuZGlzYWJsZWQ9ZmFsc2U7dGhpcy50ZXh0Q29udGVudD0nJ319Y29uc3QgZWxlbWVudHM9e2xpdmVPZGRzU3luYzpuZXcgRSgpLGxpdmVPZGRzU3RhdHVzOm5ldyBFKCl9LGNvbnRleHQ9e3dpbmRvdzp7YWRkRXZlbnRMaXN0ZW5lcigpe319LGRvY3VtZW50OntnZXRFbGVtZW50QnlJZDppZD0+ZWxlbWVudHNbaWRdfSxmZXRjaDphc3luYygpPT5SZXNwb25zZS5qc29uKHByaW1hcnlQYXlsb2FkKSxBYm9ydENvbnRyb2xsZXIsVVJMU2VhcmNoUGFyYW1zLHNldFRpbWVvdXQsY2xlYXJUaW1lb3V0fTt2bS5ydW5Jbk5ld0NvbnRleHQoY2xpZW50U291cmNlLGNvbnRleHQpO2NvbnN0IGFwaT1jb250ZXh0LndpbmRvdy5DSEFTU19KUkFfT0REU19DTElFTlQuY3JlYXRlKHtpc0FjdGl2ZTooKT0+dHJ1ZSxnZXRTZWxlY3Rpb246KCk9PnNlbGVjdGlvbixnZXRHZW5lcmF0aW9uOigpPT4xLGFwcGx5OigpPT5jb3VudCsrfSk7YXBpLnNldEFjdGl2ZSh0cnVlKTthd2FpdCBhcGkubG9hZCgpO2Fzc2VydC5lcXVhbChjb3VudCwxKTthc3NlcnQubWF0Y2goZWxlbWVudHMubGl2ZU9kZHNTdGF0dXMudGV4dENvbnRlbnQsLzFcLzHpoK3lj43mmKAvKX0pOwp0ZXN0KCdleHBsaWNpdCBib29sZWFuIGZhbHNlIGZyb20gYXBwIGlkZW50aXR5IGd1YXJkIGlzIHJlamVjdGVkJyxhc3luYygpPT57Y29uc3QgaD1oYXJuZXNzKGFzeW5jKCk9PlJlc3BvbnNlLmpzb24ocHJpbWFyeVBheWxvYWQpLCgpPT5mYWxzZSk7YXdhaXQgaC5hcGkubG9hZCgpO2Fzc2VydC5lcXVhbChoLmFwcGxpZWQubGVuZ3RoLDEpO2Fzc2VydC5tYXRjaChoLmVsZW1lbnRzLmxpdmVPZGRzU3RhdHVzLnRleHRDb250ZW50LC/kuIDoh7TjgZfjgarjgYQvKX0pOwp0ZXN0KCdzdHJpY3QgY3VycmVudCBvZGRzIHNlcnZpY2UgcmVtYWlucyBzZXBhcmF0ZSBmcm9tIHZpZXdlciBwZXJzaXN0ZWQgZmFsbGJhY2snLCgpPT57YXNzZXJ0Lm1hdGNoKG9kZHNGZXRjaFNvdXJjZSwvcmVhZEpyYU9mZmljaWFsT2Rkc0NhY2hlLyk7YXNzZXJ0LmRvZXNOb3RNYXRjaChvZGRzRmV0Y2hTb3VyY2UsL3JlYWRKcmFPZmZpY2lhbE9kZHNDYWNoZUZvclZpZXdlci8pO2Fzc2VydC5tYXRjaChjbGllbnRTb3VyY2UsL1wvYXBpXC9jaGFzc1wvdjFcL3B1YmxpY1wvZGF5LWFpXD8vKTthc3NlcnQubWF0Y2goY2xpZW50U291cmNlLC92aWV3ZXJNYXJrZXQvKX0pOwo=
+          B64
+          base64 -d /tmp/v1991-test.b64 > tests/jra-saved-odds-overlay-fallback-v1991.test.mjs
+          node --check tests/jra-saved-odds-overlay-fallback-v1991.test.mjs
+          node --test tests/jra-saved-odds-overlay-fallback-v1991.test.mjs
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          if [ -f mcp/package.json ]; then npm ci --prefix mcp; fi
+
+      - name: Full regression check
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Explicitly verify the two v1.9.9 failures are repaired
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/jra-j3.test.mjs
+          node --test tests/jra-saved-market-contract-v19.test.mjs
+          node --test tests/jra-saved-odds-overlay-fallback-v1991.test.mjs
+
+      - name: Validate change scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          printf '%s\\n' "$changed"
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              jra-odds-client.js|tests/jra-saved-odds-overlay-fallback-v1991.test.mjs) ;;
+              *) echo "::error::Unexpected modified file: $f"; exit 21 ;;
+            esac
+          done <<< "$changed"
+          git diff --exit-code -- jra-odds-fetch.mjs worker.js app.js index.html
+
+      - name: Validation-only conclusion
+        if: ${{ inputs.mode == 'validate_only' }}
+        run: |
+          echo "## v1.9.9.1 validation PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- strict current odds endpoint: unchanged" >> "$GITHUB_STEP_SUMMARY"
+          echo "- saved odds fallback: public viewer overlay" >> "$GITHUB_STEP_SUMMARY"
+          echo "- acquisition timestamp required for saved odds" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cloudflare authentication preflight
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          npx -y wrangler@4 whoami
+
+      - name: Commit v1.9.9.1 source
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jra-odds-client.js tests/jra-saved-odds-overlay-fallback-v1991.test.mjs
+          if ! git diff --cached --quiet; then
+            git commit -m "Use timestamped persisted JRA odds as client fallback"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      - name: Deploy CHASS Worker and assets
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        run: npx -y wrangler@4 deploy
+
+      - name: Production asset smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            code="$(curl -sS --max-time 20 -o /tmp/prod-client.js -w '%{http_code}' "$PRODUCTION_BASE_URL/jra-odds-client.js?ts=$(date +%s)" || true)"
+            if [ "$code" = "200" ] && grep -Fq "CHASS-JRA-SAVED-ODDS-OVERLAY-FALLBACK-v1.9.9.1" /tmp/prod-client.js; then break; fi
+            sleep 4
+          done
+          grep -Fq "CHASS-JRA-SAVED-ODDS-OVERLAY-FALLBACK-v1.9.9.1" /tmp/prod-client.js
+          code="$(curl -sS --max-time 20 -G -o /tmp/viewer-market.json -w '%{http_code}' --data-urlencode "date=$SMOKE_DATE" --data-urlencode "track=$SMOKE_TRACK" --data-urlencode "organization=JRA" --data-urlencode "format=tabular" --data-urlencode "viewerMarket=1" "$PRODUCTION_BASE_URL/api/chass/v1/public/day-ai" || true)"
+          echo "viewer market smoke HTTP=$code"
+          if [ "$code" = "200" ]; then
+            node - <<'NODE'
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/viewer-market.json','utf8'));
+          if(x.ok!==true)process.exit(1);
+          const overlay=Array.isArray(x.viewerMarketOverlay)?x.viewerMarketOverlay:[];
+          const rows=overlay.flatMap(r=>Array.isArray(r.horses)?r.horses:[]);
+          const saved=rows.filter(h=>h.oddsStatus==='saved'&&h.oddsFetchedAt);
+          const finalRows=rows.filter(h=>h.oddsStatus==='final');
+          console.log(`viewerMarketOverlay races=${overlay.length} timestampedSaved=${saved.length} final=${finalRows.length}`);
+          NODE
+          else
+            echo "::warning::Public viewer-market diagnostic unavailable for the smoke date; deployed client marker is verified."
+          fi
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Saved Odds Overlay Fallback v1.9.9.1"
+            echo "- Mode: \`$INPUT_MODE\`"
+            echo "- v1.9.9 failure 1: fixed — apply callback is rejected only on explicit boolean false"
+            echo "- v1.9.9 failure 2: fixed — strict /api/jra/odds remains isolated from persisted viewer fallback"
+            echo "- Priority: strict current odds -> timestamped persisted viewer odds -> unavailable"
+            echo "- Saved odds label: 保存オッズ + acquisition time + 現在値ではありません"
+            echo "- Exact race selection: date / track / race + generation guard"
+            echo "- NAR logic: unchanged"
+            echo "- prediction/ability logic: unchanged"
+            echo "- D1 schema: unchanged"
+          } >> "$GITHUB_STEP_SUMMARY"
