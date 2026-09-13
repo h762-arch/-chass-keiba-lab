@@ -1,0 +1,340 @@
+name: CHASS JRA Auto Load Frontend v1.5.2
+
+"on":
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        required: true
+        default: "apply_and_deploy"
+        type: choice
+        options:
+          - validate_only
+          - apply_and_deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-jra-auto-load-frontend-v152
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      PRODUCTION_BASE_URL: "https://chass-keiba-lab7.h7625421.workers.dev"
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Capture baseline
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "client_sha=$(sha256sum jra-race-client.js | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Safety preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test -f app.js
+          test -f jra-race-client.js
+          test -f worker.js
+          grep -q "ENABLE_JRA_AUTO_FETCH===true" jra-race-client.js
+          grep -q "jra-drive-prediction-input.mjs" worker.js
+
+      - name: Baseline regression snapshot
+        id: baseline_regression
+        shell: bash
+        run: |
+          set +e
+          npm run check > /tmp/chass-v152-base.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-v152-base.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+          echo "Baseline fail count: $FAIL"
+
+      - name: Build isolated feature-flag patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chass-jra-autoload-v152
+          git worktree add --detach /tmp/chass-jra-autoload-v152 HEAD
+          cd /tmp/chass-jra-autoload-v152
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app.js")
+          s = p.read_text(encoding="utf-8")
+
+          marker = "// CHASS-JRA-AUTO-LOAD-v1.5.2"
+          anchor = "const APP_VERSION='10.0.1';"
+
+          patch = """// CHASS-JRA-AUTO-LOAD-v1.5.2
+          if(typeof window!=='undefined'){
+            window.CHASS_FEATURES=window.CHASS_FEATURES||{};
+            if(window.CHASS_FEATURES.ENABLE_JRA_AUTO_FETCH==null){
+              window.CHASS_FEATURES.ENABLE_JRA_AUTO_FETCH=true;
+            }
+          }
+          """
+
+          if marker in s:
+              print("v1.5.2 patch already present")
+          elif anchor in s:
+              s = s.replace(anchor, anchor + "\n" + patch, 1)
+              p.write_text(s, encoding="utf-8")
+          else:
+              raise SystemExit("APP_VERSION marker not found; refusing blind edit.")
+          PY
+
+          mkdir -p tests
+          cat > tests/jra-autoload-feature-flag-v152.test.mjs <<'NODE'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+
+          test('app enables existing JRA auto-fetch gate by default', () => {
+            const app = fs.readFileSync('app.js', 'utf8');
+            const client = fs.readFileSync('jra-race-client.js', 'utf8');
+
+            assert.match(app, /CHASS-JRA-AUTO-LOAD-v1\.5\.2/);
+            assert.match(app, /ENABLE_JRA_AUTO_FETCH==null/);
+            assert.match(app, /ENABLE_JRA_AUTO_FETCH=true/);
+
+            assert.match(client, /ENABLE_JRA_AUTO_FETCH===true/);
+            assert.doesNotMatch(client, /scheduleAutoLoad/);
+          });
+
+          test('explicit false override remains possible', () => {
+            const app = fs.readFileSync('app.js', 'utf8');
+            assert.match(
+              app,
+              /if\(window\.CHASS_FEATURES\.ENABLE_JRA_AUTO_FETCH==null\)/
+            );
+          });
+          NODE
+
+          node --check app.js
+          node --check jra-race-client.js
+          node --test tests/jra-autoload-feature-flag-v152.test.mjs
+
+          test "$(sha256sum jra-race-client.js | awk '{print $1}')" = "${{ steps.baseline.outputs.client_sha }}"
+
+      - name: Existing JRA client regression guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/chass-jra-autoload-v152
+
+          node --test \
+            tests/jra-race-odds-auto-link.test.mjs \
+            tests/jra-race-state-isolation.test.mjs
+
+      - name: Patched regression comparison
+        id: patched_regression
+        shell: bash
+        env:
+          BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+        run: |
+          set +e
+          cd /tmp/chass-jra-autoload-v152
+          npm run check > /tmp/chass-v152-patched.log 2>&1
+          CODE=$?
+          set -e
+
+          FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-v152-patched.log | tail -n 1 | awk '{print $3}' || true)"
+          FAIL="${FAIL:-9999}"
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+          echo "Baseline fail count: $BASE_FAIL"
+          echo "Patched fail count:  $FAIL"
+
+          if [ "$FAIL" -gt "$BASE_FAIL" ]; then
+            echo "::error::v1.5.2 increased regression failures."
+            echo "---- failing subtests ----"
+            grep -E '^not ok |^# Subtest:' /tmp/chass-v152-patched.log | tail -n 80 || true
+            echo "---- tail ----"
+            tail -n 160 /tmp/chass-v152-patched.log || true
+            exit 1
+          fi
+
+      - name: Validate-only summary
+        if: ${{ inputs.mode == 'validate_only' }}
+        shell: bash
+        run: |
+          {
+            echo "## CHASS JRA Auto Load Frontend v1.5.2 - VALIDATED"
+            echo "- Existing jra-race-client.js modified: NO"
+            echo "- Existing ENABLE_JRA_AUTO_FETCH mechanism: PRESERVED"
+            echo "- App default for ENABLE_JRA_AUTO_FETCH: ON"
+            echo "- Explicit false override still possible: YES"
+            echo "- JRA race/odds regression guards: PASS"
+            echo "- Production deploy: NOT PERFORMED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify main did not move
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "${{ steps.baseline.outputs.sha }}" = "$(git rev-parse origin/main)"
+
+      - name: Apply tested patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/chass-jra-autoload-v152/app.js .
+          cp /tmp/chass-jra-autoload-v152/tests/jra-autoload-feature-flag-v152.test.mjs tests/
+
+          node --check app.js
+          node --test \
+            tests/jra-autoload-feature-flag-v152.test.mjs \
+            tests/jra-race-odds-auto-link.test.mjs \
+            tests/jra-race-state-isolation.test.mjs
+
+          test "$(sha256sum jra-race-client.js | awk '{print $1}')" = "${{ steps.baseline.outputs.client_sha }}"
+
+      - name: Commit patch
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app.js tests/jra-autoload-feature-flag-v152.test.mjs
+          git commit -m "Enable existing JRA auto fetch by default"
+
+          SHA="$(git rev-parse HEAD)"
+          git push origin HEAD:main
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy production
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+
+      - name: Production frontend smoke
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BODY=/tmp/chass-app-v152.js
+          READY=0
+
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            HTTP="$(curl -sS --max-time 25 \
+              -H 'Cache-Control: no-cache, no-store, max-age=0' \
+              -H 'Pragma: no-cache' \
+              -o "$BODY" \
+              -w '%{http_code}' \
+              "$PRODUCTION_BASE_URL/app.js?_chass_autoload=v152-$i-$(date +%s%N)" || true)"
+
+            if [ "$HTTP" = "200" ] \
+              && grep -q "CHASS-JRA-AUTO-LOAD-v1.5.2" "$BODY" \
+              && grep -q "ENABLE_JRA_AUTO_FETCH=true" "$BODY"; then
+              READY=1
+              break
+            fi
+
+            sleep 3
+          done
+
+          test "$READY" = "1"
+          echo "Production app.js JRA auto-fetch flag: PASS"
+
+      - name: Production Drive hybrid health
+        if: ${{ inputs.mode == 'apply_and_deploy' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HTTP="$(curl -sS --max-time 25 \
+            -o /tmp/chass-drive-health-v152.json \
+            -w '%{http_code}' \
+            "$PRODUCTION_BASE_URL/api/drive-read/health" || true)"
+
+          node <<'NODE'
+          const fs = require('fs');
+          const x = JSON.parse(
+            fs.readFileSync('/tmp/chass-drive-health-v152.json', 'utf8')
+          );
+
+          if (x.ok !== true) process.exit(1);
+          if (x.authMode !== 'service_account') process.exit(2);
+          if (x.spreadsheetReachable !== true) process.exit(3);
+          NODE
+
+          test "$HTTP" = "200"
+
+      - name: Automatic rollback if production smoke fails
+        if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.sha != '' && steps.deploy.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git revert --no-edit "${{ steps.commit.outputs.sha }}"
+          git push origin main
+
+          npx -y wrangler@4 deploy
+
+      - name: Final summary
+        if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+        shell: bash
+        env:
+          BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+          PATCH_FAIL: ${{ steps.patched_regression.outputs.fail_count }}
+        run: |
+          {
+            echo "## CHASS JRA Auto Load Frontend v1.5.2 - ACTIVE"
+            echo "- Existing JRA race client logic changed: NO"
+            echo "- Existing selectionChanged auto-fetch gate: PRESERVED"
+            echo "- ENABLE_JRA_AUTO_FETCH default: ON"
+            echo "- Explicit emergency OFF override: AVAILABLE"
+            echo "- JRA official + Drive hybrid backend: UNCHANGED"
+            echo "- Baseline regression failures: ${BASE_FAIL:-unknown}"
+            echo "- Patched regression failures: ${PATCH_FAIL:-unknown}"
+            echo "- Production app.js smoke: PASS"
+            echo "- Production Drive health: PASS"
+            echo "- Commit: ${{ steps.commit.outputs.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
