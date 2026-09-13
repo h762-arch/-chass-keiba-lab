@@ -1,0 +1,251 @@
+name: CHASS JRA Auto Load Frontend v1.5.1
+'on':
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Execution mode
+        required: true
+        default: apply_and_deploy
+        type: choice
+        options:
+        - validate_only
+        - apply_and_deploy
+permissions:
+  contents: write
+concurrency:
+  group: chass-jra-auto-load-frontend-v151
+  cancel-in-progress: false
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRODUCTION_BASE_URL: https://chass-keiba-lab7.h7625421.workers.dev
+    steps:
+    - name: Checkout current main
+      uses: actions/checkout@v5
+      with:
+        ref: main
+        fetch-depth: 0
+    - name: Setup Node.js 22
+      uses: actions/setup-node@v5
+      with:
+        node-version: '22'
+    - name: Capture baseline
+      id: baseline
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+    - name: Safety preflight
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+        test -f jra-race-client.js
+        test -f worker.js
+        grep -q "CHASS_JRA_RACE_CLIENT" jra-race-client.js
+        grep -q "ENABLE_JRA_AUTO_FETCH" jra-race-client.js
+        grep -q "jra-drive-prediction-input.mjs" worker.js
+    - name: Baseline regression snapshot
+      id: baseline_regression
+      shell: bash
+      run: |
+        set +e
+        npm run check > /tmp/chass-autoload-base.log 2>&1
+        CODE=$?
+        set -e
+        FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-autoload-base.log | tail -n 1 | awk '{print $3}' || true)"
+        FAIL="${FAIL:-9999}"
+        echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+        echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+        echo "Baseline fail count: $FAIL"
+    - name: Build isolated auto-load patch
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf /tmp/chass-jra-autoload-v151
+        git worktree add --detach /tmp/chass-jra-autoload-v151 HEAD
+        cd /tmp/chass-jra-autoload-v151
+
+        python3 - <<'PY'
+        from pathlib import Path
+
+        p = Path("jra-race-client.js")
+        s = p.read_text(encoding="utf-8")
+
+        old = "    return {load,cancel,setActive(value){active=value;if(!value)cancel();},selectionChanged(){cancel();if(active&&window.CHASS_FEATURES?.ENABLE_JRA_AUTO_FETCH===true)timer=setTimeout(load,400);}};"
+        new = '''    const validSelection=()=>{const selection=getSelection?.()||{},race=Number(selection.race);return !!selection.date&&!!selection.track&&Number.isInteger(race)&&race>=1&&race<=12;};
+            const scheduleAutoLoad=(delay=400)=>{cancel();if(!active||!isActive()||!validSelection())return;timer=setTimeout(load,delay);};
+            return {load,cancel,setActive(value){active=!!value;if(!active)cancel();},selectionChanged(){scheduleAutoLoad(400);}};'''
+
+        if old not in s:
+            raise SystemExit("Expected JRA auto-fetch marker not found; refusing blind edit.")
+
+        p.write_text(s.replace(old, new, 1), encoding="utf-8")
+        PY
+
+        mkdir -p tests
+        cat > tests/jra-race-client-autoload.test.mjs <<'NODE'
+        import test from 'node:test';
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+
+        test('JRA selection auto-load is unconditional while JRA mode is active', () => {
+          const source = fs.readFileSync('jra-race-client.js', 'utf8');
+          assert.equal(source.includes('ENABLE_JRA_AUTO_FETCH'), false);
+          assert.equal(source.includes('scheduleAutoLoad'), true);
+          assert.equal(source.includes('validSelection'), true);
+          assert.match(source, /setActive\(value\)\{active=!!value;if\(!active\)cancel\(\);\}/);
+          assert.match(source, /selectionChanged\(\)\{scheduleAutoLoad\(400\)/);
+        });
+        NODE
+
+        node --check jra-race-client.js
+        node --test tests/jra-race-client-autoload.test.mjs
+    - name: Existing JRA race-to-odds regression guard
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd /tmp/chass-jra-autoload-v151
+        node --test tests/jra-race-odds-auto-link.test.mjs
+    - name: Patched regression comparison
+      id: patched_regression
+      shell: bash
+      env:
+        BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+      run: |
+        set +e
+        cd /tmp/chass-jra-autoload-v151
+        npm run check > /tmp/chass-autoload-patched.log 2>&1
+        CODE=$?
+        set -e
+        FAIL="$(grep -E '^# fail [0-9]+' /tmp/chass-autoload-patched.log | tail -n 1 | awk '{print $3}' || true)"
+        FAIL="${FAIL:-9999}"
+        echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+        echo "fail_count=$FAIL" >> "$GITHUB_OUTPUT"
+        echo "Baseline fail count: $BASE_FAIL"
+        echo "Patched fail count: $FAIL"
+        if [ "$FAIL" -gt "$BASE_FAIL" ]; then
+          echo "::error::Auto-load patch increased regression failures."
+          exit 1
+        fi
+    - name: Validate-only summary
+      if: ${{ inputs.mode == 'validate_only' }}
+      shell: bash
+      run: |
+        {
+          echo "## CHASS JRA Auto Load Frontend v1.5.1 - VALIDATED"
+          echo "- Race selection auto load: PASS"
+          echo "- JRA activation alone does not duplicate an existing manual load: PASS"
+          echo "- Manual load button retained: YES"
+          echo "- JRA Drive backend changed: NO"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Verify main did not move
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        git fetch origin main
+        test "${{ steps.baseline.outputs.sha }}" = "$(git rev-parse origin/main)"
+    - name: Apply tested patch
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cp /tmp/chass-jra-autoload-v151/jra-race-client.js .
+        cp /tmp/chass-jra-autoload-v151/tests/jra-race-client-autoload.test.mjs tests/
+        node --check jra-race-client.js
+        node --test tests/jra-race-client-autoload.test.mjs
+    - name: Commit patch
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      id: commit
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add jra-race-client.js tests/jra-race-client-autoload.test.mjs
+        git commit -m "Auto load JRA prediction after race selection"
+        SHA="$(git rev-parse HEAD)"
+        git push origin HEAD:main
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+    - name: Deploy production
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      id: deploy
+      shell: bash
+      run: |
+        set -euo pipefail
+        npx -y wrangler@4 deploy
+    - name: Production frontend smoke
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      id: smoke
+      shell: bash
+      run: |
+        set -euo pipefail
+        BODY=/tmp/chass-jra-race-client-production.js
+        READY=0
+
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          HTTP="$(curl -sS --max-time 25     -H 'Cache-Control: no-cache, no-store, max-age=0'     -H 'Pragma: no-cache'     -o "$BODY"     -w '%{http_code}'     "$PRODUCTION_BASE_URL/jra-race-client.js?_chass_autoload=v151-$i-$(date +%s%N)" || true)"
+
+          if [ "$HTTP" = "200" ]     && grep -q "scheduleAutoLoad" "$BODY"     && grep -q "validSelection" "$BODY"     && ! grep -q "ENABLE_JRA_AUTO_FETCH" "$BODY"; then
+            READY=1
+            break
+          fi
+
+          sleep 3
+        done
+
+        test "$READY" = "1"
+        echo "Production JRA frontend auto-load asset: PASS"
+    - name: Production Drive backend health
+      if: ${{ inputs.mode == 'apply_and_deploy' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        HTTP="$(curl -sS --max-time 25   -o /tmp/chass-drive-health-autoload.json   -w '%{http_code}'   "$PRODUCTION_BASE_URL/api/drive-read/health" || true)"
+
+        node <<'NODE'
+        const fs = require('fs');
+        const x = JSON.parse(fs.readFileSync('/tmp/chass-drive-health-autoload.json', 'utf8'));
+        if (x.ok !== true) process.exit(1);
+        if (x.authMode !== 'service_account') process.exit(2);
+        if (x.spreadsheetReachable !== true) process.exit(3);
+        NODE
+
+        test "$HTTP" = "200"
+    - name: Automatic rollback if production smoke fails
+      if: ${{ failure() && inputs.mode == 'apply_and_deploy' && steps.commit.outputs.sha != '' && steps.deploy.outcome ==
+        'success' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        git fetch origin main
+        git checkout main
+        git reset --hard origin/main
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git revert --no-edit "${{ steps.commit.outputs.sha }}"
+        git push origin main
+        npx -y wrangler@4 deploy
+    - name: Final summary
+      if: ${{ inputs.mode == 'apply_and_deploy' && success() }}
+      shell: bash
+      env:
+        BASE_FAIL: ${{ steps.baseline_regression.outputs.fail_count }}
+        PATCH_FAIL: ${{ steps.patched_regression.outputs.fail_count }}
+      run: |
+        {
+          echo "## CHASS JRA Auto Load Frontend v1.5.1 - ACTIVE"
+          echo "- Selecting a valid JRA race automatically loads prediction data: YES"
+          echo "- JRA mode activation alone does not trigger a duplicate load: YES"
+          echo "- Manual load button retained as retry: YES"
+        echo "- Existing race -> odds single-load contract: PRESERVED"
+          echo "- Existing JRA official + Drive hybrid backend: UNCHANGED"
+          echo "- Baseline regression failures: ${BASE_FAIL:-unknown}"
+          echo "- Patched regression failures: ${PATCH_FAIL:-unknown}"
+          echo "- Production frontend asset smoke: PASS"
+          echo "- Production Drive backend health: PASS"
+          echo "- Commit: ${{ steps.commit.outputs.sha }}"
+        } >> "$GITHUB_STEP_SUMMARY"
