@@ -1,4 +1,4 @@
-name: CHASS Workflow Consolidation v2.6.1 Root Slim Phase A
+name: CHASS Workflow Consolidation v2.6.2 Root Slim Phase A
 
 on:
   workflow_dispatch:
@@ -67,7 +67,6 @@ jobs:
             jra-program-fixture.html \
             jra-race-card-fixture.html \
             jra-result-fixture.html \
-            kawasaki.json \
             nar-fixtures.mjs \
             AI_BRIDGE.md \
             CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
@@ -85,11 +84,14 @@ jobs:
           grep -Fq "../jra-race-card-fixture.html" tests/jra-j4.test.mjs
           grep -Fq "../jra-result-fixture.html" tests/jra-j4.test.mjs
 
-          grep -Fq "kawasaki.json" tests/public-read-only-api.test.mjs
           grep -Fq "nar-fixtures.mjs" regression.test.mjs
           grep -Fq "nar-fixtures.mjs" tests/auto-result-queue.test.mjs
           grep -Fq "nar-fixtures.mjs" README.md
           grep -Fq "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+
+          # kawasaki.json is a published/snapshot-style root artifact, not a test fixture.
+          # Keep it in root until its external/static role is separately proven safe to move.
+          test -f kawasaki.json
 
           # Runtime/config surfaces remain untouched in Phase A.
           for KEEP in \
@@ -101,11 +103,11 @@ jobs:
           done
 
           {
-            echo "## CHASS Root Slim Batch10 — Phase A Audit"
+            echo "## CHASS Root Slim Batch10 — Phase A Audit v2.6.2"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
-            echo "- Fixture moves: **5**"
+            echo "- Fixture moves: **4**"
             echo "- Document moves: **2**"
             echo "- Runtime/source module moves: **0**"
             echo "- Delete operations: **0**"
@@ -137,7 +139,6 @@ jobs:
           git mv jra-program-fixture.html tests/fixtures/jra/jra-program-fixture.html
           git mv jra-race-card-fixture.html tests/fixtures/jra/jra-race-card-fixture.html
           git mv jra-result-fixture.html tests/fixtures/jra/jra-result-fixture.html
-          git mv kawasaki.json tests/fixtures/nar/kawasaki.json
           git mv nar-fixtures.mjs tests/fixtures/nar/nar-fixtures.mjs
           git mv AI_BRIDGE.md docs/AI_BRIDGE.md
           git mv CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
@@ -163,10 +164,6 @@ jobs:
                    "./fixtures/jra/jra-race-card-fixture.html"),
                   ("../jra-result-fixture.html",
                    "./fixtures/jra/jra-result-fixture.html"),
-              ],
-              "tests/public-read-only-api.test.mjs": [
-                  ("../kawasaki.json",
-                   "./fixtures/nar/kawasaki.json"),
               ],
               "regression.test.mjs": [
                   ("./nar-fixtures.mjs",
@@ -201,7 +198,6 @@ jobs:
           test -f tests/fixtures/jra/jra-program-fixture.html
           test -f tests/fixtures/jra/jra-race-card-fixture.html
           test -f tests/fixtures/jra/jra-result-fixture.html
-          test -f tests/fixtures/nar/kawasaki.json
           test -f tests/fixtures/nar/nar-fixtures.mjs
           test -f docs/AI_BRIDGE.md
           test -f docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
@@ -211,7 +207,6 @@ jobs:
             jra-program-fixture.html \
             jra-race-card-fixture.html \
             jra-result-fixture.html \
-            kawasaki.json \
             nar-fixtures.mjs \
             AI_BRIDGE.md \
             CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
@@ -225,7 +220,6 @@ jobs:
           grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j3.test.mjs
           grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j4.test.mjs
           grep -Fq "./fixtures/jra/jra-result-fixture.html" tests/jra-j4.test.mjs
-          grep -Fq "./fixtures/nar/kawasaki.json" tests/public-read-only-api.test.mjs
           grep -Fq "./tests/fixtures/nar/nar-fixtures.mjs" regression.test.mjs
           grep -Fq "./fixtures/nar/nar-fixtures.mjs" tests/auto-result-queue.test.mjs
           grep -Fq "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
@@ -263,12 +257,10 @@ jobs:
               "tests/jra-j2.test.mjs",
               "tests/jra-j3.test.mjs",
               "tests/jra-j4.test.mjs",
-              "tests/public-read-only-api.test.mjs",
               "tests/auto-result-queue.test.mjs",
               "tests/fixtures/jra/jra-program-fixture.html",
               "tests/fixtures/jra/jra-race-card-fixture.html",
               "tests/fixtures/jra/jra-result-fixture.html",
-              "tests/fixtures/nar/kawasaki.json",
               "tests/fixtures/nar/nar-fixtures.mjs",
               "docs/AI_BRIDGE.md",
               "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
@@ -290,9 +282,9 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
           {
-            echo "## CHASS Root Slim Batch10 — Phase A Applied"
+            echo "## CHASS Root Slim Batch10 — Phase A Applied v2.6.2"
             echo
-            echo "- Fixtures moved: **5**"
+            echo "- Fixtures moved: **4**"
             echo "- Documents moved: **2**"
             echo "- Runtime/source modules moved: **0**"
             echo "- Deleted: **0**"
