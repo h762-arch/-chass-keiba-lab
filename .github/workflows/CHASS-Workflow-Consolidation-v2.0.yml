@@ -1,4 +1,4 @@
-name: CHASS Workflow Consolidation v2.5 Root Layout Cleanup
+name: CHASS Workflow Consolidation v2.5.1 Root Layout Cleanup
 
 on:
   workflow_dispatch:
@@ -168,22 +168,27 @@ jobs:
             fi
 
             # Block if runtime/tests/current README refer to a candidate by exact filename.
-            if git grep -n -F -e "$FILE" -- \
+            # Exclude this audit workflow itself, because its candidate manifest necessarily
+            # contains every filename and would otherwise self-trigger the safety guard.
+            : > /tmp/refs-raw.txt
+            : > /tmp/refs-one.txt
+            git grep -n -F -e "$FILE" -- \
               README.md package.json wrangler.jsonc \
               .github tests scripts mcp viewer \
-              '*.js' '*.mjs' 2>/dev/null > /tmp/refs-one.txt; then
-              if [ -s /tmp/refs-one.txt ]; then
-                {
-                  echo "### $FILE"
-                  cat /tmp/refs-one.txt
-                } >> /tmp/batch9_references.txt
-                REFERENCED=$((REFERENCED + 1))
-              fi
+              '*.js' '*.mjs' 2>/dev/null > /tmp/refs-raw.txt || true
+            grep -v -F '.github/workflows/CHASS-Workflow-Consolidation-v2.0.yml:' \
+              /tmp/refs-raw.txt > /tmp/refs-one.txt || true
+            if [ -s /tmp/refs-one.txt ]; then
+              {
+                echo "### $FILE"
+                cat /tmp/refs-one.txt
+              } >> /tmp/batch9_references.txt
+              REFERENCED=$((REFERENCED + 1))
             fi
           done < /tmp/batch9_all.txt
 
           {
-            echo "## CHASS Workflow Consolidation v2.5 — Batch 9 Root Layout Audit"
+            echo "## CHASS Workflow Consolidation v2.5.1 — Batch 9 Root Layout Audit"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
