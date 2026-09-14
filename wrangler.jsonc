@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "chass-keiba-lab7",
-  "main": "worker.js",
+  "main": "worker-entry.mjs",
   "compatibility_date": "2026-08-27",
   "vars": {
     "ENABLE_JRA_MEETING_DISCOVERY": "true",
