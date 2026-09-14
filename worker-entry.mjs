@@ -1,5 +1,6 @@
 import baseWorker,{parseRaceCard} from './worker.js';
 import {handleNarRecentHistoryRequest} from './src/nar/nar-recent-history.mjs';
+import {handleNarDayPrefetchRequest} from './src/nar/nar-day-prefetch.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -192,6 +193,10 @@ export default {
     const u=new URL(request.url);
     if(u.pathname==='/api/chass/v1/public/race-context'){
       return buildNarRaceContext(request,env,ctx);
+    }
+    if(u.pathname==='/api/nar/history/prefetch-day'){
+      const response=await handleNarDayPrefetchRequest(request,env,{raceCardParser:parseRaceCard});
+      if(response)return response;
     }
     if(u.pathname==='/api/nar/history/horse'||u.pathname==='/api/nar/history/race'){
       const response=await handleNarRecentHistoryRequest(request,env,{raceCardParser:parseRaceCard});
