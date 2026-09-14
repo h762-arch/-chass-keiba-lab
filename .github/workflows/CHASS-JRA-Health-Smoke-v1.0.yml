@@ -1,4 +1,4 @@
-name: CHASS JRA Health Smoke v1.0
+name: CHASS JRA Health Smoke v1.0.1
 
 on:
   workflow_dispatch:
@@ -146,7 +146,7 @@ jobs:
           echo "fail_count=$FAIL_COUNT" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## CHASS JRA Health Smoke v1.0 — app_all"
+            echo "## CHASS JRA Health Smoke v1.0.1 — app_all"
             echo
             echo "- Date: $INPUT_DATE"
             echo "- Tracks: $TRACK_A / $TRACK_B"
@@ -231,7 +231,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## CHASS JRA Health Smoke v1.0 — official_d1"
+            echo "## CHASS JRA Health Smoke v1.0.1 — official_d1"
             echo
             echo "- Date: ${{ steps.date.outputs.value }}"
             echo "- Track/R: ${{ inputs.track }} ${{ inputs.race }}R"
@@ -289,7 +289,13 @@ jobs:
           REQUIRE_ANY_PAST_RUN: ${{ inputs.require_any_past_run }}
         run: |
           set -euo pipefail
-          cat > /tmp/chass-drive-health.mjs <<'NODE'
+
+          # Keep the temporary ESM module in the repository root so its
+          # relative imports resolve to the checked-out CHASS modules.
+          SMOKE_SCRIPT="$GITHUB_WORKSPACE/.chass-jra-drive-health.mjs"
+          trap 'rm -f "$SMOKE_SCRIPT"' EXIT
+
+          cat > "$SMOKE_SCRIPT" <<'NODE'
           import fs from 'node:fs';
           import vm from 'node:vm';
           import { getDriveReadReadiness, readChassArchiveSheet } from './google-drive-readonly-import.mjs';
@@ -349,7 +355,7 @@ jobs:
           };
           fs.writeFileSync('/tmp/chass-jra-drive-health.json', JSON.stringify(report,null,2));
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
-            '## CHASS JRA Health Smoke v1.0 — drive_fallback','',
+            '## CHASS JRA Health Smoke v1.0.1 — drive_fallback','',
             `- Target: ${context.date} ${context.track} ${context.race}R`,
             '- JRA official request: NOT USED',
             `- Source: ${fallback.source}`,
@@ -362,7 +368,7 @@ jobs:
           console.log(JSON.stringify(report,null,2));
           NODE
 
-          node /tmp/chass-drive-health.mjs
+          node "$SMOKE_SCRIPT"
 
       - name: Upload Drive smoke report
         if: always()
