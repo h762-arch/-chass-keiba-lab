@@ -207,26 +207,37 @@ export async function getNarRaceHistory({code,date,race,refresh=false,DB=null,fe
   const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;
   const detailUrl=`${NAR_BASE}/KeibaWeb/TodayRaceInfo/DebaTableSmall?${q}`;
   const markUrl=`${NAR_BASE}/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`;
+  const fullUrl=`${NAR_BASE}/KeibaWeb/TodayRaceInfo/DebaTable?${q}`;
   const detailHtml=await fetchText(detailUrl,{fetcher});
-  let markHtml='';
+  let markHtml='',fullHtml='';
   try{markHtml=await fetchText(markUrl,{fetcher})}catch{}
-  const refs=[...extractHorseRefsFromRaceHtml(detailHtml),...extractHorseRefsFromRaceHtml(markHtml)]
+  // Future race pages can expose lineage links on the full DebaTable before
+  // DebaTableSmall / RaceMarkTable do. Use it as an additive fallback.
+  try{fullHtml=await fetchText(fullUrl,{fetcher})}catch{}
+  const detailRefs=extractHorseRefsFromRaceHtml(detailHtml);
+  const markRefs=extractHorseRefsFromRaceHtml(markHtml);
+  const fullRefs=extractHorseRefsFromRaceHtml(fullHtml);
+  const refs=[...detailRefs,...markRefs,...fullRefs]
     .filter((x,i,a)=>a.findIndex(y=>y.lineageCode===x.lineageCode)===i);
   const refByName=new Map(refs.map(x=>[x.horseName.replace(/\s/g,''),x]));
-  const parsedCard=typeof raceCardParser==='function'?raceCardParser(detailHtml):[],hasParsedCard=Array.isArray(parsedCard)&&parsedCard.length>0;
+  const detailCard=typeof raceCardParser==='function'?raceCardParser(detailHtml):[];
+  const fullCard=(!Array.isArray(detailCard)||!detailCard.length)&&typeof raceCardParser==='function'&&fullHtml?raceCardParser(fullHtml):[];
+  const parsedCard=Array.isArray(detailCard)&&detailCard.length?detailCard:fullCard;
+  const hasParsedCard=Array.isArray(parsedCard)&&parsedCard.length>0;
   const targets=(hasParsedCard?parsedCard:refs.map((x,i)=>({horseNo:i+1,horseName:x.horseName}))).map((h,i)=>{
     const horseName=String(h.horseName||'').trim(),ref=refByName.get(horseName.replace(/\s/g,''))||(!hasParsedCard?refs[i]:null)||null;
     return {horseNo:Number(h.horseNo)||i+1,horseName,lineageCode:ref?.lineageCode||null,url:ref?.url||null};
   });
   const resolvable=targets.filter(x=>x.lineageCode);
   if(!resolvable.length)throw Object.assign(new Error('horse_lineage_refs_not_found'),{status:502});
-  const metaText=text(detailHtml),distanceMatch=metaText.match(/(?:ダート|芝)\s*(\d{3,4})ｍ/),targetDistance=distanceMatch?Number(distanceMatch[1]):null,targetTrack=TRACK_NAMES[Number(code)]||null;
+  const metaText=text(`${detailHtml} ${fullHtml}`),distanceMatch=metaText.match(/(?:ダート|芝)\s*(\d{3,4})ｍ/),targetDistance=distanceMatch?Number(distanceMatch[1]):null,targetTrack=TRACK_NAMES[Number(code)]||null;
   const fetched=await mapLimit(resolvable,Number(concurrency)||4,async target=>({target,history:await getNarHorseHistory({...target,targetDistance,targetTrack,refresh,DB,fetcher,limit,maxAgeMs})}));
   const horses=fetched.map(({target,history})=>({horseNo:target.horseNo,horseName:history.horseName||target.horseName,lineageCode:history.lineageCode,runCount:history.runCount,runs:history.runs,summary:history.summary,sourceUrl:history.sourceUrl,fetchedAt:history.fetchedAt,cacheHit:history.cacheHit,fingerprint:history.fingerprint}));
   const unresolved=targets.filter(x=>!x.lineageCode).map(x=>({horseNo:x.horseNo,horseName:x.horseName,error:'lineage_code_not_found'}));
   const raceKey=`${String(date).replace(/\//g,'-')}|${code}|${Number(race)}`;
   if(DB){await ensureHistorySchema(DB);const now=new Date().toISOString();const stmts=horses.map(h=>DB.prepare(`INSERT INTO nar_race_history_manifest (race_key,horse_no,lineage_code,horse_name,attached_at) VALUES (?,?,?,?,?) ON CONFLICT(race_key,horse_no) DO UPDATE SET lineage_code=excluded.lineage_code,horse_name=excluded.horse_name,attached_at=excluded.attached_at`).bind(raceKey,h.horseNo,h.lineageCode,h.horseName||'',now));if(stmts.length)await DB.batch(stmts)}
-  return {ok:true,status:unresolved.length?'partial':'complete',source:'NAR公式 HorseMarkInfo',raceKey,code:String(code),date:String(date),race:Number(race),targetDistance,targetTrack,horseCount:targets.length,resolvedHorseCount:horses.length,unresolvedHorseCount:unresolved.length,cacheHits:horses.filter(h=>h.cacheHit).length,cacheMisses:horses.filter(h=>!h.cacheHit).length,concurrency:Number(concurrency)||4,horses,unresolved,generatedAt:new Date().toISOString()};
+  const lineageSources=[detailRefs.length?'DebaTableSmall':null,markRefs.length?'RaceMarkTable':null,fullRefs.length?'DebaTable':null].filter(Boolean);
+  return {ok:true,status:unresolved.length?'partial':'complete',source:'NAR公式 HorseMarkInfo',lineageSources,raceKey,code:String(code),date:String(date),race:Number(race),targetDistance,targetTrack,horseCount:targets.length,resolvedHorseCount:horses.length,unresolvedHorseCount:unresolved.length,cacheHits:horses.filter(h=>h.cacheHit).length,cacheMisses:horses.filter(h=>!h.cacheHit).length,concurrency:Number(concurrency)||4,horses,unresolved,generatedAt:new Date().toISOString()};
 }
 
 function json(data,status=200){return new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}})}

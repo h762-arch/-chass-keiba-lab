@@ -210,7 +210,7 @@ export default {
     return baseWorker.fetch(request,env,ctx);
   },
   async scheduled(controller,env,ctx){
-    if(controller?.cron==='0 9 * * *'||controller?.cron==='30 9 * * *'){
+    if(controller?.cron==='0 11 * * *'||controller?.cron==='30 11 * * *'){
       ctx.waitUntil(runNarTomorrowPrefetch(env));
       return;
     }

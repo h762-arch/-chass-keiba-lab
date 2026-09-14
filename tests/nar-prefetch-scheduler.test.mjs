@@ -5,6 +5,7 @@ import {
   tomorrowJst,
   extractRaceNosFromRaceListHtml,
   classifyTailNoRace,
+  enforceDiscoveredRaceHistory,
   aggregateTracks
 } from '../src/nar/nar-prefetch-scheduler.mjs';
 
@@ -79,6 +80,24 @@ test('contiguous missing tail is classified as no-race',()=>{
   assert.equal(out.filter(r=>!r.ok).length,0);
 });
 
+test('RaceList-discovered lineage failure remains a failure and is never skipped',()=>{
+  const out=enforceDiscoveredRaceHistory([
+    {race:1,ok:false,status:502,error:'horse_lineage_refs_not_found'}
+  ]);
+  assert.equal(out[0].ok,false);
+  assert.equal(out[0].skipped,undefined);
+  assert.equal(out[0].error,'horse_lineage_refs_not_found');
+});
+
+test('RaceList-discovered zero-horse success is converted to failure',()=>{
+  const out=enforceDiscoveredRaceHistory([
+    {race:1,ok:true,status:'complete',horseCount:0}
+  ]);
+  assert.equal(out[0].ok,false);
+  assert.equal(out[0].status,502);
+  assert.equal(out[0].error,'discovered_race_has_no_horse_history');
+});
+
 test('a missing race before a later success is not hidden',()=>{
   const input=[
     ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
@@ -101,10 +120,10 @@ test('a non-missing tail error remains a failure',()=>{
   assert.equal(out[11].ok,false);
 });
 
-test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedule',async()=>{
+test('worker handles 20:00 JST and 20:30 retry cron without breaking base schedule',async()=>{
   const src=await readFile(workerUrl,'utf8');
-  assert.match(src,/controller\?\.cron==='0 9 \* \* \*'/);
-  assert.match(src,/controller\?\.cron==='30 9 \* \* \*'/);
+  assert.match(src,/controller\?\.cron==='0 11 \* \* \*'/);
+  assert.match(src,/controller\?\.cron==='30 11 \* \* \*'/);
   assert.match(src,/baseWorker\.scheduled/);
 });
 
@@ -112,8 +131,8 @@ test('wrangler keeps public self-fetch and all crons',async()=>{
   const raw=await readFile(wranglerUrl,'utf8');
   const cfg=JSON.parse(raw);
   assert.ok(cfg.triggers.crons.includes('*/5 * * * *'));
-  assert.ok(cfg.triggers.crons.includes('0 9 * * *'));
-  assert.ok(cfg.triggers.crons.includes('30 9 * * *'));
+  assert.ok(cfg.triggers.crons.includes('0 11 * * *'));
+  assert.ok(cfg.triggers.crons.includes('30 11 * * *'));
   assert.equal(cfg.vars.ENABLE_NAR_PREFETCH,'true');
   assert.ok(Array.isArray(cfg.compatibility_flags));
   assert.ok(cfg.compatibility_flags.includes('global_fetch_strictly_public'));
