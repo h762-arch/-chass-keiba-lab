@@ -2,6 +2,7 @@ import baseWorker,{parseRaceCard} from './worker.js';
 import {handleNarRecentHistoryRequest} from './src/nar/nar-recent-history.mjs';
 import {handleNarDayPrefetchRequest} from './src/nar/nar-day-prefetch.mjs';
 import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/nar/nar-prefetch-scheduler.mjs';
+import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summarizeNarTimeTheoryRace} from './src/nar/nar-time-theory.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -138,6 +139,13 @@ async function buildNarRaceContext(request,env,ctx){
   const horses=horseNos.map(horseNo=>{
     const a=abilityByNo.get(horseNo)||{};
     const h=historyByNo.get(horseNo)||{};
+    const history=compactHistoryHorse(h,runsLimit);
+    const timeTheory=buildNarTimeTheory({
+      runs:Array.isArray(h.runs)?h.runs.slice(0,runsLimit):[],
+      targetDistance:historyPayload?.targetDistance??null,
+      targetTrack:track,
+      abilityPredictedTimeSec:a.predictedTimeSec??null
+    });
     return {
       horseNumber:horseNo,
       horseName:a.horseName||h.horseName||null,
@@ -156,9 +164,12 @@ async function buildNarRaceContext(request,env,ctx){
         conditionScore:a.conditionScore??null,
         runnerStatus:a.runnerStatus??null
       },
-      history:compactHistoryHorse(h,runsLimit)
+      history,
+      timeTheory
     };
   });
+  const rankedHorses=rankNarTimeTheoryHorses(horses);
+  const timeTheory=summarizeNarTimeTheoryRace(rankedHorses);
 
   const unresolved=Array.isArray(historyPayload?.unresolved)?historyPayload.unresolved:[];
 
@@ -174,7 +185,7 @@ async function buildNarRaceContext(request,env,ctx){
     raceName:abilityPayload?.raceName??null,
     targetDistance:historyPayload?.targetDistance??null,
     status:historyPayload?.status||'unknown',
-    horseCount:horses.length,
+    horseCount:rankedHorses.length,
     resolvedHorseCount:historyPayload?.resolvedHorseCount??historyHorses.length,
     unresolvedHorseCount:historyPayload?.unresolvedHorseCount??unresolved.length,
     cacheHits:historyPayload?.cacheHits??null,
@@ -183,7 +194,9 @@ async function buildNarRaceContext(request,env,ctx){
     probabilityValid:abilityPayload?.validation?.probabilityValid??null,
     predictionGeneratedAt:abilityPayload?.predictionGeneratedAt??null,
     raceDataUpdatedAt:abilityPayload?.raceDataUpdatedAt??null,
-    horses,
+    timeTheoryVersion:NAR_TIME_THEORY_VERSION,
+    timeTheory,
+    horses:rankedHorses,
     unresolved,
     generatedAt:new Date().toISOString()
   });
