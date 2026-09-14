@@ -102,3 +102,30 @@ test('missing comparable times stays unavailable instead of inventing a number',
   assert.equal(x.available,false);
   assert.equal(x.missingReason,'comparable_time_history_missing');
 });
+
+
+test('null numeric inputs stay missing instead of becoming zero',()=>{
+  const runs=[
+    {track:'大井',surface:'ダ',distance:1600,timeSec:101.0,last3f:39.0,finish:3},
+    {track:'大井',surface:'ダ',distance:1600,timeSec:101.2,last3f:39.2,finish:4}
+  ];
+  const missingTarget=buildNarTimeTheory({runs,targetDistance:null,targetTrack:'大井'});
+  assert.equal(missingTarget.available,false);
+  assert.equal(missingTarget.missingReason,'target_distance_missing');
+
+  const x=buildNarTimeTheory({
+    runs,
+    targetDistance:1600,
+    targetTrack:'大井',
+    abilityPredictedTimeSec:null
+  });
+  assert.equal(x.comparison.abilityPredictedTimeSec,null);
+  assert.equal(x.comparison.abilityVsTargetGapSec,null);
+  assert.equal(x.comparison.abilityAlignment,'unavailable');
+
+  const ranked=rankNarTimeTheoryHorses([
+    {horseNumber:1,ability:{abilityRank:null},timeTheory:{available:true,times:{targetTimeSec:101}}}
+  ]);
+  assert.equal(ranked[0].timeTheory.abilityRankGap,null);
+  assert.equal(ranked[0].timeTheory.rankSignal,'unavailable');
+});
