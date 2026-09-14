@@ -58,7 +58,7 @@ test('background records are isolated backtests and never rewrite realtime snaps
 
 test('collector remains sequential, meeting-aware, locked and UI polls D1 only',async()=>{
   const [source,app,wrangler,similarity]=await Promise.all([
-    readFile(new URL('../worker.js',import.meta.url),'utf8'),readFile(new URL('../app.js',import.meta.url),'utf8'),readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'),readFile(new URL('../similarity-intelligence.mjs',import.meta.url),'utf8')
+    readFile(new URL('../worker.js',import.meta.url),'utf8'),readFile(new URL('../app.js',import.meta.url),'utf8'),readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'),readFile(new URL('../src/research/similarity-intelligence.mjs',import.meta.url),'utf8')
   ]);
   const run=source.slice(source.indexOf('export async function runBackgroundHistoricalCollector'),source.indexOf('function bridgeTimeSeconds'));
   assert.match(run,/readMeetingCalendar/);assert.match(run,/if\(cached\)state\.requestStats\.cacheHits\+\+/);assert.match(run,/SELECT race_id FROM races/);assert.doesNotMatch(run,/Promise\.all/);assert.match(source,/locked_until<\?/);assert.match(source,/HISTORICAL_JOB_LOCK_MS=120_000/);assert.match(source,/HISTORICAL_JOB_DEADLINE_MS=18_000/);

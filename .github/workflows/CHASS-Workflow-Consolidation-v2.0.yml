@@ -1,10 +1,10 @@
-name: CHASS Workflow Consolidation v2.6.2 Root Slim Phase A
+name: CHASS Workflow Consolidation v2.7.1 Root Slim Phase B
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "audit_only=確認 / apply=fixtures+docsを正式配置へ移動"
+        description: "audit_only=参照確認 / apply=research系4ファイルをsrc/researchへ移動"
         required: true
         default: "audit_only"
         type: choice
@@ -16,13 +16,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: chass-root-slim-batch10-phase-a-${{ github.ref_name }}
+  group: chass-root-slim-batch10-phaseb-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  phase_a:
+  phase_b:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout selected branch
@@ -43,8 +43,7 @@ jobs:
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix mcp
 
-      - name: Phase A safety preflight
-        id: audit
+      - name: Phase B safety preflight
         shell: bash
         env:
           MODE: ${{ inputs.mode }}
@@ -52,7 +51,7 @@ jobs:
           set -euo pipefail
 
           test "$MODE" = "audit_only" -o "$MODE" = "apply"
-          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10-phaseb"
 
           if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
             echo "::error::apply on main is forbidden."
@@ -62,62 +61,60 @@ jobs:
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
           test "$(node -p "require('./package.json').version")" = "10.0.1"
 
-          # Phase A is deliberately limited to fixtures and two documents.
           for FILE in \
-            jra-program-fixture.html \
-            jra-race-card-fixture.html \
-            jra-result-fixture.html \
-            nar-fixtures.mjs \
-            AI_BRIDGE.md \
-            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+            calibration-research.js \
+            similarity-intelligence.mjs \
+            longshot-scenario.js \
+            research-storage-sync.mjs
           do
             test -f "$FILE" || {
-              echo "::error::Phase A source missing: $FILE"
+              echo "::error::Phase B source missing: $FILE"
               exit 1
             }
           done
 
-          # Exact current references observed in Batch10 audit.
-          grep -Fq "../jra-program-fixture.html" tests/jra-j1.test.mjs
-          grep -Fq "../jra-race-card-fixture.html" tests/jra-j2.test.mjs
-          grep -Fq "../jra-race-card-fixture.html" tests/jra-j3.test.mjs
-          grep -Fq "../jra-race-card-fixture.html" tests/jra-j4.test.mjs
-          grep -Fq "../jra-result-fixture.html" tests/jra-j4.test.mjs
+          # Exact reference topology established by v2.7 audit.
+          grep -Fq "calibration-research.js" index.html
+          grep -Fq "../calibration-research.js" tests/calibration-research.test.mjs
 
-          grep -Fq "nar-fixtures.mjs" regression.test.mjs
-          grep -Fq "nar-fixtures.mjs" tests/auto-result-queue.test.mjs
-          grep -Fq "nar-fixtures.mjs" README.md
-          grep -Fq "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+          grep -Fq "./similarity-intelligence.mjs" worker.js
+          grep -Fq "../similarity-intelligence.mjs" tests/similarity-intelligence.test.mjs
+          grep -Fq "../similarity-intelligence.mjs" tests/background-historical-collector.test.mjs
 
-          # kawasaki.json is a published/snapshot-style root artifact, not a test fixture.
-          # Keep it in root until its external/static role is separately proven safe to move.
-          test -f kawasaki.json
+          grep -Fq "longshot-scenario.js" index.html
+          grep -Fq "../longshot-scenario.js" tests/longshot-scenario.test.mjs
 
-          # Runtime/config surfaces remain untouched in Phase A.
+          grep -Fq "./research-storage-sync.mjs" worker.js
+          grep -Fq "../research-storage-sync.mjs" tests/research-storage-sync.test.mjs
+          grep -Fq "../research-storage-sync.mjs" tests/google-drive-production.test.mjs
+
+          for FILE in \
+            calibration-research.js \
+            similarity-intelligence.mjs \
+            longshot-scenario.js \
+            research-storage-sync.mjs
+          do
+            grep -Fq "node --check $FILE" package.json
+          done
+
+          # Core entry/config files are not relocated in Phase B.
           for KEEP in \
-            app.js worker.js server.mjs package.json package-lock.json wrangler.jsonc \
-            jra-race-fetch.mjs jra-odds-fetch.mjs jra-result-fetch.mjs \
-            google-drive-readonly-api.mjs google-drive-readonly-import.mjs
+            README.md app.js worker.js server.mjs index.html styles.css \
+            package.json package-lock.json wrangler.jsonc openapi.json d1-schema.sql
           do
             test -f "$KEEP"
           done
 
           {
-            echo "## CHASS Root Slim Batch10 — Phase A Audit v2.6.2"
+            echo "## CHASS Root Slim Batch10 — Phase B Preflight"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
-            echo "- Fixture moves: **4**"
-            echo "- Document moves: **2**"
-            echo "- Runtime/source module moves: **0**"
+            echo "- Research source moves: **4**"
+            echo "- Destination: \`src/research/\`"
+            echo "- Runtime entry files moved: **0**"
             echo "- Delete operations: **0**"
             echo "- main direct push: **NO**"
-            echo
-            echo "### Planned destinations"
-            echo "- \`tests/fixtures/jra/\`"
-            echo "- \`tests/fixtures/nar/\`"
-            echo "- \`docs/\`"
-            echo "- \`docs/reports/\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Baseline full regression
@@ -126,103 +123,204 @@ jobs:
           set -euo pipefail
           npm run check
 
-      - name: Apply Phase A moves and reference updates
+      - name: Apply Phase B research layout
         if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
+
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10-phaseb"
           test "$GITHUB_REF_NAME" != "main"
 
-          mkdir -p tests/fixtures/jra tests/fixtures/nar docs/reports
+          mkdir -p src/research
 
-          git mv jra-program-fixture.html tests/fixtures/jra/jra-program-fixture.html
-          git mv jra-race-card-fixture.html tests/fixtures/jra/jra-race-card-fixture.html
-          git mv jra-result-fixture.html tests/fixtures/jra/jra-result-fixture.html
-          git mv nar-fixtures.mjs tests/fixtures/nar/nar-fixtures.mjs
-          git mv AI_BRIDGE.md docs/AI_BRIDGE.md
-          git mv CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          git mv calibration-research.js src/research/calibration-research.js
+          git mv similarity-intelligence.mjs src/research/similarity-intelligence.mjs
+          git mv longshot-scenario.js src/research/longshot-scenario.js
+          git mv research-storage-sync.mjs src/research/research-storage-sync.mjs
 
           python3 - <<'PY'
           from pathlib import Path
 
-          replacements = {
-              "tests/jra-j1.test.mjs": [
-                  ("../jra-program-fixture.html",
-                   "./fixtures/jra/jra-program-fixture.html"),
+          exact = {
+              "worker.js": [
+                  ("'./similarity-intelligence.mjs'",
+                   "'./src/research/similarity-intelligence.mjs'"),
+                  ("'./research-storage-sync.mjs'",
+                   "'./src/research/research-storage-sync.mjs'"),
               ],
-              "tests/jra-j2.test.mjs": [
-                  ("../jra-race-card-fixture.html",
-                   "./fixtures/jra/jra-race-card-fixture.html"),
+              "tests/calibration-research.test.mjs": [
+                  ("'../calibration-research.js'",
+                   "'../src/research/calibration-research.js'"),
               ],
-              "tests/jra-j3.test.mjs": [
-                  ("../jra-race-card-fixture.html",
-                   "./fixtures/jra/jra-race-card-fixture.html"),
+              "tests/similarity-intelligence.test.mjs": [
+                  ("'../similarity-intelligence.mjs'",
+                   "'../src/research/similarity-intelligence.mjs'"),
               ],
-              "tests/jra-j4.test.mjs": [
-                  ("../jra-race-card-fixture.html",
-                   "./fixtures/jra/jra-race-card-fixture.html"),
-                  ("../jra-result-fixture.html",
-                   "./fixtures/jra/jra-result-fixture.html"),
+              "tests/background-historical-collector.test.mjs": [
+                  ("'../similarity-intelligence.mjs'",
+                   "'../src/research/similarity-intelligence.mjs'"),
               ],
-              "regression.test.mjs": [
-                  ("./nar-fixtures.mjs",
-                   "./tests/fixtures/nar/nar-fixtures.mjs"),
+              "tests/longshot-scenario.test.mjs": [
+                  ("'../longshot-scenario.js'",
+                   "'../src/research/longshot-scenario.js'"),
               ],
-              "tests/auto-result-queue.test.mjs": [
-                  ("../nar-fixtures.mjs",
-                   "./fixtures/nar/nar-fixtures.mjs"),
+              "tests/research-storage-sync.test.mjs": [
+                  ("'../research-storage-sync.mjs'",
+                   "'../src/research/research-storage-sync.mjs'"),
               ],
-              "README.md": [
-                  ("CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
-                   "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md"),
-                  ("nar-fixtures.mjs",
-                   "tests/fixtures/nar/nar-fixtures.mjs"),
+              "tests/google-drive-production.test.mjs": [
+                  ("'../research-storage-sync.mjs'",
+                   "'../src/research/research-storage-sync.mjs'"),
               ],
           }
 
-          for filename, pairs in replacements.items():
+          for filename, pairs in exact.items():
               path = Path(filename)
               text = path.read_text(encoding="utf-8")
-              original = text
+              before = text
               for old, new in pairs:
                   if old not in text:
-                      raise SystemExit(f"Expected reference missing before replacement: {filename}: {old}")
+                      raise SystemExit(
+                          f"Expected exact reference missing: {filename}: {old}"
+                      )
                   text = text.replace(old, new)
-              if text == original:
-                  raise SystemExit(f"No update made: {filename}")
+              if text == before:
+                  raise SystemExit(f"No reference update made: {filename}")
               path.write_text(text, encoding="utf-8")
+
+          # Browser script paths: preserve any existing ./ or / prefix by replacing
+          # only the filename token.
+          index = Path("index.html")
+          text = index.read_text(encoding="utf-8")
+          for old, new in [
+              ("calibration-research.js",
+               "src/research/calibration-research.js"),
+              ("longshot-scenario.js",
+               "src/research/longshot-scenario.js"),
+          ]:
+              if old not in text:
+                  raise SystemExit(f"index reference missing: {old}")
+              text = text.replace(old, new)
+          index.write_text(text, encoding="utf-8")
+
+          # Update syntax-check paths without changing the command ordering.
+          package = Path("package.json")
+          text = package.read_text(encoding="utf-8")
+          for old, new in [
+              ("node --check calibration-research.js",
+               "node --check src/research/calibration-research.js"),
+              ("node --check similarity-intelligence.mjs",
+               "node --check src/research/similarity-intelligence.mjs"),
+              ("node --check longshot-scenario.js",
+               "node --check src/research/longshot-scenario.js"),
+              ("node --check research-storage-sync.mjs",
+               "node --check src/research/research-storage-sync.mjs"),
+          ]:
+              if old not in text:
+                  raise SystemExit(f"package check reference missing: {old}")
+              text = text.replace(old, new)
+          package.write_text(text, encoding="utf-8")
+
+          # google-drive-production.test.mjs also has a runtimeFiles array string.
+          gd = Path("tests/google-drive-production.test.mjs")
+          text = gd.read_text(encoding="utf-8")
+          old = "'../research-storage-sync.mjs'"
+          new = "'../src/research/research-storage-sync.mjs'"
+          if old in text:
+              text = text.replace(old, new)
+          gd.write_text(text, encoding="utf-8")
           PY
 
-          # Destination guards.
-          test -f tests/fixtures/jra/jra-program-fixture.html
-          test -f tests/fixtures/jra/jra-race-card-fixture.html
-          test -f tests/fixtures/jra/jra-result-fixture.html
-          test -f tests/fixtures/nar/nar-fixtures.mjs
-          test -f docs/AI_BRIDGE.md
-          test -f docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
-
-          # Old root paths must be gone.
-          for OLD in \
-            jra-program-fixture.html \
-            jra-race-card-fixture.html \
-            jra-result-fixture.html \
-            nar-fixtures.mjs \
-            AI_BRIDGE.md \
-            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          # New destinations exist; old root paths are gone.
+          for FILE in \
+            calibration-research.js \
+            similarity-intelligence.mjs \
+            longshot-scenario.js \
+            research-storage-sync.mjs
           do
-            test ! -e "$OLD"
+            test ! -e "$FILE"
+            test -f "src/research/$FILE"
           done
 
-          # Updated references must point at new locations.
-          grep -Fq "./fixtures/jra/jra-program-fixture.html" tests/jra-j1.test.mjs
-          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j2.test.mjs
-          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j3.test.mjs
-          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j4.test.mjs
-          grep -Fq "./fixtures/jra/jra-result-fixture.html" tests/jra-j4.test.mjs
-          grep -Fq "./tests/fixtures/nar/nar-fixtures.mjs" regression.test.mjs
-          grep -Fq "./fixtures/nar/nar-fixtures.mjs" tests/auto-result-queue.test.mjs
-          grep -Fq "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+          # Runtime and browser references point to the new canonical paths.
+          grep -Fq "./src/research/similarity-intelligence.mjs" worker.js
+          grep -Fq "./src/research/research-storage-sync.mjs" worker.js
+          grep -Fq "src/research/calibration-research.js" index.html
+          grep -Fq "src/research/longshot-scenario.js" index.html
+
+          # Ensure no active tracked file still references an old root location by
+          # path form. Filename mentions inside the consolidation workflow itself
+          # are expected and excluded.
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          old_path_tokens = [
+              "'./similarity-intelligence.mjs'",
+              "'./research-storage-sync.mjs'",
+              "'../calibration-research.js'",
+              "'../similarity-intelligence.mjs'",
+              "'../longshot-scenario.js'",
+              "'../research-storage-sync.mjs'",
+          ]
+
+          tracked = subprocess.check_output(
+              ["git", "ls-files"], text=True
+          ).splitlines()
+
+          offenders = []
+          for rel in tracked:
+              if rel.startswith("archive/"):
+                  continue
+              if rel == ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml":
+                  continue
+              p = Path(rel)
+              if not p.is_file():
+                  continue
+              try:
+                  text = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              for token in old_path_tokens:
+                  if token in text:
+                      offenders.append(f"{rel}: {token}")
+
+          if offenders:
+              raise SystemExit(
+                  "Old research path references remain:\n" + "\n".join(offenders)
+              )
+          PY
+
+      - name: Post-move module resolution checks
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --check src/research/calibration-research.js
+          node --check src/research/similarity-intelligence.mjs
+          node --check src/research/longshot-scenario.js
+          node --check src/research/research-storage-sync.mjs
+
+          node --input-type=module -e "await import('./src/research/similarity-intelligence.mjs')"
+          node --input-type=module -e "await import('./src/research/research-storage-sync.mjs')"
+
+          # Browser entry points must reference files that actually exist.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path("index.html").read_text(encoding="utf-8")
+          for wanted in [
+              "src/research/calibration-research.js",
+              "src/research/longshot-scenario.js",
+          ]:
+              if wanted not in text:
+                  raise SystemExit(f"Browser research script missing: {wanted}")
+              if not Path(wanted).is_file():
+                  raise SystemExit(f"Browser research script file missing: {wanted}")
+          PY
 
       - name: Post-move full regression
         if: ${{ inputs.mode == 'apply' }}
@@ -231,7 +329,7 @@ jobs:
           set -euo pipefail
           npm run check
 
-      - name: Commit Phase A
+      - name: Commit Phase B
         if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
@@ -243,27 +341,28 @@ jobs:
           git add -A
           git diff --cached --check
 
-          # Allow only the seven moves, their known reference updates,
-          # and the consolidation workflow itself.
           python3 - <<'PY'
-          from pathlib import Path
           import subprocess
 
-          allowed_exact = {
+          allowed = {
               ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml",
-              "README.md",
-              "regression.test.mjs",
-              "tests/jra-j1.test.mjs",
-              "tests/jra-j2.test.mjs",
-              "tests/jra-j3.test.mjs",
-              "tests/jra-j4.test.mjs",
-              "tests/auto-result-queue.test.mjs",
-              "tests/fixtures/jra/jra-program-fixture.html",
-              "tests/fixtures/jra/jra-race-card-fixture.html",
-              "tests/fixtures/jra/jra-result-fixture.html",
-              "tests/fixtures/nar/nar-fixtures.mjs",
-              "docs/AI_BRIDGE.md",
-              "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+              "package.json",
+              "index.html",
+              "worker.js",
+              "tests/calibration-research.test.mjs",
+              "tests/similarity-intelligence.test.mjs",
+              "tests/background-historical-collector.test.mjs",
+              "tests/longshot-scenario.test.mjs",
+              "tests/research-storage-sync.test.mjs",
+              "tests/google-drive-production.test.mjs",
+              "calibration-research.js",
+              "similarity-intelligence.mjs",
+              "longshot-scenario.js",
+              "research-storage-sync.mjs",
+              "src/research/calibration-research.js",
+              "src/research/similarity-intelligence.mjs",
+              "src/research/longshot-scenario.js",
+              "src/research/research-storage-sync.mjs",
           }
 
           changed = set(
@@ -271,24 +370,26 @@ jobs:
                   ["git", "diff", "--cached", "--name-only"], text=True
               ).splitlines()
           )
-          unexpected = sorted(changed - allowed_exact)
+          unexpected = sorted(changed - allowed)
           if unexpected:
-              raise SystemExit("Unexpected changed files: " + ", ".join(unexpected))
+              raise SystemExit(
+                  "Unexpected changed files: " + ", ".join(unexpected)
+              )
           PY
 
           test -n "$(git diff --cached --name-only)"
 
-          git commit -m "refactor: organize fixtures and docs batch10 phase a"
+          git commit -m "refactor: move research modules under src batch10 phase b"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
           {
-            echo "## CHASS Root Slim Batch10 — Phase A Applied v2.6.2"
+            echo "## CHASS Root Slim Batch10 — Phase B Applied"
             echo
-            echo "- Fixtures moved: **4**"
-            echo "- Documents moved: **2**"
-            echo "- Runtime/source modules moved: **0**"
-            echo "- Deleted: **0**"
+            echo "- Research modules moved: **4**"
+            echo "- Destination: \`src/research/\`"
+            echo "- Runtime/browser/test references updated: **YES**"
             echo "- Full regression after move: **PASS**"
+            echo "- Deleted: **0**"
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- main direct push: **NO**"
           } >> "$GITHUB_STEP_SUMMARY"

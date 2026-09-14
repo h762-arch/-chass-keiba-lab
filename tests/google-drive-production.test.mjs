@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {runResearchSyncQueue} from '../research-storage-sync.mjs';
+import {runResearchSyncQueue} from '../src/research/research-storage-sync.mjs';
 import {runScheduledTasks} from '../worker.js';
 
-const runtimeFiles=['../research-storage-sync.mjs','../worker.js','../app.js','../index.html','../server.mjs','../wrangler.jsonc'];
+const runtimeFiles=['../src/research/research-storage-sync.mjs','../worker.js','../app.js','../index.html','../server.mjs','../wrangler.jsonc'];
 const driveRuntimePattern=/GOOGLE_DRIVE|ENABLE_DRIVE|oauth2\.googleapis|googleapis\.com\/drive|drive-check|syncDriveArchive|verifyDriveConnection/i;
 
 test('Google Drive Runtime is decommissioned from application sources',async()=>{

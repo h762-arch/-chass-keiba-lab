@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-await import('../longshot-scenario.js');
+await import('../src/research/longshot-scenario.js');
 const {buildLongshotScenario,validateLongshotScenario}=globalThis.CHASS_LONGSHOT_SCENARIO;
 
 function horses(){return [

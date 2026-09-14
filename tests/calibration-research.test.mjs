@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import '../calibration-research.js';
+import '../src/research/calibration-research.js';
 
 const api=globalThis.CHASS_CALIBRATION_RESEARCH;
 function record({org='JRA',index=0,invalidTime=false,missing=false}={}){
