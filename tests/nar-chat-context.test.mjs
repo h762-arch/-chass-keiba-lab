@@ -42,3 +42,13 @@ test('time theory is explicitly research-only until post-race calibration',async
   assert.match(theory,/time_theory_upside/);
   assert.match(theory,/time_theory_risk/);
 });
+
+
+test('race context can continue history-only when ability race is not yet saved',async()=>{
+  const src=await readFile(new URL('../worker-entry.mjs',import.meta.url),'utf8');
+  assert.match(src,/classifyAbilityAvailability/);
+  assert.match(src,/history_only/);
+  assert.match(src,/abilityAvailable:abilityPolicy\.available/);
+  assert.match(src,/abilityFallbackReason:abilityPolicy\.reason/);
+  assert.match(src,/abilityPolicy\.available&&Array\.isArray\(abilityPayload\?\.horses\)/);
+});
