@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {tomorrowJst} from '../src/nar/nar-prefetch-scheduler.mjs';
+import {tomorrowJst,classifyTailNoRace} from '../src/nar/nar-prefetch-scheduler.mjs';
 
 const schedulerUrl=new URL('../src/nar/nar-prefetch-scheduler.mjs',import.meta.url);
 const workerUrl=new URL('../worker-entry.mjs',import.meta.url);
@@ -19,6 +19,42 @@ test('scheduler fans out by track then one race per child invocation',async()=>{
   assert.match(src,/fromRace.*String\(race\)/);
   assert.match(src,/toRace.*String\(race\)/);
   assert.match(src,/Promise\.all\(calls\)/);
+});
+
+test('contiguous missing tail is classified as no-race',()=>{
+  const input=[
+    ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
+    {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
+    {race:12,ok:false,status:502,error:'horse_lineage_refs_not_found'}
+  ];
+  const out=classifyTailNoRace(input);
+  assert.equal(out[10].skipped,true);
+  assert.equal(out[10].status,'no-race');
+  assert.equal(out[11].skipped,true);
+  assert.equal(out[11].status,'no-race');
+  assert.equal(out.filter(r=>!r.ok).length,0);
+});
+
+test('a missing race before a later success is not hidden',()=>{
+  const input=[
+    ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
+    {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
+    {race:12,ok:true,status:'complete'}
+  ];
+  const out=classifyTailNoRace(input);
+  assert.equal(out[10].ok,false);
+  assert.equal(out[10].skipped,undefined);
+});
+
+test('a non-missing tail error remains a failure and blocks earlier tail skipping',()=>{
+  const input=[
+    ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
+    {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
+    {race:12,ok:false,status:500,error:'upstream_timeout'}
+  ];
+  const out=classifyTailNoRace(input);
+  assert.equal(out[10].ok,false);
+  assert.equal(out[11].ok,false);
 });
 
 test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedule',async()=>{
