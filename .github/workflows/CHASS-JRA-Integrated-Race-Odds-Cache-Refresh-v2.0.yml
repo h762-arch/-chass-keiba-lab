@@ -1,4 +1,4 @@
-name: CHASS JRA Runtime Refresh v3.0
+name: CHASS JRA Runtime Refresh v3.0.1
 
 on:
   workflow_dispatch:
@@ -470,6 +470,7 @@ jobs:
               --data-urlencode "date=${{ steps.race_fetch.outputs.resolved_date }}" \
               --data-urlencode "track=${{ steps.race_fetch.outputs.first_track }}" \
               --data-urlencode "race=${{ steps.race_fetch.outputs.first_race }}" \
+              --data-urlencode "official_only=1" \
               -o /tmp/race-smoke.json \
               -w '%{http_code}' || true)"
 
