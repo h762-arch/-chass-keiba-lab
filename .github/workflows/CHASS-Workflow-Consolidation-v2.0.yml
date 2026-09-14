@@ -1,25 +1,26 @@
-name: CHASS Workflow Consolidation v2.6 Root Slim Audit
+name: CHASS Workflow Consolidation v2.6.1 Root Slim Phase A
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Batch10はまずaudit_onlyのみ"
+        description: "audit_only=確認 / apply=fixtures+docsを正式配置へ移動"
         required: true
         default: "audit_only"
         type: choice
         options:
           - audit_only
+          - apply
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: chass-root-slim-batch10-${{ github.ref_name }}
+  group: chass-root-slim-batch10-phase-a-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  audit:
+  phase_a:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -29,35 +30,6 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
-
-      - name: Safety preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "${{ inputs.mode }}" = "audit_only"
-          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
-          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
-          test "$(node -p "require('./package.json').version")" = "10.0.1"
-
-          # Canonical entry/config files must exist and stay at root during this audit.
-          for KEEP in \
-            README.md package.json package-lock.json server.mjs worker.js app.js \
-            index.html styles.css wrangler.jsonc .gitignore .assetsignore \
-            openapi.json manifest.webmanifest d1-schema.sql chass-latest.js
-          do
-            test -e "$KEEP" || {
-              echo "::error::Required root file missing: $KEEP"
-              exit 1
-            }
-          done
-
-          test -d .github/workflows
-          test -d tests
-          test -d scripts
-          test -d mcp
-          test -d migrations
-          test -d viewer
-          test -d archive
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -71,211 +43,260 @@ jobs:
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix mcp
 
+      - name: Phase A safety preflight
+        id: audit
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+
+          test "$MODE" = "audit_only" -o "$MODE" = "apply"
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
+
+          if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
+            echo "::error::apply on main is forbidden."
+            exit 1
+          fi
+
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          # Phase A is deliberately limited to fixtures and two documents.
+          for FILE in \
+            jra-program-fixture.html \
+            jra-race-card-fixture.html \
+            jra-result-fixture.html \
+            kawasaki.json \
+            nar-fixtures.mjs \
+            AI_BRIDGE.md \
+            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          do
+            test -f "$FILE" || {
+              echo "::error::Phase A source missing: $FILE"
+              exit 1
+            }
+          done
+
+          # Exact current references observed in Batch10 audit.
+          grep -Fq "../jra-program-fixture.html" tests/jra-j1.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j2.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j3.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "../jra-result-fixture.html" tests/jra-j4.test.mjs
+
+          grep -Fq "kawasaki.json" tests/public-read-only-api.test.mjs
+          grep -Fq "nar-fixtures.mjs" regression.test.mjs
+          grep -Fq "nar-fixtures.mjs" tests/auto-result-queue.test.mjs
+          grep -Fq "nar-fixtures.mjs" README.md
+          grep -Fq "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+
+          # Runtime/config surfaces remain untouched in Phase A.
+          for KEEP in \
+            app.js worker.js server.mjs package.json package-lock.json wrangler.jsonc \
+            jra-race-fetch.mjs jra-odds-fetch.mjs jra-result-fetch.mjs \
+            google-drive-readonly-api.mjs google-drive-readonly-import.mjs
+          do
+            test -f "$KEEP"
+          done
+
+          {
+            echo "## CHASS Root Slim Batch10 — Phase A Audit"
+            echo
+            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Mode: \`$MODE\`"
+            echo "- Fixture moves: **5**"
+            echo "- Document moves: **2**"
+            echo "- Runtime/source module moves: **0**"
+            echo "- Delete operations: **0**"
+            echo "- main direct push: **NO**"
+            echo
+            echo "### Planned destinations"
+            echo "- \`tests/fixtures/jra/\`"
+            echo "- \`tests/fixtures/nar/\`"
+            echo "- \`docs/\`"
+            echo "- \`docs/reports/\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Baseline full regression
         shell: bash
         run: |
           set -euo pipefail
           npm run check
 
-      - name: Build root dependency inventory
+      - name: Apply Phase A moves and reference updates
+        if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
           set -euo pipefail
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
+          test "$GITHUB_REF_NAME" != "main"
+
+          mkdir -p tests/fixtures/jra tests/fixtures/nar docs/reports
+
+          git mv jra-program-fixture.html tests/fixtures/jra/jra-program-fixture.html
+          git mv jra-race-card-fixture.html tests/fixtures/jra/jra-race-card-fixture.html
+          git mv jra-result-fixture.html tests/fixtures/jra/jra-result-fixture.html
+          git mv kawasaki.json tests/fixtures/nar/kawasaki.json
+          git mv nar-fixtures.mjs tests/fixtures/nar/nar-fixtures.mjs
+          git mv AI_BRIDGE.md docs/AI_BRIDGE.md
+          git mv CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
 
           python3 - <<'PY'
           from pathlib import Path
-          import json, re, subprocess
 
-          root = Path(".")
-          tracked = subprocess.check_output(
-              ["git", "ls-files"], text=True
-          ).splitlines()
-
-          # Current root files only; directories are separately listed.
-          root_files = sorted(
-              p.name for p in root.iterdir()
-              if p.is_file() and p.name not in {".DS_Store"}
-          )
-          root_dirs = sorted(
-              p.name for p in root.iterdir()
-              if p.is_dir() and p.name not in {".git", "node_modules"}
-          )
-
-          # Files that must remain at root for now.
-          hard_keep = {
-              ".assetsignore", ".gitignore",
-              "README.md", "package.json", "package-lock.json",
-              "server.mjs", "worker.js", "app.js",
-              "index.html", "styles.css", "wrangler.jsonc",
-              "openapi.json", "manifest.webmanifest",
-              "d1-schema.sql", "chass-latest.js",
+          replacements = {
+              "tests/jra-j1.test.mjs": [
+                  ("../jra-program-fixture.html",
+                   "./fixtures/jra/jra-program-fixture.html"),
+              ],
+              "tests/jra-j2.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+              ],
+              "tests/jra-j3.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+              ],
+              "tests/jra-j4.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+                  ("../jra-result-fixture.html",
+                   "./fixtures/jra/jra-result-fixture.html"),
+              ],
+              "tests/public-read-only-api.test.mjs": [
+                  ("../kawasaki.json",
+                   "./fixtures/nar/kawasaki.json"),
+              ],
+              "regression.test.mjs": [
+                  ("./nar-fixtures.mjs",
+                   "./tests/fixtures/nar/nar-fixtures.mjs"),
+              ],
+              "tests/auto-result-queue.test.mjs": [
+                  ("../nar-fixtures.mjs",
+                   "./fixtures/nar/nar-fixtures.mjs"),
+              ],
+              "README.md": [
+                  ("CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+                   "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md"),
+                  ("nar-fixtures.mjs",
+                   "tests/fixtures/nar/nar-fixtures.mjs"),
+              ],
           }
 
-          # Candidate families. This audit does NOT move anything.
-          fixture_patterns = (
-              "-fixture.", "fixtures.", "kawasaki.json",
-          )
-          doc_names = {
-              "AI_BRIDGE.md",
-              "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
-          }
-          research_names = {
-              "calibration-research.js",
-              "similarity-intelligence.mjs",
-              "longshot-scenario.js",
-              "research-storage-sync.mjs",
-          }
-
-          # Runtime-ish files whose relocation needs import/workflow updates.
-          runtime_prefixes = (
-              "jra-", "nar-", "meeting-",
-              "google-drive-", "publish-ai-",
-          )
-
-          text_exts = {
-              ".js", ".mjs", ".cjs", ".json", ".jsonc", ".yml", ".yaml",
-              ".md", ".html", ".css", ".txt", ".sql", ".webmanifest"
-          }
-
-          # Read all tracked text files except archives, so historic copies do not
-          # create false dependencies.
-          searchable = []
-          for rel in tracked:
-              if rel.startswith("archive/"):
-                  continue
-              p = Path(rel)
-              if not p.is_file():
-                  continue
-              if p.suffix.lower() not in text_exts and p.name not in {
-                  ".gitignore", ".assetsignore"
-              }:
-                  continue
-              try:
-                  txt = p.read_text(encoding="utf-8")
-              except Exception:
-                  continue
-              searchable.append((rel, txt))
-
-          rows = []
-          for name in root_files:
-              refs = []
-              token = name
-              for rel, txt in searchable:
-                  if rel == name:
-                      continue
-                  # Exact filename occurrence is intentionally conservative.
-                  if token in txt:
-                      refs.append(rel)
-
-              # Classify by current role, not by desired final location.
-              if name in hard_keep:
-                  cls = "KEEP_ROOT"
-              elif name in doc_names or name.endswith(".md") or name.endswith(".txt"):
-                  cls = "DOC_CANDIDATE"
-              elif (
-                  any(x in name for x in fixture_patterns)
-                  or name == "nar-fixtures.mjs"
-              ):
-                  cls = "FIXTURE_CANDIDATE"
-              elif name in research_names:
-                  cls = "RESEARCH_CANDIDATE"
-              elif name.startswith(runtime_prefixes) or name.startswith("jra"):
-                  cls = "RUNTIME_REFACTOR_LATER"
-              elif name.endswith((".js", ".mjs")):
-                  cls = "SOURCE_REVIEW"
-              else:
-                  cls = "REVIEW"
-
-              rows.append({
-                  "file": name,
-                  "class": cls,
-                  "referenceCount": len(refs),
-                  "references": refs[:30],
-              })
-
-          # Explicitly inspect the two config surfaces most likely to break after moves.
-          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
-          wrangler = Path("wrangler.jsonc").read_text(encoding="utf-8")
-
-          report = {
-              "rootFileCount": len(root_files),
-              "rootDirectoryCount": len(root_dirs),
-              "rootDirectories": root_dirs,
-              "packageScripts": package.get("scripts", {}),
-              "wranglerMain": re.search(r'"main"\s*:\s*"([^"]+)"', wrangler).group(1),
-              "wranglerAssetsDirectory": re.search(
-                  r'"directory"\s*:\s*"([^"]+)"', wrangler
-              ).group(1),
-              "files": rows,
-          }
-
-          Path("/tmp/batch10-root-audit.json").write_text(
-              json.dumps(report, ensure_ascii=False, indent=2),
-              encoding="utf-8",
-          )
-
-          classes = {}
-          for row in rows:
-              classes.setdefault(row["class"], []).append(row)
-
-          with Path("/tmp/batch10-summary.md").open("w", encoding="utf-8") as f:
-              f.write("## CHASS Root Slim Batch10 — Audit\n\n")
-              f.write(f"- Branch: `{subprocess.check_output(['git','branch','--show-current'], text=True).strip()}`\n")
-              f.write(f"- Root files: **{len(root_files)}**\n")
-              f.write(f"- Root directories: **{len(root_dirs)}**\n")
-              f.write("- Changes applied: **NO**\n")
-              f.write("- main direct push: **NO**\n")
-              f.write("- Full regression before analysis: **PASS**\n")
-              f.write(f"- Wrangler main: `{report['wranglerMain']}`\n")
-              f.write(f"- Wrangler assets.directory: `{report['wranglerAssetsDirectory']}`\n\n")
-
-              order = [
-                  "KEEP_ROOT",
-                  "FIXTURE_CANDIDATE",
-                  "DOC_CANDIDATE",
-                  "RESEARCH_CANDIDATE",
-                  "RUNTIME_REFACTOR_LATER",
-                  "SOURCE_REVIEW",
-                  "REVIEW",
-              ]
-              for cls in order:
-                  vals = classes.get(cls, [])
-                  if not vals:
-                      continue
-                  f.write(f"### {cls} ({len(vals)})\n")
-                  for row in vals:
-                      f.write(
-                          f"- `{row['file']}` — refs: {row['referenceCount']}"
-                      )
-                      if row["references"]:
-                          shown = ", ".join(f"`{x}`" for x in row["references"][:6])
-                          f.write(f" — {shown}")
-                          if row["referenceCount"] > 6:
-                              f.write(" …")
-                      f.write("\n")
-                  f.write("\n")
-
-              f.write("### Safety interpretation\n")
-              f.write("- `KEEP_ROOT`: Batch10でも移動しない\n")
-              f.write("- `FIXTURE_CANDIDATE`: 最初の移動候補。参照先を同時修正してからテスト\n")
-              f.write("- `DOC_CANDIDATE`: docs/移動候補。README等のリンク更新が必要なら同時修正\n")
-              f.write("- `RESEARCH_CANDIDATE`: src/research/候補。import参照を確認して別フェーズ\n")
-              f.write("- `RUNTIME_REFACTOR_LATER`: JRA/NAR/Drive実行系。Production Smoke込みで後段\n")
-              f.write("- 今回はauditのみ。rename/deleteは0件\n")
-
-          print(Path("/tmp/batch10-summary.md").read_text(encoding="utf-8"))
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text(encoding="utf-8")
+              original = text
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f"Expected reference missing before replacement: {filename}: {old}")
+                  text = text.replace(old, new)
+              if text == original:
+                  raise SystemExit(f"No update made: {filename}")
+              path.write_text(text, encoding="utf-8")
           PY
 
-      - name: Publish Batch10 audit summary
+          # Destination guards.
+          test -f tests/fixtures/jra/jra-program-fixture.html
+          test -f tests/fixtures/jra/jra-race-card-fixture.html
+          test -f tests/fixtures/jra/jra-result-fixture.html
+          test -f tests/fixtures/nar/kawasaki.json
+          test -f tests/fixtures/nar/nar-fixtures.mjs
+          test -f docs/AI_BRIDGE.md
+          test -f docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+
+          # Old root paths must be gone.
+          for OLD in \
+            jra-program-fixture.html \
+            jra-race-card-fixture.html \
+            jra-result-fixture.html \
+            kawasaki.json \
+            nar-fixtures.mjs \
+            AI_BRIDGE.md \
+            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          do
+            test ! -e "$OLD"
+          done
+
+          # Updated references must point at new locations.
+          grep -Fq "./fixtures/jra/jra-program-fixture.html" tests/jra-j1.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j2.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j3.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "./fixtures/jra/jra-result-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "./fixtures/nar/kawasaki.json" tests/public-read-only-api.test.mjs
+          grep -Fq "./tests/fixtures/nar/nar-fixtures.mjs" regression.test.mjs
+          grep -Fq "./fixtures/nar/nar-fixtures.mjs" tests/auto-result-queue.test.mjs
+          grep -Fq "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+
+      - name: Post-move full regression
+        if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
           set -euo pipefail
-          cat /tmp/batch10-summary.md >> "$GITHUB_STEP_SUMMARY"
+          npm run check
 
-      - name: Upload Batch10 audit artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: chass-root-slim-batch10-audit
-          path: /tmp/batch10-root-audit.json
-          if-no-files-found: error
-          retention-days: 14
+      - name: Commit Phase A
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          # Allow only the seven moves, their known reference updates,
+          # and the consolidation workflow itself.
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          allowed_exact = {
+              ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml",
+              "README.md",
+              "regression.test.mjs",
+              "tests/jra-j1.test.mjs",
+              "tests/jra-j2.test.mjs",
+              "tests/jra-j3.test.mjs",
+              "tests/jra-j4.test.mjs",
+              "tests/public-read-only-api.test.mjs",
+              "tests/auto-result-queue.test.mjs",
+              "tests/fixtures/jra/jra-program-fixture.html",
+              "tests/fixtures/jra/jra-race-card-fixture.html",
+              "tests/fixtures/jra/jra-result-fixture.html",
+              "tests/fixtures/nar/kawasaki.json",
+              "tests/fixtures/nar/nar-fixtures.mjs",
+              "docs/AI_BRIDGE.md",
+              "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+          }
+
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--cached", "--name-only"], text=True
+              ).splitlines()
+          )
+          unexpected = sorted(changed - allowed_exact)
+          if unexpected:
+              raise SystemExit("Unexpected changed files: " + ", ".join(unexpected))
+          PY
+
+          test -n "$(git diff --cached --name-only)"
+
+          git commit -m "refactor: organize fixtures and docs batch10 phase a"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          {
+            echo "## CHASS Root Slim Batch10 — Phase A Applied"
+            echo
+            echo "- Fixtures moved: **5**"
+            echo "- Documents moved: **2**"
+            echo "- Runtime/source modules moved: **0**"
+            echo "- Deleted: **0**"
+            echo "- Full regression after move: **PASS**"
+            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- main direct push: **NO**"
+          } >> "$GITHUB_STEP_SUMMARY"
