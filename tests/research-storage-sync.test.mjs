@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {isImportantResearchRecord,researchHash,researchIdentity,researchSyncEnabled,runResearchSyncQueue} from '../research-storage-sync.mjs';
+import {isImportantResearchRecord,researchHash,researchIdentity,researchSyncEnabled,runResearchSyncQueue} from '../src/research/research-storage-sync.mjs';
 import {runScheduledTasks} from '../worker.js';
 
 test('research identity strictly separates JRA and NAR',()=>{
@@ -34,7 +34,7 @@ test('scheduled priority retains D1/JRA work before optional Airtable indexing',
 });
 
 test('migration is additive and remaining Airtable secret stays server-side',async()=>{
-  const [migration,source,gitignore]=await Promise.all([readFile(new URL('../migrations/0004_research_storage_sync.sql',import.meta.url),'utf8'),readFile(new URL('../research-storage-sync.mjs',import.meta.url),'utf8'),readFile(new URL('../.gitignore',import.meta.url),'utf8')]);
+  const [migration,source,gitignore]=await Promise.all([readFile(new URL('../migrations/0004_research_storage_sync.sql',import.meta.url),'utf8'),readFile(new URL('../src/research/research-storage-sync.mjs',import.meta.url),'utf8'),readFile(new URL('../.gitignore',import.meta.url),'utf8')]);
   assert.match(migration,/research_sync_queue/);assert.match(migration,/research_archive_manifest/);assert.match(migration,/research_airtable_manifest/);assert.doesNotMatch(migration,/DROP\s+(?:TABLE|COLUMN)/i);
   assert.doesNotMatch(source,/GOOGLE_DRIVE|ENABLE_DRIVE|oauth2\.googleapis|googleapis\.com\/drive/i);assert.match(source,/AIRTABLE_TOKEN/);assert.doesNotMatch(source,/console\.(?:log|info|warn|error)\([^\n]*(?:TOKEN|SECRET|PASSWORD)/i);
   assert.match(gitignore,/\.env/);

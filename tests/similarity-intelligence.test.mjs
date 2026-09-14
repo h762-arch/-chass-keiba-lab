@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SIMILARITY_VERSION,SIMILARITY_WEIGHTS,extractSimilarityFeatures,similarityScore,analyzeHistoricalSimilarity,walkForwardSimilarity} from '../similarity-intelligence.mjs';
+import {SIMILARITY_VERSION,SIMILARITY_WEIGHTS,extractSimilarityFeatures,similarityScore,analyzeHistoricalSimilarity,walkForwardSimilarity} from '../src/research/similarity-intelligence.mjs';
 
 const sum=object=>Object.values(object).reduce((a,b)=>a+b,0);
 function iso(day,hour=1){return `2026-07-${String(day).padStart(2,'0')}T${String(hour).padStart(2,'0')}:00:00.000Z`}
