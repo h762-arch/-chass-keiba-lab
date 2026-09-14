@@ -1,26 +1,25 @@
-name: CHASS Workflow Consolidation v2.5.2 Root Layout Cleanup
+name: CHASS Workflow Consolidation v2.6 Root Slim Audit
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "audit_only=確認のみ / apply=Batch9 root履歴資料をarchiveへ移動"
+        description: "Batch10はまずaudit_onlyのみ"
         required: true
         default: "audit_only"
         type: choice
         options:
           - audit_only
-          - apply
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: chass-root-layout-cleanup-batch9-${{ github.ref_name }}
+  group: chass-root-slim-batch10-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  consolidate:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -30,6 +29,35 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+
+      - name: Safety preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ inputs.mode }}" = "audit_only"
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
+          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
+
+          # Canonical entry/config files must exist and stay at root during this audit.
+          for KEEP in \
+            README.md package.json package-lock.json server.mjs worker.js app.js \
+            index.html styles.css wrangler.jsonc .gitignore .assetsignore \
+            openapi.json manifest.webmanifest d1-schema.sql chass-latest.js
+          do
+            test -e "$KEEP" || {
+              echo "::error::Required root file missing: $KEEP"
+              exit 1
+            }
+          done
+
+          test -d .github/workflows
+          test -d tests
+          test -d scripts
+          test -d mcp
+          test -d migrations
+          test -d viewer
+          test -d archive
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -43,324 +71,211 @@ jobs:
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix mcp
 
-      - name: Batch 9 root-layout safety audit
-        id: audit
-        shell: bash
-        env:
-          MODE: ${{ inputs.mode }}
-        run: |
-          set -euo pipefail
-
-          test "$MODE" = "audit_only" -o "$MODE" = "apply"
-          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
-
-          if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
-            echo "::error::apply on main is forbidden."
-            exit 1
-          fi
-
-          test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
-          test "$(node -p "require('./package.json').version")" = "10.0.1"
-
-          # Core/runtime files that must remain in root.
-          for KEEP in \
-            README.md package.json package-lock.json server.mjs worker.js app.js \
-            index.html styles.css wrangler.jsonc .gitignore .assetsignore \
-            chass-latest.js d1-schema.sql openapi.json manifest.webmanifest \
-            jra-result-fetch.mjs jra-race-fetch.mjs jra-odds-fetch.mjs \
-            jra-official-cache.mjs jra-drive-prediction-input.mjs \
-            google-drive-readonly-api.mjs google-drive-readonly-import.mjs \
-            research-storage-sync.mjs similarity-intelligence.mjs \
-            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
-          do
-            test -e "$KEEP" || {
-              echo "::error::Critical root file missing: $KEEP"
-              exit 1
-            }
-          done
-
-          for DIR in .github archive docs mcp migrations scripts tests viewer; do
-            test -d "$DIR" || {
-              echo "::error::Critical directory missing: $DIR"
-              exit 1
-            }
-          done
-
-          cat > /tmp/batch9_reports.txt <<'EOF'
-          AUTO_RESULT_QUEUE_REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0-dev-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-ACTIVE-RACE-INTEGRITY-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-DAY-PUBLIC-API-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-GOOGLE-DRIVE-PRODUCTION-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-INTEGRATED-OPTIMIZATION-FINAL-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE0-1-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE2-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE3-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE4-PUBLIC-API-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE5-RESEARCH-STORAGE-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE6-LONGSHOT-SCENARIO-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE7-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-VALIDATION-PLACEHOLDER-FIX-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.30-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.31-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.32-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.33-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.34-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.35-REPORT.md
-          D1_ROWS_READ_PHASE_A_REPORT.md
-          DAY-AI-LIGHT-REPORT.md
-          DAY_AI_500_RESILIENCE_REPORT.md
-          EXTERNAL_AI_SNAPSHOT_API_REPORT.md
-          FALSE_EXCLUSION_CURRENT_STATUS_V2_REPORT.md
-          MARKET-INTEGRITY-REPORT.md
-          POST_JRA_J5_STABILIZATION_REPORT.md
-          PREDICTION_AXIS_REINFORCEMENT_REPORT.md
-          REPOSITORY_LAYOUT_RECOVERY_REPORT.md
-          RESULT_RECOVERY_NORMALIZATION_REPORT.md
-          SCRATCH_LIVE_ADJUSTMENT_REPORT.md
-          TRANSPORT_REBASE_REPORT.md
-          VOLATILITY_INTELLIGENCE_REPORT.md
-          EOF
-
-          cat > /tmp/batch9_patch_notes.txt <<'EOF'
-          APPLY-PATCH.md
-          PATCH_README_D1_ROWS_READ_PHASE_A.md
-          PATCH_README_DAY_AI_500.md
-          PATCH_README_EXTERNAL_AI_SNAPSHOT.md
-          PATCH_README_FALSE_EXCLUSION_V2.md
-          PATCH_README_GITHUB_PAGES_SNAPSHOT.md
-          PATCH_README_JRA_J1.md
-          PATCH_README_JRA_J2.md
-          PATCH_README_JRA_J3.md
-          PATCH_README_JRA_J4.md
-          PATCH_README_JRA_J5.md
-          EOF
-
-          cat > /tmp/batch9_recovery.txt <<'EOF'
-          CURRENT_TREE_AFTER_RECOVERY.txt
-          CURRENT_TREE_BEFORE_RECOVERY.txt
-          IMPORTANT_SHA256_AFTER_LAYOUT.txt
-          IMPORTANT_SHA256_BEFORE_RECOVERY.txt
-          JRA_J1_SHA256.json
-          JRA_J2_SHA256.json
-          JRA_J3_SHA256.json
-          更新内容.txt
-          EOF
-
-          cat > /tmp/batch9_workflow_artifacts.txt <<'EOF'
-          CHASS-JRA-Race-Odds-Auto-Link-v1.1.yml
-          EOF
-
-
-          cat /tmp/batch9_reports.txt /tmp/batch9_patch_notes.txt /tmp/batch9_recovery.txt /tmp/batch9_workflow_artifacts.txt > /tmp/batch9_all.txt
-
-          EXPECTED=53
-          ACTUAL="$(grep -cve '^[[:space:]]*$' /tmp/batch9_all.txt)"
-          test "$ACTUAL" -eq "$EXPECTED" || {
-            echo "::error::Candidate manifest count mismatch: $ACTUAL != $EXPECTED"
-            exit 1
-          }
-
-          MISSING=0
-          REFERENCED=0
-          : > /tmp/batch9_missing.txt
-          : > /tmp/batch9_references.txt
-
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            if [ ! -f "$FILE" ]; then
-              echo "$FILE" >> /tmp/batch9_missing.txt
-              MISSING=$((MISSING + 1))
-              continue
-            fi
-
-            # Block if runtime/tests/current README refer to a candidate by exact filename.
-            # Exclude this audit workflow itself, because its candidate manifest necessarily
-            # contains every filename and would otherwise self-trigger the safety guard.
-            : > /tmp/refs-raw.txt
-            : > /tmp/refs-one.txt
-            git grep -n -F -e "$FILE" -- \
-              README.md package.json wrangler.jsonc \
-              .github tests scripts mcp viewer \
-              '*.js' '*.mjs' 2>/dev/null > /tmp/refs-raw.txt || true
-            grep -v -F '.github/workflows/CHASS-Workflow-Consolidation-v2.0.yml:' \
-              /tmp/refs-raw.txt > /tmp/refs-one.txt || true
-            if [ -s /tmp/refs-one.txt ]; then
-              {
-                echo "### $FILE"
-                cat /tmp/refs-one.txt
-              } >> /tmp/batch9_references.txt
-              REFERENCED=$((REFERENCED + 1))
-            fi
-          done < /tmp/batch9_all.txt
-
-          {
-            echo "## CHASS Workflow Consolidation v2.5.2 — Batch 9 Root Layout Audit"
-            echo
-            echo "- Branch: \`$GITHUB_REF_NAME\`"
-            echo "- Mode: \`$MODE\`"
-            echo "- Planned archive moves: $EXPECTED"
-            echo "- Reports: 33"
-            echo "- Patch notes: 11"
-            echo "- Recovery/hash/history: 8"
-            echo "- Inert root workflow artifact: 1"
-            echo "- Missing candidates: $MISSING"
-            echo "- Runtime/test references found: $REFERENCED"
-            echo "- Deleted: 0"
-            echo "- main direct push: NO"
-            echo
-            echo "### Explicitly retained in root"
-            echo "- \`CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md\` (current README reference)"
-            echo "- all runtime JS/MJS, fixtures, schema/config, Google Drive read-only/fallback files"
-            echo "- \`README.md\`, \`package*.json\`, \`wrangler.jsonc\`, \`openapi.json\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -s /tmp/batch9_missing.txt ]; then
-            {
-              echo
-              echo "### Missing candidates"
-              sed 's/^/- `/' /tmp/batch9_missing.txt | sed 's/$/`/'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ -s /tmp/batch9_references.txt ]; then
-            {
-              echo
-              echo "### BLOCKED references"
-              echo '```text'
-              cat /tmp/batch9_references.txt
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ "$MISSING" -ne 0 ] || [ "$REFERENCED" -ne 0 ]; then
-            echo "::error::Batch9 audit blocked. No files were moved."
-            exit 1
-          fi
-
       - name: Baseline full regression
         shell: bash
         run: |
           set -euo pipefail
           npm run check
 
-      - name: Apply Batch 9 root cleanup
-        if: ${{ inputs.mode == 'apply' }}
-        id: apply
+      - name: Build root dependency inventory
         shell: bash
         run: |
           set -euo pipefail
 
-          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
-          test "$GITHUB_REF_NAME" != "main"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re, subprocess
 
-          REPORT_DEST="archive/root-history/reports"
-          PATCH_DEST="archive/root-history/patch-notes"
-          RECOVERY_DEST="archive/root-history/recovery"
-          WORKFLOW_DEST="archive/root-history/workflow-artifacts"
-          mkdir -p "$REPORT_DEST" "$PATCH_DEST" "$RECOVERY_DEST" "$WORKFLOW_DEST"
+          root = Path(".")
+          tracked = subprocess.check_output(
+              ["git", "ls-files"], text=True
+          ).splitlines()
 
-          MOVED=0
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$REPORT_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_reports.txt
+          # Current root files only; directories are separately listed.
+          root_files = sorted(
+              p.name for p in root.iterdir()
+              if p.is_file() and p.name not in {".DS_Store"}
+          )
+          root_dirs = sorted(
+              p.name for p in root.iterdir()
+              if p.is_dir() and p.name not in {".git", "node_modules"}
+          )
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$PATCH_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_patch_notes.txt
+          # Files that must remain at root for now.
+          hard_keep = {
+              ".assetsignore", ".gitignore",
+              "README.md", "package.json", "package-lock.json",
+              "server.mjs", "worker.js", "app.js",
+              "index.html", "styles.css", "wrangler.jsonc",
+              "openapi.json", "manifest.webmanifest",
+              "d1-schema.sql", "chass-latest.js",
+          }
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$RECOVERY_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_recovery.txt
+          # Candidate families. This audit does NOT move anything.
+          fixture_patterns = (
+              "-fixture.", "fixtures.", "kawasaki.json",
+          )
+          doc_names = {
+              "AI_BRIDGE.md",
+              "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+          }
+          research_names = {
+              "calibration-research.js",
+              "similarity-intelligence.mjs",
+              "longshot-scenario.js",
+              "research-storage-sync.mjs",
+          }
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$WORKFLOW_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_workflow_artifacts.txt
+          # Runtime-ish files whose relocation needs import/workflow updates.
+          runtime_prefixes = (
+              "jra-", "nar-", "meeting-",
+              "google-drive-", "publish-ai-",
+          )
 
-          test "$MOVED" -eq 53
+          text_exts = {
+              ".js", ".mjs", ".cjs", ".json", ".jsonc", ".yml", ".yaml",
+              ".md", ".html", ".css", ".txt", ".sql", ".webmanifest"
+          }
 
-          # Ensure canonical current report and all runtime roots were untouched.
-          test -f CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
-          test -f app.js
-          test -f worker.js
-          test -f server.mjs
-          test -f package.json
-          test -f wrangler.jsonc
-          test -f jra-drive-prediction-input.mjs
-          test -f google-drive-readonly-api.mjs
-          test -f google-drive-readonly-import.mjs
-          test -f jra-program-fixture.html
-          test -f jra-race-card-fixture.html
-          test -f jra-result-fixture.html
-          test -f kawasaki.json
-          test -f nar-fixtures.mjs
+          # Read all tracked text files except archives, so historic copies do not
+          # create false dependencies.
+          searchable = []
+          for rel in tracked:
+              if rel.startswith("archive/"):
+                  continue
+              p = Path(rel)
+              if not p.is_file():
+                  continue
+              if p.suffix.lower() not in text_exts and p.name not in {
+                  ".gitignore", ".assetsignore"
+              }:
+                  continue
+              try:
+                  txt = p.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              searchable.append((rel, txt))
 
-          # No source deletion: candidates must now exist under archive.
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$REPORT_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_reports.txt
+          rows = []
+          for name in root_files:
+              refs = []
+              token = name
+              for rel, txt in searchable:
+                  if rel == name:
+                      continue
+                  # Exact filename occurrence is intentionally conservative.
+                  if token in txt:
+                      refs.append(rel)
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$PATCH_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_patch_notes.txt
+              # Classify by current role, not by desired final location.
+              if name in hard_keep:
+                  cls = "KEEP_ROOT"
+              elif name in doc_names or name.endswith(".md") or name.endswith(".txt"):
+                  cls = "DOC_CANDIDATE"
+              elif (
+                  any(x in name for x in fixture_patterns)
+                  or name == "nar-fixtures.mjs"
+              ):
+                  cls = "FIXTURE_CANDIDATE"
+              elif name in research_names:
+                  cls = "RESEARCH_CANDIDATE"
+              elif name.startswith(runtime_prefixes) or name.startswith("jra"):
+                  cls = "RUNTIME_REFACTOR_LATER"
+              elif name.endswith((".js", ".mjs")):
+                  cls = "SOURCE_REVIEW"
+              else:
+                  cls = "REVIEW"
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$RECOVERY_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_recovery.txt
+              rows.append({
+                  "file": name,
+                  "class": cls,
+                  "referenceCount": len(refs),
+                  "references": refs[:30],
+              })
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$WORKFLOW_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_workflow_artifacts.txt
+          # Explicitly inspect the two config surfaces most likely to break after moves.
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          wrangler = Path("wrangler.jsonc").read_text(encoding="utf-8")
 
-          npm run check
+          report = {
+              "rootFileCount": len(root_files),
+              "rootDirectoryCount": len(root_dirs),
+              "rootDirectories": root_dirs,
+              "packageScripts": package.get("scripts", {}),
+              "wranglerMain": re.search(r'"main"\s*:\s*"([^"]+)"', wrangler).group(1),
+              "wranglerAssetsDirectory": re.search(
+                  r'"directory"\s*:\s*"([^"]+)"', wrangler
+              ).group(1),
+              "files": rows,
+          }
 
-          git status --short
-          git diff --check
+          Path("/tmp/batch10-root-audit.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
 
-          # Only archive moves plus this consolidation workflow may differ from main.
-          CHANGED="$(git diff --name-only main...HEAD; git diff --name-only)"
-          printf '%s\n' "$CHANGED" > /tmp/batch9_changed.txt
+          classes = {}
+          for row in rows:
+              classes.setdefault(row["class"], []).append(row)
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          with Path("/tmp/batch10-summary.md").open("w", encoding="utf-8") as f:
+              f.write("## CHASS Root Slim Batch10 — Audit\n\n")
+              f.write(f"- Branch: `{subprocess.check_output(['git','branch','--show-current'], text=True).strip()}`\n")
+              f.write(f"- Root files: **{len(root_files)}**\n")
+              f.write(f"- Root directories: **{len(root_dirs)}**\n")
+              f.write("- Changes applied: **NO**\n")
+              f.write("- main direct push: **NO**\n")
+              f.write("- Full regression before analysis: **PASS**\n")
+              f.write(f"- Wrangler main: `{report['wranglerMain']}`\n")
+              f.write(f"- Wrangler assets.directory: `{report['wranglerAssetsDirectory']}`\n\n")
 
-          git add -A
-          git diff --cached --check
+              order = [
+                  "KEEP_ROOT",
+                  "FIXTURE_CANDIDATE",
+                  "DOC_CANDIDATE",
+                  "RESEARCH_CANDIDATE",
+                  "RUNTIME_REFACTOR_LATER",
+                  "SOURCE_REVIEW",
+                  "REVIEW",
+              ]
+              for cls in order:
+                  vals = classes.get(cls, [])
+                  if not vals:
+                      continue
+                  f.write(f"### {cls} ({len(vals)})\n")
+                  for row in vals:
+                      f.write(
+                          f"- `{row['file']}` — refs: {row['referenceCount']}"
+                      )
+                      if row["references"]:
+                          shown = ", ".join(f"`{x}`" for x in row["references"][:6])
+                          f.write(f" — {shown}")
+                          if row["referenceCount"] > 6:
+                              f.write(" …")
+                      f.write("\n")
+                  f.write("\n")
 
-          test -n "$(git diff --cached --name-only)"
+              f.write("### Safety interpretation\n")
+              f.write("- `KEEP_ROOT`: Batch10でも移動しない\n")
+              f.write("- `FIXTURE_CANDIDATE`: 最初の移動候補。参照先を同時修正してからテスト\n")
+              f.write("- `DOC_CANDIDATE`: docs/移動候補。README等のリンク更新が必要なら同時修正\n")
+              f.write("- `RESEARCH_CANDIDATE`: src/research/候補。import参照を確認して別フェーズ\n")
+              f.write("- `RUNTIME_REFACTOR_LATER`: JRA/NAR/Drive実行系。Production Smoke込みで後段\n")
+              f.write("- 今回はauditのみ。rename/deleteは0件\n")
 
-          git commit -m "chore: archive root history artifacts batch9"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          print(Path("/tmp/batch10-summary.md").read_text(encoding="utf-8"))
+          PY
 
-          {
-            echo "## Batch 9 root cleanup applied"
-            echo
-            echo "- Archived root history files: $MOVED"
-            echo "- Deleted: 0"
-            echo "- Runtime/source files moved: 0"
-            echo "- Full regression after move: PASS"
-            echo "- Branch: \`$GITHUB_REF_NAME\`"
-            echo "- main direct push: NO"
-            echo
-            echo "### Destinations"
-            echo "- \`archive/root-history/reports/\`"
-            echo "- \`archive/root-history/patch-notes/\`"
-            echo "- \`archive/root-history/recovery/\`"
-            echo "- \`archive/root-history/workflow-artifacts/\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish Batch10 audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat /tmp/batch10-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Batch10 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chass-root-slim-batch10-audit
+          path: /tmp/batch10-root-audit.json
+          if-no-files-found: error
+          retention-days: 14
