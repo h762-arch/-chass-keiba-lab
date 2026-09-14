@@ -1,0 +1,9 @@
+{
+  "patch_id": "batch8-result-parser-race-alt-v2",
+  "title": "Batch8 JRA result parser race image identity fix",
+  "summary": "Keep date/track identity anchored to the main header near 発走時刻, but read the race number from the JRA page's race-image alt text. This preserves fail-closed race validation while avoiding loss of the race number when generic HTML stripping removes <img alt='7レース'>.",
+  "allowed_files": [
+    "jra-result-fetch.mjs"
+  ],
+  "allow_workflow_changes": false
+}
