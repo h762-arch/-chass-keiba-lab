@@ -1,4 +1,4 @@
-name: CHASS JRA Cloudflare Diagnostic v4
+name: CHASS JRA Cloudflare Diagnostic v4.0.1
 
 on:
   workflow_dispatch:
@@ -70,6 +70,7 @@ jobs:
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
           test -f jra-race-fetch.mjs
           test -f jra-meeting-discovery.mjs
+          test -f jra-official-cache.mjs
           test -f wrangler.jsonc
           test -z "$(git status --porcelain=v1)"
           test -n "${CLOUDFLARE_API_TOKEN:-}"
@@ -86,7 +87,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/chass-jra-diag-v4
           mkdir -p /tmp/chass-jra-diag-v4
-          cp jra-race-fetch.mjs jra-meeting-discovery.mjs /tmp/chass-jra-diag-v4/
+          cp jra-race-fetch.mjs jra-meeting-discovery.mjs jra-official-cache.mjs /tmp/chass-jra-diag-v4/
 
           cat > /tmp/chass-jra-diag-v4/diagnostic-worker.mjs <<'EOF'
           import { createJraRaceService } from './jra-race-fetch.mjs';
@@ -160,6 +161,7 @@ jobs:
 
           node --check /tmp/chass-jra-diag-v4/diagnostic-worker.mjs
           node --check /tmp/chass-jra-diag-v4/jra-race-fetch.mjs
+          node --check /tmp/chass-jra-diag-v4/jra-official-cache.mjs
 
       - name: GitHub Runner current-source probe
         id: runner
@@ -209,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           cd /tmp/chass-jra-diag-v4
-          node -e "const c=require('./wrangler.jsonc'); if(c.name===process.env.PRODUCTION_WORKER_NAME) process.exit(2)"
+          node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8')); if(c.name===process.env.PRODUCTION_WORKER_NAME) process.exit(2)"
           npx -y wrangler@4 deploy --config wrangler.jsonc 2>&1 | tee /tmp/diag-v4-deploy.log
           URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' /tmp/diag-v4-deploy.log | tail -n1 || true)"
           test -n "$URL"
@@ -250,7 +252,7 @@ jobs:
           rm -f /tmp/git-config-probe.bin
 
           {
-            echo "## CHASS JRA Cloudflare Diagnostic v4 — service_safe"
+            echo "## CHASS JRA Cloudflare Diagnostic v4.0.1 — service_safe"
             echo
             echo "- Current-source Runner JRA: ${{ steps.runner.outputs.ok || 'unknown' }}"
             echo "- Current-source Cloudflare JRA: ${{ steps.cf.outputs.ok || 'unknown' }}"
@@ -395,7 +397,7 @@ jobs:
           done
 
           {
-            echo "## CHASS JRA Cloudflare Diagnostic v4 — transport_1042"
+            echo "## CHASS JRA Cloudflare Diagnostic v4.0.1 — transport_1042"
             echo
             echo "| Probe | Endpoint HTTP | Outbound fetch completed |"
             echo "|---|---:|---|"
