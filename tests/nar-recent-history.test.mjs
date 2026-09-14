@@ -1,11 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {extractHorseRefsFromRaceHtml,parseNarHorseMarkInfo,summarizeRecentHistory} from '../src/nar/nar-recent-history.mjs';
+import {extractHorseRefsFromRaceHtml,parseNarHorseMarkInfo,summarizeRecentHistory,getNarRaceHistory} from '../src/nar/nar-recent-history.mjs';
 
 test('extractHorseRefsFromRaceHtml extracts lineage code and name',()=>{
   const html='<a href="/KeibaWeb/DataRoom/HorseMarkInfo?k_lineageLoginCode=30007403486">サトノエンパイア</a>';
   assert.deepEqual(extractHorseRefsFromRaceHtml(html),[{lineageCode:'30007403486',horseName:'サトノエンパイア',url:'https://www.keiba.go.jp/KeibaWeb/DataRoom/HorseMarkInfo?k_lineageLoginCode=30007403486'}]);
+});
+
+test('extractHorseRefsFromRaceHtml accepts non-HorseMarkInfo links carrying lineage code',()=>{
+  const html='<a href="/KeibaWeb/TodayRaceInfo/SomeHorsePage?k_lineageLoginCode=30007403486&foo=1">サトノエンパイア</a>';
+  const refs=extractHorseRefsFromRaceHtml(html);
+  assert.equal(refs.length,1);
+  assert.equal(refs[0].lineageCode,'30007403486');
+  assert.equal(refs[0].horseName,'サトノエンパイア');
+});
+
+test('getNarRaceHistory resolves lineage IDs from RaceMarkTable when DebaTableSmall has none',async()=>{
+  const deba='<html><body><div>ダート1600ｍ</div><span>サトノエンパイア</span></body></html>';
+  const mark='<a href="/KeibaWeb/TodayRaceInfo/AnyHorseLink?k_lineageLoginCode=30007403486">サトノエンパイア</a>';
+  const horse=`<h4>サトノエンパイア</h4><table><tr><td>2026/09/01</td><td>大井</td><td>1</td><td>テスト</td><td>C1</td><td>1600</td><td>晴</td><td>良</td><td>ナ</td><td>12</td><td>1</td><td>1</td><td>2</td><td>1</td><td>1:42.0</td><td>0.0</td><td>38.0</td><td>480</td><td>騎手</td><td>56.0</td><td>調教師</td><td>1,000,000</td><td>相手</td></tr></table>`;
+  const fetcher=async url=>{
+    const u=String(url);
+    if(u.includes('/DebaTableSmall?'))return new Response(deba,{status:200});
+    if(u.includes('/RaceMarkTable?'))return new Response(mark,{status:200});
+    if(u.includes('/DataRoom/HorseMarkInfo?'))return new Response(horse,{status:200});
+    return new Response('not found',{status:404});
+  };
+  const payload=await getNarRaceHistory({
+    code:'20',date:'2026/09/14',race:'1',fetcher,
+    raceCardParser:()=>[{horseNo:1,horseName:'サトノエンパイア'}]
+  });
+  assert.equal(payload.resolvedHorseCount,1);
+  assert.equal(payload.unresolvedHorseCount,0);
+  assert.equal(payload.horses[0].lineageCode,'30007403486');
 });
 
 test('parseNarHorseMarkInfo parses official HorseMarkInfo row layout',()=>{
