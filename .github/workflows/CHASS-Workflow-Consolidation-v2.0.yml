@@ -1,27 +1,28 @@
-name: CHASS Workflow Consolidation v2.7 Root Slim Phase B Audit
+name: CHASS Workflow Consolidation v2.7.1 Root Slim Phase B
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Phase Bはresearch系4ファイルの参照監査のみ"
+        description: "audit_only=参照確認 / apply=research系4ファイルをsrc/researchへ移動"
         required: true
         default: "audit_only"
         type: choice
         options:
           - audit_only
+          - apply
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: chass-root-slim-batch10-phaseb-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  audit:
+  phase_b:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout selected branch
@@ -44,11 +45,18 @@ jobs:
 
       - name: Phase B safety preflight
         shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
 
-          test "${{ inputs.mode }}" = "audit_only"
+          test "$MODE" = "audit_only" -o "$MODE" = "apply"
           test "$GITHUB_REF_NAME" = "chass/root-slim-batch10-phaseb"
+
+          if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
+            echo "::error::apply on main is forbidden."
+            exit 1
+          fi
 
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
           test "$(node -p "require('./package.json').version")" = "10.0.1"
@@ -60,25 +68,54 @@ jobs:
             research-storage-sync.mjs
           do
             test -f "$FILE" || {
-              echo "::error::Phase B research source missing: $FILE"
+              echo "::error::Phase B source missing: $FILE"
               exit 1
             }
           done
 
-          test -f tests/fixtures/jra/jra-program-fixture.html
-          test -f tests/fixtures/jra/jra-race-card-fixture.html
-          test -f tests/fixtures/jra/jra-result-fixture.html
-          test -f tests/fixtures/nar/nar-fixtures.mjs
-          test -f docs/AI_BRIDGE.md
-          test -f docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          # Exact reference topology established by v2.7 audit.
+          grep -Fq "calibration-research.js" index.html
+          grep -Fq "../calibration-research.js" tests/calibration-research.test.mjs
 
+          grep -Fq "./similarity-intelligence.mjs" worker.js
+          grep -Fq "../similarity-intelligence.mjs" tests/similarity-intelligence.test.mjs
+          grep -Fq "../similarity-intelligence.mjs" tests/background-historical-collector.test.mjs
+
+          grep -Fq "longshot-scenario.js" index.html
+          grep -Fq "../longshot-scenario.js" tests/longshot-scenario.test.mjs
+
+          grep -Fq "./research-storage-sync.mjs" worker.js
+          grep -Fq "../research-storage-sync.mjs" tests/research-storage-sync.test.mjs
+          grep -Fq "../research-storage-sync.mjs" tests/google-drive-production.test.mjs
+
+          for FILE in \
+            calibration-research.js \
+            similarity-intelligence.mjs \
+            longshot-scenario.js \
+            research-storage-sync.mjs
+          do
+            grep -Fq "node --check $FILE" package.json
+          done
+
+          # Core entry/config files are not relocated in Phase B.
           for KEEP in \
-            README.md package.json package-lock.json \
-            app.js worker.js server.mjs index.html styles.css \
-            wrangler.jsonc openapi.json d1-schema.sql
+            README.md app.js worker.js server.mjs index.html styles.css \
+            package.json package-lock.json wrangler.jsonc openapi.json d1-schema.sql
           do
             test -f "$KEEP"
           done
+
+          {
+            echo "## CHASS Root Slim Batch10 — Phase B Preflight"
+            echo
+            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Mode: \`$MODE\`"
+            echo "- Research source moves: **4**"
+            echo "- Destination: \`src/research/\`"
+            echo "- Runtime entry files moved: **0**"
+            echo "- Delete operations: **0**"
+            echo "- main direct push: **NO**"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Baseline full regression
         shell: bash
@@ -86,158 +123,273 @@ jobs:
           set -euo pipefail
           npm run check
 
-      - name: Build Phase B reference inventory
+      - name: Apply Phase B research layout
+        if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
           set -euo pipefail
 
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10-phaseb"
+          test "$GITHUB_REF_NAME" != "main"
+
+          mkdir -p src/research
+
+          git mv calibration-research.js src/research/calibration-research.js
+          git mv similarity-intelligence.mjs src/research/similarity-intelligence.mjs
+          git mv longshot-scenario.js src/research/longshot-scenario.js
+          git mv research-storage-sync.mjs src/research/research-storage-sync.mjs
+
           python3 - <<'PY'
           from pathlib import Path
-          import json
+
+          exact = {
+              "worker.js": [
+                  ("'./similarity-intelligence.mjs'",
+                   "'./src/research/similarity-intelligence.mjs'"),
+                  ("'./research-storage-sync.mjs'",
+                   "'./src/research/research-storage-sync.mjs'"),
+              ],
+              "tests/calibration-research.test.mjs": [
+                  ("'../calibration-research.js'",
+                   "'../src/research/calibration-research.js'"),
+              ],
+              "tests/similarity-intelligence.test.mjs": [
+                  ("'../similarity-intelligence.mjs'",
+                   "'../src/research/similarity-intelligence.mjs'"),
+              ],
+              "tests/background-historical-collector.test.mjs": [
+                  ("'../similarity-intelligence.mjs'",
+                   "'../src/research/similarity-intelligence.mjs'"),
+              ],
+              "tests/longshot-scenario.test.mjs": [
+                  ("'../longshot-scenario.js'",
+                   "'../src/research/longshot-scenario.js'"),
+              ],
+              "tests/research-storage-sync.test.mjs": [
+                  ("'../research-storage-sync.mjs'",
+                   "'../src/research/research-storage-sync.mjs'"),
+              ],
+              "tests/google-drive-production.test.mjs": [
+                  ("'../research-storage-sync.mjs'",
+                   "'../src/research/research-storage-sync.mjs'"),
+              ],
+          }
+
+          for filename, pairs in exact.items():
+              path = Path(filename)
+              text = path.read_text(encoding="utf-8")
+              before = text
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(
+                          f"Expected exact reference missing: {filename}: {old}"
+                      )
+                  text = text.replace(old, new)
+              if text == before:
+                  raise SystemExit(f"No reference update made: {filename}")
+              path.write_text(text, encoding="utf-8")
+
+          # Browser script paths: preserve any existing ./ or / prefix by replacing
+          # only the filename token.
+          index = Path("index.html")
+          text = index.read_text(encoding="utf-8")
+          for old, new in [
+              ("calibration-research.js",
+               "src/research/calibration-research.js"),
+              ("longshot-scenario.js",
+               "src/research/longshot-scenario.js"),
+          ]:
+              if old not in text:
+                  raise SystemExit(f"index reference missing: {old}")
+              text = text.replace(old, new)
+          index.write_text(text, encoding="utf-8")
+
+          # Update syntax-check paths without changing the command ordering.
+          package = Path("package.json")
+          text = package.read_text(encoding="utf-8")
+          for old, new in [
+              ("node --check calibration-research.js",
+               "node --check src/research/calibration-research.js"),
+              ("node --check similarity-intelligence.mjs",
+               "node --check src/research/similarity-intelligence.mjs"),
+              ("node --check longshot-scenario.js",
+               "node --check src/research/longshot-scenario.js"),
+              ("node --check research-storage-sync.mjs",
+               "node --check src/research/research-storage-sync.mjs"),
+          ]:
+              if old not in text:
+                  raise SystemExit(f"package check reference missing: {old}")
+              text = text.replace(old, new)
+          package.write_text(text, encoding="utf-8")
+
+          # google-drive-production.test.mjs also has a runtimeFiles array string.
+          gd = Path("tests/google-drive-production.test.mjs")
+          text = gd.read_text(encoding="utf-8")
+          old = "'../research-storage-sync.mjs'"
+          new = "'../src/research/research-storage-sync.mjs'"
+          if old in text:
+              text = text.replace(old, new)
+          gd.write_text(text, encoding="utf-8")
+          PY
+
+          # New destinations exist; old root paths are gone.
+          for FILE in \
+            calibration-research.js \
+            similarity-intelligence.mjs \
+            longshot-scenario.js \
+            research-storage-sync.mjs
+          do
+            test ! -e "$FILE"
+            test -f "src/research/$FILE"
+          done
+
+          # Runtime and browser references point to the new canonical paths.
+          grep -Fq "./src/research/similarity-intelligence.mjs" worker.js
+          grep -Fq "./src/research/research-storage-sync.mjs" worker.js
+          grep -Fq "src/research/calibration-research.js" index.html
+          grep -Fq "src/research/longshot-scenario.js" index.html
+
+          # Ensure no active tracked file still references an old root location by
+          # path form. Filename mentions inside the consolidation workflow itself
+          # are expected and excluded.
+          python3 - <<'PY'
+          from pathlib import Path
           import subprocess
 
-          candidates = [
-              "calibration-research.js",
-              "similarity-intelligence.mjs",
-              "longshot-scenario.js",
-              "research-storage-sync.mjs",
+          old_path_tokens = [
+              "'./similarity-intelligence.mjs'",
+              "'./research-storage-sync.mjs'",
+              "'../calibration-research.js'",
+              "'../similarity-intelligence.mjs'",
+              "'../longshot-scenario.js'",
+              "'../research-storage-sync.mjs'",
           ]
 
           tracked = subprocess.check_output(
               ["git", "ls-files"], text=True
           ).splitlines()
 
-          text_exts = {
-              ".js", ".mjs", ".cjs", ".json", ".jsonc",
-              ".yml", ".yaml", ".md", ".html", ".css",
-              ".txt", ".sql", ".webmanifest",
-          }
-
-          searchable = []
-          self_workflow = ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml"
-
+          offenders = []
           for rel in tracked:
               if rel.startswith("archive/"):
                   continue
-              if rel == self_workflow:
+              if rel == ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml":
                   continue
               p = Path(rel)
               if not p.is_file():
-                  continue
-              if p.suffix.lower() not in text_exts and p.name not in {
-                  ".gitignore", ".assetsignore"
-              }:
                   continue
               try:
                   text = p.read_text(encoding="utf-8")
               except Exception:
                   continue
-              searchable.append((rel, text))
+              for token in old_path_tokens:
+                  if token in text:
+                      offenders.append(f"{rel}: {token}")
 
-          rows = []
-          for candidate in candidates:
-              refs = []
-              for rel, text in searchable:
-                  if rel == candidate:
-                      continue
-                  if candidate in text:
-                      refs.append(rel)
-
-              package_refs = [x for x in refs if x == "package.json"]
-              runtime_refs = [
-                  x for x in refs
-                  if x.endswith((".js", ".mjs", ".cjs"))
-                  and not x.startswith("tests/")
-                  and x != "regression.test.mjs"
-              ]
-              test_refs = [
-                  x for x in refs
-                  if x.startswith("tests/") or x == "regression.test.mjs"
-              ]
-              html_refs = [x for x in refs if x.endswith(".html")]
-              workflow_refs = [x for x in refs if x.startswith(".github/workflows/")]
-              docs_refs = [x for x in refs if x.endswith(".md")]
-
-              if runtime_refs or html_refs or workflow_refs:
-                  risk = "HIGH_COUPLING"
-              elif test_refs or package_refs:
-                  risk = "MEDIUM_COUPLING"
-              else:
-                  risk = "LOW_COUPLING"
-
-              rows.append({
-                  "file": candidate,
-                  "referenceCount": len(refs),
-                  "references": refs,
-                  "packageRefs": package_refs,
-                  "runtimeRefs": runtime_refs,
-                  "testRefs": test_refs,
-                  "htmlRefs": html_refs,
-                  "workflowRefs": workflow_refs,
-                  "docsRefs": docs_refs,
-                  "risk": risk,
-              })
-
-          payload = {
-              "schemaVersion": 1,
-              "branch": subprocess.check_output(
-                  ["git", "branch", "--show-current"], text=True
-              ).strip(),
-              "mode": "audit_only",
-              "candidateCount": len(candidates),
-              "changesApplied": False,
-              "mainDirectPush": False,
-              "candidates": rows,
-          }
-
-          Path("/tmp/batch10-phaseb-audit.json").write_text(
-              json.dumps(payload, ensure_ascii=False, indent=2),
-              encoding="utf-8",
-          )
-
-          with Path("/tmp/batch10-phaseb-summary.md").open(
-              "w", encoding="utf-8"
-          ) as f:
-              f.write("## CHASS Root Slim Batch10 — Phase B Research Audit\n\n")
-              f.write(f"- Branch: `{payload['branch']}`\n")
-              f.write("- Mode: `audit_only`\n")
-              f.write("- Research candidates: **4**\n")
-              f.write("- Changes applied: **NO**\n")
-              f.write("- Delete operations: **0**\n")
-              f.write("- main direct push: **NO**\n")
-              f.write("- Baseline full regression: **PASS**\n\n")
-
-              for row in rows:
-                  f.write(f"### `{row['file']}` — {row['risk']}\n")
-                  f.write(f"- references: **{row['referenceCount']}**\n")
-                  if row["references"]:
-                      for ref in row["references"]:
-                          f.write(f"  - `{ref}`\n")
-                  else:
-                      f.write("  - none\n")
-                  f.write("\n")
-
-              f.write("### Phase B interpretation\n")
-              f.write("- `HIGH_COUPLING`: runtime/html/workflow参照あり。単純移動禁止、参照修正＋Smokeが必要\n")
-              f.write("- `MEDIUM_COUPLING`: package/test中心。移動時はnpm scripts/test pathを同時修正\n")
-              f.write("- `LOW_COUPLING`: 直接参照が見つからない候補。それでも移動前後のfull regression必須\n")
-              f.write("- 今回は監査のみ。ファイル移動・削除・pushは実行しない\n")
-
-          print(Path("/tmp/batch10-phaseb-summary.md").read_text(
-              encoding="utf-8"
-          ))
+          if offenders:
+              raise SystemExit(
+                  "Old research path references remain:\n" + "\n".join(offenders)
+              )
           PY
 
-      - name: Publish Phase B audit summary
+      - name: Post-move module resolution checks
+        if: ${{ inputs.mode == 'apply' }}
         shell: bash
         run: |
           set -euo pipefail
-          cat /tmp/batch10-phaseb-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Phase B audit artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: chass-root-slim-batch10-phaseb-audit
-          path: /tmp/batch10-phaseb-audit.json
-          if-no-files-found: error
-          retention-days: 14
+          node --check src/research/calibration-research.js
+          node --check src/research/similarity-intelligence.mjs
+          node --check src/research/longshot-scenario.js
+          node --check src/research/research-storage-sync.mjs
+
+          node --input-type=module -e "await import('./src/research/similarity-intelligence.mjs')"
+          node --input-type=module -e "await import('./src/research/research-storage-sync.mjs')"
+
+          # Browser entry points must reference files that actually exist.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path("index.html").read_text(encoding="utf-8")
+          for wanted in [
+              "src/research/calibration-research.js",
+              "src/research/longshot-scenario.js",
+          ]:
+              if wanted not in text:
+                  raise SystemExit(f"Browser research script missing: {wanted}")
+              if not Path(wanted).is_file():
+                  raise SystemExit(f"Browser research script file missing: {wanted}")
+          PY
+
+      - name: Post-move full regression
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Commit Phase B
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git diff --cached --check
+
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml",
+              "package.json",
+              "index.html",
+              "worker.js",
+              "tests/calibration-research.test.mjs",
+              "tests/similarity-intelligence.test.mjs",
+              "tests/background-historical-collector.test.mjs",
+              "tests/longshot-scenario.test.mjs",
+              "tests/research-storage-sync.test.mjs",
+              "tests/google-drive-production.test.mjs",
+              "calibration-research.js",
+              "similarity-intelligence.mjs",
+              "longshot-scenario.js",
+              "research-storage-sync.mjs",
+              "src/research/calibration-research.js",
+              "src/research/similarity-intelligence.mjs",
+              "src/research/longshot-scenario.js",
+              "src/research/research-storage-sync.mjs",
+          }
+
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--cached", "--name-only"], text=True
+              ).splitlines()
+          )
+          unexpected = sorted(changed - allowed)
+          if unexpected:
+              raise SystemExit(
+                  "Unexpected changed files: " + ", ".join(unexpected)
+              )
+          PY
+
+          test -n "$(git diff --cached --name-only)"
+
+          git commit -m "refactor: move research modules under src batch10 phase b"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          {
+            echo "## CHASS Root Slim Batch10 — Phase B Applied"
+            echo
+            echo "- Research modules moved: **4**"
+            echo "- Destination: \`src/research/\`"
+            echo "- Runtime/browser/test references updated: **YES**"
+            echo "- Full regression after move: **PASS**"
+            echo "- Deleted: **0**"
+            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- main direct push: **NO**"
+          } >> "$GITHUB_STEP_SUMMARY"
