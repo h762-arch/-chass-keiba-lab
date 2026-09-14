@@ -6,6 +6,7 @@ const TRACKS=[
   {track:'高知',code:'31'},{track:'佐賀',code:'32'},{track:'門別',code:'36'}
 ];
 
+const NAR_SP_BASE='https://sp.keiba.go.jp';
 const AUTO_PATH='/api/nar/history/prefetch-auto';
 const TRACK_PATH='/api/nar/history/prefetch-auto-track';
 const DAY_PATH='/api/nar/history/prefetch-day';
@@ -44,6 +45,10 @@ function parseDateOnly(value){
   return /^\d{4}-\d{2}-\d{2}$/.test(value||'')?value:null;
 }
 
+function narDate(value){
+  return String(value||'').replaceAll('-','/');
+}
+
 function originOf(env){
   const raw=String(env?.CHASS_PUBLIC_ORIGIN||'https://chass-keiba-lab7.h7625421.workers.dev').trim();
   return raw.replace(/\/+$/,'');
@@ -54,6 +59,46 @@ async function fetchJson(url,init={}){
   let payload=null;
   try{payload=await response.json()}catch{}
   return {response,payload};
+}
+
+async function fetchText(url){
+  const response=await fetch(url,{
+    headers:{
+      'cache-control':'no-store',
+      'user-agent':'Mozilla/5.0 (compatible; CHASS-NAR-Prefetch/3.4)',
+      'accept':'text/html,application/xhtml+xml',
+      'accept-language':'ja'
+    },
+    redirect:'follow'
+  });
+  if(!response.ok){
+    const error=new Error(`NAR race-list HTTP ${response.status}`);
+    error.status=response.status;
+    throw error;
+  }
+  return response.text();
+}
+
+export function extractRaceNosFromRaceListHtml(html=''){
+  const found=new Set();
+  const re=/k_raceNo=(\d{1,2})/gi;
+  let m;
+  while((m=re.exec(String(html)))){
+    const race=Number(m[1]);
+    if(Number.isInteger(race)&&race>=1&&race<=12)found.add(race);
+  }
+  return [...found].sort((a,b)=>a-b);
+}
+
+async function discoverMeetingRaceNos({date,code}){
+  const u=new URL(NAR_SP_BASE+'/KeibaWebSP/TodayRaceInfo/S_RaceList');
+  u.searchParams.set('k_babaCode',String(code));
+  u.searchParams.set('k_raceDate',narDate(date));
+  const html=await fetchText(u.toString());
+  return {
+    raceNos:extractRaceNosFromRaceListHtml(html),
+    sourceUrl:u.toString()
+  };
 }
 
 function summarizeTrack(track,code,payload,responseStatus){
@@ -67,6 +112,7 @@ function summarizeTrack(track,code,payload,responseStatus){
   return {
     track,code,active:Boolean(payload.active),ok:true,
     status:payload.status||'complete',
+    discoveredRaceCount:payload.discoveredRaceCount??0,
     probedRaceCount:payload.probedRaceCount??0,
     requestedRaceCount:payload.requestedRaceCount??0,
     successfulRaceCount:payload.successfulRaceCount??0,
@@ -84,10 +130,9 @@ function summarizeTrack(track,code,payload,responseStatus){
 export function aggregateTracks(results=[]){
   const active=results.filter(r=>r.active);
   const successful=active.filter(r=>r.ok&&r.failedRaceCount===0);
-  // IMPORTANT: track-child transport/routing failures may have active=false.
-  // They must still make the parent scheduler fail.
   const failed=results.filter(r=>!r.ok||(r.active&&r.failedRaceCount>0));
   const totals=active.reduce((a,r)=>{
+    a.discoveredRaceCount+=Number(r.discoveredRaceCount||0);
     a.probedRaceCount+=Number(r.probedRaceCount||0);
     a.requestedRaceCount+=Number(r.requestedRaceCount||0);
     a.successfulRaceCount+=Number(r.successfulRaceCount||0);
@@ -100,7 +145,7 @@ export function aggregateTracks(results=[]){
     a.cacheMisses+=Number(r.cacheMisses||0);
     return a;
   },{
-    probedRaceCount:0,requestedRaceCount:0,successfulRaceCount:0,skippedRaceCount:0,
+    discoveredRaceCount:0,probedRaceCount:0,requestedRaceCount:0,successfulRaceCount:0,skippedRaceCount:0,
     failedRaceCount:0,horseCount:0,resolvedHorseCount:0,unresolvedHorseCount:0,
     cacheHits:0,cacheMisses:0
   });
@@ -136,32 +181,35 @@ export function classifyTailNoRace(input=[]){
 async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   const startedAt=Date.now();
 
-  const probe=new URL(origin+'/api/nar/history/race');
-  probe.searchParams.set('code',code);
-  probe.searchParams.set('date',date);
-  probe.searchParams.set('race','1');
-  probe.searchParams.set('concurrency','1');
-  probe.searchParams.set('maxAgeHours',String(maxAgeHours));
-
-  let probeResult;
-  try{probeResult=await fetchJson(probe.toString());}
-  catch(error){
-    return json({ok:false,active:false,track,code,date,status:502,error:'meeting_probe_failed',detail:String(error)},502);
+  // v3.4: discover the actual meeting and exact race numbers from NAR RaceList.
+  // Future-day HorseMark/RaceMark data can lag behind RaceList, so history/race
+  // is not a reliable meeting detector on the previous evening.
+  let discovery;
+  try{
+    discovery=await discoverMeetingRaceNos({date,code});
+  }catch(error){
+    return json({
+      ok:false,active:false,track,code,date,status:502,
+      error:'meeting_race_list_failed',
+      detail:String(error),
+      durationMs:Date.now()-startedAt
+    },502);
   }
 
-  const p=probeResult.payload;
-  const active=Boolean(probeResult.response.ok&&p?.ok!==false&&Number(p?.horseCount||0)>0);
-  if(!active){
+  const raceNos=discovery.raceNos;
+  if(raceNos.length===0){
     return json({
       ok:true,active:false,track,code,date,status:'no-meeting',
-      probedRaceCount:0,requestedRaceCount:0,successfulRaceCount:0,skippedRaceCount:0,failedRaceCount:0,
+      discoverySource:'nar-race-list',
+      discoveryUrl:discovery.sourceUrl,
+      discoveredRaceCount:0,probedRaceCount:0,requestedRaceCount:0,
+      successfulRaceCount:0,skippedRaceCount:0,failedRaceCount:0,
       horseCount:0,resolvedHorseCount:0,unresolvedHorseCount:0,
       cacheHits:0,cacheMisses:0,durationMs:Date.now()-startedAt
     });
   }
 
-  const calls=[];
-  for(let race=1;race<=12;race++){
+  const calls=raceNos.map(race=>{
     const u=new URL(origin+DAY_PATH);
     u.searchParams.set('date',date);
     u.searchParams.set('track',track);
@@ -171,10 +219,10 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     u.searchParams.set('toRace',String(race));
     u.searchParams.set('horseConcurrency','4');
     u.searchParams.set('maxAgeHours',String(maxAgeHours));
-    calls.push(fetchJson(u.toString())
+    return fetchJson(u.toString())
       .then(({response,payload})=>({race,response,payload}))
-      .catch(error=>({race,error})));
-  }
+      .catch(error=>({race,error}));
+  });
 
   const settled=await Promise.all(calls);
   const rawRaces=settled.map(item=>{
@@ -185,6 +233,7 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     return {race:item.race,ok:false,status:item.response?.status||502,error:payload?.error||'chunk_payload_invalid'};
   }).sort((a,b)=>a.race-b.race);
 
+  // Defensive fallback only. RaceList already supplies the exact race numbers.
   const races=classifyTailNoRace(rawRaces);
   const successful=races.filter(r=>r.ok&&!r.skipped);
   const skipped=races.filter(r=>r.skipped);
@@ -203,9 +252,12 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   return json({
     ok:failed.length===0,
     active:true,
-    apiVersion:'nar-prefetch-scheduler-v3.2-track',
+    apiVersion:'nar-prefetch-scheduler-v3.4-track',
     track,code,date,
     status:failed.length===0?'complete':'partial',
+    discoverySource:'nar-race-list',
+    discoveryUrl:discovery.sourceUrl,
+    discoveredRaceCount:raceNos.length,
     probedRaceCount:races.length,
     requestedRaceCount:scheduled.length,
     successfulRaceCount:successful.length,
@@ -222,9 +274,6 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
 async function runAll(origin,date,{maxAgeHours=24}={}){
   const startedAt=Date.now();
   const requests=TRACKS.map(({track,code})=>{
-    // HOTFIX v3.2:
-    // Fan out through the already-proven AUTO_PATH instead of relying on a
-    // separate /prefetch-auto-track route, which returned 404 in production.
     const u=new URL(origin+AUTO_PATH);
     u.searchParams.set('mode','track');
     u.searchParams.set('date',date);
@@ -241,7 +290,7 @@ async function runAll(origin,date,{maxAgeHours=24}={}){
 
   return {
     ok:failed.length===0,
-    apiVersion:'nar-prefetch-scheduler-v3.2',
+    apiVersion:'nar-prefetch-scheduler-v3.4',
     purpose:'prefetch-tomorrow-nar-recent10-at-18-jst',
     date,
     checkedTrackCount:TRACKS.length,
@@ -260,7 +309,6 @@ export async function handleNarPrefetchSchedulerRequest(request,env){
   const u=new URL(request.url);
   const origin=originOf(env);
 
-  // Legacy route retained for manual/backward compatibility.
   if(u.pathname===TRACK_PATH){
     const date=parseDateOnly(u.searchParams.get('date'));
     const track=u.searchParams.get('track')||'';

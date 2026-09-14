@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {
   tomorrowJst,
+  extractRaceNosFromRaceListHtml,
   classifyTailNoRace,
   aggregateTracks
 } from '../src/nar/nar-prefetch-scheduler.mjs';
@@ -16,7 +17,28 @@ test('tomorrowJst resolves next Japanese calendar date',()=>{
   assert.equal(tomorrowJst(new Date('2026-12-31T10:00:00Z')),'2027-01-01');
 });
 
-test('scheduler fans out track children through proven prefetch-auto path',async()=>{
+test('RaceList parser discovers exact race numbers and dedupes links',()=>{
+  const html=`
+    <a href="/KeibaWebSP/TodayRaceInfo/S_DebaTable?k_babaCode=20&amp;k_raceDate=2026/09/15&amp;k_raceNo=1">1R</a>
+    <a href="/x?k_raceNo=2">2R</a>
+    <a href="/x?k_raceNo=2">2R duplicate</a>
+    <a href="/x?k_raceNo=11">11R</a>
+    <a href="/x?k_raceNo=12">12R</a>`;
+  assert.deepEqual(extractRaceNosFromRaceListHtml(html),[1,2,11,12]);
+});
+
+test('RaceList parser returns empty list for no-meeting page',()=>{
+  assert.deepEqual(extractRaceNosFromRaceListHtml('<html><body>本日の開催はありません</body></html>'),[]);
+});
+
+test('scheduler uses official NAR RaceList for meeting discovery',async()=>{
+  const src=await readFile(schedulerUrl,'utf8');
+  assert.match(src,/S_RaceList/);
+  assert.match(src,/extractRaceNosFromRaceListHtml/);
+  assert.match(src,/discoverySource:'nar-race-list'/);
+});
+
+test('scheduler fans out track children through prefetch-auto path',async()=>{
   const src=await readFile(schedulerUrl,'utf8');
   assert.match(src,/new URL\(origin\+AUTO_PATH\)/);
   assert.match(src,/searchParams\.set\('mode','track'\)/);
@@ -51,7 +73,9 @@ test('contiguous missing tail is classified as no-race',()=>{
   ];
   const out=classifyTailNoRace(input);
   assert.equal(out[10].skipped,true);
+  assert.equal(out[10].status,'no-race');
   assert.equal(out[11].skipped,true);
+  assert.equal(out[11].status,'no-race');
   assert.equal(out.filter(r=>!r.ok).length,0);
 });
 
@@ -84,7 +108,7 @@ test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedu
   assert.match(src,/baseWorker\.scheduled/);
 });
 
-test('wrangler preserves crons and enables public self-fetch routing',async()=>{
+test('wrangler keeps public self-fetch and all crons',async()=>{
   const raw=await readFile(wranglerUrl,'utf8');
   const cfg=JSON.parse(raw);
   assert.ok(cfg.triggers.crons.includes('*/5 * * * *'));
