@@ -1,9 +1,0 @@
-{
-  "patch_id": "batch8-result-parser-header-identity-v1",
-  "title": "Batch8 JRA result parser header identity fix",
-  "summary": "Parse date/track/race from the main JRA result header near 発走時刻 instead of scanning the whole page, avoiding navigation-menu false matches such as 中山 on a 阪神 page.",
-  "allowed_files": [
-    "jra-result-fetch.mjs"
-  ],
-  "allow_workflow_changes": false
-}
