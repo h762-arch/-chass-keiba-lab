@@ -84,13 +84,15 @@ test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedu
   assert.match(src,/baseWorker\.scheduled/);
 });
 
-test('wrangler preserves JRA five-minute cron and NAR evening crons',async()=>{
+test('wrangler preserves crons and enables public self-fetch routing',async()=>{
   const raw=await readFile(wranglerUrl,'utf8');
   const cfg=JSON.parse(raw);
   assert.ok(cfg.triggers.crons.includes('*/5 * * * *'));
   assert.ok(cfg.triggers.crons.includes('0 9 * * *'));
   assert.ok(cfg.triggers.crons.includes('30 9 * * *'));
   assert.equal(cfg.vars.ENABLE_NAR_PREFETCH,'true');
+  assert.ok(Array.isArray(cfg.compatibility_flags));
+  assert.ok(cfg.compatibility_flags.includes('global_fetch_strictly_public'));
 });
 
 test('manual auto-prefetch endpoint remains present',async()=>{
