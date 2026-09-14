@@ -1,4 +1,4 @@
-name: CHASS Workflow Consolidation v2.2
+name: CHASS Workflow Consolidation v2.3
 
 on:
   workflow_dispatch:
@@ -8,19 +8,22 @@ on:
         required: true
         default: "audit_only"
         type: choice
-        options: [audit_only, apply]
+        options:
+          - audit_only
+          - apply
 
 permissions:
   contents: write
 
 concurrency:
-  group: chass-workflow-consolidation-v22-${{ github.ref_name }}
+  group: chass-workflow-consolidation-v23-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   consolidate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
       - name: Checkout selected branch
         uses: actions/checkout@v5
@@ -28,134 +31,248 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
-      - name: Audit Batch 5 replacements and candidates
+      - name: Batch 6 audit
         id: audit
         shell: bash
         env:
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
+
           test "$MODE" = "audit_only" -o "$MODE" = "apply"
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
+          test "$(node -p "require('./package.json').version")" = "10.0.1"
 
+          # Never mutate main directly.
           if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
-            echo "::error::apply on main is forbidden."
+            echo "::error::apply on main is forbidden. Create/select a work branch first."
             exit 1
           fi
 
-          HEALTH=".github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml"
-          DIAG=".github/workflows/CHASS-JRA-Cloudflare-Diagnostic-v4.yml"
-          test -f "$HEALTH"
-          test -f "$DIAG"
+          # ------------------------------------------------------------
+          # Prove that the one-shot installers below have already been
+          # incorporated into the current implementation or superseded.
+          # ------------------------------------------------------------
 
-          grep -Fq "app_all" "$HEALTH"
-          grep -Fq "official_d1" "$HEALTH"
-          grep -Fq "drive_fallback" "$HEALTH"
-          grep -Fq "official_only=1" "$HEALTH"
-          grep -Fq "JRA_DRIVE_FRIDAY_BASE" "$HEALTH"
+          # Saved odds: current implementation is v1.9.9.2 overlay architecture.
+          test -f jra-odds-client.js
+          test -f jra-odds-fetch.mjs
+          test -f jra-official-cache.mjs
+          grep -Fq "CHASS-JRA-SAVED-ODDS-OVERLAY-FALLBACK-v1.9.9.2" jra-odds-client.js
+          grep -Fq "formatOddsTime" jra-odds-client.js
+          grep -Fq "readJraOfficialOddsCacheForViewer" jra-official-cache.mjs
+          grep -Fq "freshness: expired ? 'saved' : 'current'" jra-official-cache.mjs
 
-          grep -Fq "service_safe" "$DIAG"
-          grep -Fq "transport_1042" "$DIAG"
-          grep -Fq "Temporary diagnostic Worker only" "$DIAG"
+          # The newer v1.9.9.2 design intentionally keeps the strict odds
+          # service free of viewer-saved fallback. This proves the old
+          # v1.9.9 timestamp installer must not be re-applied.
+          if grep -Fq "readJraOfficialOddsCacheForViewer" jra-odds-fetch.mjs; then
+            echo "::error::Unexpected legacy viewer fallback found in strict odds service."
+            exit 1
+          fi
 
-          cat > /tmp/batch5.tsv <<'EOF'
-          .github/workflows/CHASS-JRA-All-Races-App-Smoke-v1.0.yml	CHASS-JRA-Health-Smoke-v1.0.yml
-          .github/workflows/CHASS-JRA-Official-D1-Only-Smoke-v1.0.yml	CHASS-JRA-Health-Smoke-v1.0.yml
-          .github/workflows/CHASS-JRA-Drive-Fallback-Real-Data-Smoke-v1.0.1.yml	CHASS-JRA-Health-Smoke-v1.0.yml
-          .github/workflows/CHASS-JRA-Cloudflare-1042-Diagnostic-v3.yml	CHASS-JRA-Cloudflare-Diagnostic-v4.yml
-          .github/workflows/CHASS-JRA-Cloudflare-Diagnostic-Safe.yml	CHASS-JRA-Cloudflare-Diagnostic-v4.yml
+          # Saved prediction restore is already installed in the app.
+          test -f app.js
+          grep -Fq "CHASS-JRA-SAVED-PREDICTION-RESTORE-v1.9.8" app.js
+          grep -Fq "function exactSavedJraRace" app.js
+          grep -Fq "function activateJraSelectionState" app.js
+
+          # Viewer Smart UI is already present in the live source files.
+          for f in viewer/index.html viewer/viewer-core.js viewer/viewer-app.js viewer/viewer.css; do
+            test -f "$f"
+          done
+          grep -Fq "viewer-track-quick" viewer/viewer-app.js
+          grep -Fq "viewer-track-chips" viewer/viewer-app.js
+          grep -Fq "viewer-race-nav" viewer/viewer-app.js
+          grep -Fq "viewer-availability-hint" viewer/viewer-app.js
+          grep -Fq "format: 'compact'" viewer/viewer-core.js
+
+          # NAR stabilization outputs/tests are already part of the repository,
+          # while the one-shot patch ZIP is no longer present.
+          test -f tests/meeting-aware-selector.test.mjs
+          test -f tests/result-normalization.test.mjs
+          grep -Fq "setMeetingSelectorState" tests/meeting-aware-selector.test.mjs
+          grep -Fq "normalizeResultFetchOutcome" tests/result-normalization.test.mjs
+          if find . -maxdepth 1 -type f -name '*NAR-STABILIZATION-PATCH-ONLY.zip' | grep -q .; then
+            echo "::error::NAR stabilization patch ZIP still exists at repository root."
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
+          # Batch 6: manual-only one-shot installers that are now obsolete.
+          # Archive only; never delete.
+          # ------------------------------------------------------------
+          cat > /tmp/chass-batch6.tsv <<'EOF'
+          .github/workflows/CHASS-JRA-Saved-Odds-Overlay-Fallback-v1.9.9.2_READY.yml	saved_odds_overlay_already_installed
+          .github/workflows/CHASS-JRA-Saved-Odds-Timestamp-Fallback-v1.9.9_READY.yml	superseded_by_saved_odds_overlay_v1.9.9.2
+          .github/workflows/CHASS-JRA-Saved-Prediction-Restore-v1.9.8_READY.yml	saved_prediction_restore_already_installed
+          .github/workflows/CHASS-Viewer-Smart-UI-v3.yml	viewer_smart_ui_already_installed
+          .github/workflows/apply-nar-stabilization.yml	nar_stabilization_already_integrated
           EOF
+
+          # Operational workflows that must remain active.
+          for KEEP in \
+            .github/workflows/CHASS-JRA-Cloudflare-Diagnostic-v4.yml \
+            .github/workflows/CHASS-JRA-D1-Retention-v1.0.yml \
+            .github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml \
+            .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml \
+            .github/workflows/CHASS-JRA-Odds-Cache-Diagnostic-Backfill-v1.8.7.yml \
+            .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml \
+            .github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml \
+            .github/workflows/CHASS-Maintenance-Runner-v1.2.yml \
+            .github/workflows/CHASS-Workflow-Consolidation-v2.0.yml \
+            .github/workflows/finalize-deploy.yml \
+            .github/workflows/publish-ai-snapshot.yml
+          do
+            test -f "$KEEP" || {
+              echo "::error::Critical retained workflow missing: $KEEP"
+              exit 1
+            }
+          done
 
           SAFE=0
           BLOCKED=0
           MISSING=0
-          : > /tmp/batch5-safe.tsv
-          : > /tmp/batch5-blocked.tsv
+          : > /tmp/chass-batch6-safe.tsv
+          : > /tmp/chass-batch6-blocked.tsv
 
-          while IFS=$'\t' read -r OLD NEW; do
-            [ -n "$OLD" ] || continue
-            if [ ! -f "$OLD" ]; then
-              printf 'MISSING\t%s\talready archived/absent\n' "$OLD" >> /tmp/batch5-blocked.tsv
-              MISSING=$((MISSING+1))
+          while IFS=$'\t' read -r FILE REASON; do
+            [ -n "$FILE" ] || continue
+
+            if [ ! -f "$FILE" ]; then
+              printf 'MISSING\t%s\talready archived/absent\n' "$FILE" >> /tmp/chass-batch6-blocked.tsv
+              MISSING=$((MISSING + 1))
               continue
             fi
 
-            AUTO="$(node --input-type=module - "$OLD" <<'NODE'
+            # Candidate must be manual-only. Automatically triggered workflows
+            # are never archived by this batch.
+            AUTO_TRIGGER="$(node --input-type=module - "$FILE" <<'NODE'
           import fs from 'node:fs';
-          const lines=fs.readFileSync(process.argv[2],'utf8').split(/\r?\n/);
-          let inOn=false; const auto=[];
-          for(const line of lines){
-            if(!inOn){if(/^(?:"on"|on):\s*$/.test(line))inOn=true;continue;}
-            if(/^[^\s#][^:]*:\s*/.test(line))break;
-            const m=/^ {2}([A-Za-z0-9_-]+):\s*/.exec(line);
-            if(m && ['schedule','push','pull_request','workflow_call','workflow_run','repository_dispatch'].includes(m[1])) auto.push(m[1]);
+
+          const file = process.argv[2];
+          const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+          let inOn = false;
+          const auto = [];
+
+          for (const line of lines) {
+            if (!inOn) {
+              if (/^(?:"on"|on):\s*$/.test(line)) inOn = true;
+              continue;
+            }
+            if (/^[^\s#][^:]*:\s*/.test(line)) break;
+            const m = /^ {2}([A-Za-z0-9_-]+):\s*/.exec(line);
+            if (!m) continue;
+            if (['schedule','push','pull_request','workflow_call','workflow_run','repository_dispatch'].includes(m[1])) {
+              auto.push(m[1]);
+            }
           }
+
           process.stdout.write(auto.join(','));
           NODE
             )"
-            if [ -n "$AUTO" ]; then
-              printf 'BLOCKED\t%s\tautomatic trigger: %s\n' "$OLD" "$AUTO" >> /tmp/batch5-blocked.tsv
-              BLOCKED=$((BLOCKED+1))
+
+            if [ -n "$AUTO_TRIGGER" ]; then
+              printf 'BLOCKED\t%s\tautomatic trigger: %s\n' "$FILE" "$AUTO_TRIGGER" >> /tmp/chass-batch6-blocked.tsv
+              BLOCKED=$((BLOCKED + 1))
               continue
             fi
 
-            printf '%s\t%s\n' "$OLD" "$NEW" >> /tmp/batch5-safe.tsv
-            SAFE=$((SAFE+1))
-          done < /tmp/batch5.tsv
+            if ! grep -Eq '^[[:space:]]+workflow_dispatch:' "$FILE"; then
+              printf 'BLOCKED\t%s\tworkflow_dispatch not found\n' "$FILE" >> /tmp/chass-batch6-blocked.tsv
+              BLOCKED=$((BLOCKED + 1))
+              continue
+            fi
+
+            printf '%s\t%s\n' "$FILE" "$REASON" >> /tmp/chass-batch6-safe.tsv
+            SAFE=$((SAFE + 1))
+          done < /tmp/chass-batch6.tsv
 
           echo "safe=$SAFE" >> "$GITHUB_OUTPUT"
           echo "blocked=$BLOCKED" >> "$GITHUB_OUTPUT"
           echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## CHASS Workflow Consolidation v2.2 — Batch 5 Audit"
+            echo "## CHASS Workflow Consolidation v2.3 — Batch 6 Audit"
             echo
-            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
             echo "- Mode: \`$MODE\`"
             echo "- Safe archive candidates: $SAFE"
             echo "- Blocked: $BLOCKED"
             echo "- Already absent: $MISSING"
             echo
-            echo "| Archive | Replacement |"
+            echo "### Safe candidates"
+            echo
+            echo "| Archive | Reason |"
             echo "|---|---|"
-            while IFS=$'\t' read -r OLD NEW; do echo "| \`$OLD\` | \`$NEW\` |"; done < /tmp/batch5-safe.tsv
+            while IFS=$'\t' read -r FILE REASON; do
+              [ -n "$FILE" ] || continue
+              echo "| \`$FILE\` | $REASON |"
+            done < /tmp/chass-batch6-safe.tsv
+            echo
+            if [ -s /tmp/chass-batch6-blocked.tsv ]; then
+              echo "### Blocked / absent"
+              echo
+              echo "| Status | File | Reason |"
+              echo "|---|---|---|"
+              while IFS=$'\t' read -r STATUS FILE REASON; do
+                echo "| $STATUS | \`$FILE\` | $REASON |"
+              done < /tmp/chass-batch6-blocked.tsv
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$MODE" = "apply" ] && [ "$BLOCKED" -ne 0 ]; then
-            echo "::error::Blocked candidates exist. Nothing moved."
+            echo "::error::Blocked candidates exist. Nothing will be moved."
             exit 1
           fi
 
-      - name: Archive superseded Batch 5 workflows
+      - name: Archive Batch 6 superseded workflows
         if: ${{ inputs.mode == 'apply' }}
         id: apply
         shell: bash
         run: |
           set -euo pipefail
+
           test "${{ steps.audit.outputs.safe }}" -eq 5
+          test "${{ steps.audit.outputs.blocked }}" -eq 0
 
           STAMP="$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)"
-          DEST="archive/workflows/superseded/${STAMP}-consolidation-batch5"
+          DEST="archive/workflows/superseded/${STAMP}-consolidation-batch6"
           mkdir -p "$DEST"
 
           MOVED=0
-          while IFS=$'\t' read -r OLD NEW; do
-            [ -f "$OLD" ] || continue
-            git mv "$OLD" "$DEST/$(basename "$OLD")"
-            MOVED=$((MOVED+1))
-          done < /tmp/batch5-safe.tsv
+          while IFS=$'\t' read -r FILE REASON; do
+            [ -n "$FILE" ] || continue
+            [ -f "$FILE" ] || continue
+            git mv "$FILE" "$DEST/$(basename "$FILE")"
+            MOVED=$((MOVED + 1))
+          done < /tmp/chass-batch6-safe.tsv
+
           test "$MOVED" -eq 5
 
-          test -f .github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml
-          test -f .github/workflows/CHASS-JRA-Cloudflare-Diagnostic-v4.yml
-          test -f .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml
-          test -f .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml
-          test -f .github/workflows/CHASS-JRA-D1-Retention-v1.0.yml
+          # Re-check current operational set after moves.
+          for KEEP in \
+            .github/workflows/CHASS-JRA-Cloudflare-Diagnostic-v4.yml \
+            .github/workflows/CHASS-JRA-D1-Retention-v1.0.yml \
+            .github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml \
+            .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml \
+            .github/workflows/CHASS-JRA-Odds-Cache-Diagnostic-Backfill-v1.8.7.yml \
+            .github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml \
+            .github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml \
+            .github/workflows/CHASS-Maintenance-Runner-v1.2.yml \
+            .github/workflows/CHASS-Workflow-Consolidation-v2.0.yml \
+            .github/workflows/finalize-deploy.yml \
+            .github/workflows/publish-ai-snapshot.yml
+          do
+            test -f "$KEEP"
+          done
+
+          git status --short
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore: unify JRA smoke and diagnostic workflows"
+          git commit -m "chore: archive superseded one-shot workflow batch6"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
           echo "moved=$MOVED" >> "$GITHUB_OUTPUT"
@@ -171,10 +288,11 @@ jobs:
             if [ "${{ inputs.mode }}" = "audit_only" ]; then
               echo "✅ Audit only — repository was not modified."
             else
-              echo "- Archived old workflows: ${{ steps.apply.outputs.moved || '0' }}"
+              echo "- Archived: ${{ steps.apply.outputs.moved || '0' }} workflow files"
               echo "- Archive: \`${{ steps.apply.outputs.archive || 'n/a' }}\`"
-              echo "- Replacements kept: 2"
-              echo "- Net active workflow reduction after merge: 3"
+              echo "- Deleted: 0"
               echo "- main direct push: NO"
+              echo "- Expected active workflows after merge: 11"
+              echo "- Next step: open a PR from this work branch to main."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
