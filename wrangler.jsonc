@@ -3,6 +3,9 @@
   "name": "chass-keiba-lab7",
   "main": "worker-entry.mjs",
   "compatibility_date": "2026-08-27",
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
   "vars": {
     "ENABLE_JRA_MEETING_DISCOVERY": "true",
     "ENABLE_JRA_AUTO_FETCH": "false",
