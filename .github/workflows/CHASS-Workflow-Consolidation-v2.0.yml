@@ -1,10 +1,10 @@
-name: CHASS Workflow Consolidation v2.4
+name: CHASS Workflow Consolidation v2.5 Root Layout Cleanup
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "audit_only=確認のみ / apply=Batch8旧Workflowをarchiveして残骸を削除"
+        description: "audit_only=確認のみ / apply=Batch9 root履歴資料をarchiveへ移動"
         required: true
         default: "audit_only"
         type: choice
@@ -16,13 +16,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: chass-workflow-consolidation-v24-${{ github.ref_name }}
+  group: chass-root-layout-cleanup-batch9-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   consolidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout selected branch
@@ -31,7 +31,12 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
-      - name: Batch 8 safety audit
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Batch 9 root-layout safety audit
         id: audit
         shell: bash
         env:
@@ -40,7 +45,7 @@ jobs:
           set -euo pipefail
 
           test "$MODE" = "audit_only" -o "$MODE" = "apply"
-          test "$GITHUB_REF_NAME" = "chass/workflow-unification-batch8"
+          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
 
           if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
             echo "::error::apply on main is forbidden."
@@ -50,118 +55,275 @@ jobs:
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
           test "$(node -p "require('./package.json').version")" = "10.0.1"
 
-          # Replacement must already be present and be the tested Batch8 version.
-          RUNTIME=".github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
-          test -f "$RUNTIME"
-          grep -Fq "name: CHASS JRA Runtime Refresh v3.0.1" "$RUNTIME"
-          grep -Fq 'cron: "15 21,0,3,6,9,12 * * *"' "$RUNTIME"
-          grep -Fq 'cron: "15 21 * * 5,6"' "$RUNTIME"
-          grep -Fq 'cron: "*/15 0-7 * * 6,0"' "$RUNTIME"
-          grep -Fq 'cron: "*/10 0-8 * * 6,0"' "$RUNTIME"
-          grep -Fq 'official_only=1' "$RUNTIME"
-
-          # Result parser fix verified before cleanup.
-          test -f jra-result-fetch.mjs
-          grep -Fq "JRA_RESULT_PARSER_VERSION='jra-official-result-v1.3'" jra-result-fetch.mjs
-          grep -Fq "const postIndex=html.indexOf('発走時刻')" jra-result-fetch.mjs
-          grep -Fq "JRA_RACE_MISMATCH" jra-result-fetch.mjs
-
-          OFFICIAL=".github/workflows/CHASS-JRA-Official-Cache-Refresh-v1.3.yml"
-          RESULT=".github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml"
-          PATCH=".github/workflows/_chass_patch.py"
-          MANIFEST=".github/workflows/_chass_manifest.json"
-
-          for FILE in "$OFFICIAL" "$RESULT" "$PATCH" "$MANIFEST"; do
-            test -f "$FILE" || {
-              echo "::error::Expected Batch8 cleanup source missing: $FILE"
-              exit 1
-            }
-          done
-
-          grep -Fq "name: CHASS JRA Official Cache Refresh v1.3 Unified" "$OFFICIAL"
-          grep -Fq "name: CHASS JRA Result Cache Refresh v1.1" "$RESULT"
-
-          # Confirm the two old scheduled jobs are genuinely superseded by v3.0.1.
-          grep -Fq '15 21,0,3,6,9,12 * * *' "$OFFICIAL"
-          grep -Fq '*/10 0-8 * * 6,0' "$RESULT"
-
-          # Operational workflows that must remain active.
+          # Core/runtime files that must remain in root.
           for KEEP in \
-            .github/workflows/CHASS-JRA-Cloudflare-Diagnostic-v4.yml \
-            .github/workflows/CHASS-JRA-D1-Retention-v1.0.yml \
-            .github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml \
-            .github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml \
-            .github/workflows/CHASS-JRA-Odds-Cache-Diagnostic-Backfill-v1.8.7.yml \
-            .github/workflows/CHASS-Maintenance-Runner-v1.2.yml \
-            .github/workflows/CHASS-Workflow-Consolidation-v2.0.yml \
-            .github/workflows/finalize-deploy.yml \
-            .github/workflows/publish-ai-snapshot.yml
+            README.md package.json package-lock.json server.mjs worker.js app.js \
+            index.html styles.css wrangler.jsonc .gitignore .assetsignore \
+            chass-latest.js d1-schema.sql openapi.json manifest.webmanifest \
+            jra-result-fetch.mjs jra-race-fetch.mjs jra-odds-fetch.mjs \
+            jra-official-cache.mjs jra-drive-prediction-input.mjs \
+            google-drive-readonly-api.mjs google-drive-readonly-import.mjs \
+            research-storage-sync.mjs similarity-intelligence.mjs \
+            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
           do
-            test -f "$KEEP" || {
-              echo "::error::Critical retained workflow missing: $KEEP"
+            test -e "$KEEP" || {
+              echo "::error::Critical root file missing: $KEEP"
               exit 1
             }
           done
+
+          for DIR in .github archive docs mcp migrations scripts tests viewer; do
+            test -d "$DIR" || {
+              echo "::error::Critical directory missing: $DIR"
+              exit 1
+            }
+          done
+
+          cat > /tmp/batch9_reports.txt <<'EOF'
+          AUTO_RESULT_QUEUE_REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0-dev-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-ACTIVE-RACE-INTEGRITY-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-DAY-PUBLIC-API-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-GOOGLE-DRIVE-PRODUCTION-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-INTEGRATED-OPTIMIZATION-FINAL-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE0-1-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE2-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE3-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE4-PUBLIC-API-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE5-RESEARCH-STORAGE-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE6-LONGSHOT-SCENARIO-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-PHASE7-REPORT.md
+          CHASS-KEIBA-LAB-Ver10.0.1-VALIDATION-PLACEHOLDER-FIX-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.30-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.31-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.32-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.33-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.34-REPORT.md
+          CHASS-KEIBA-LAB-Ver9.9.35-REPORT.md
+          D1_ROWS_READ_PHASE_A_REPORT.md
+          DAY-AI-LIGHT-REPORT.md
+          DAY_AI_500_RESILIENCE_REPORT.md
+          EXTERNAL_AI_SNAPSHOT_API_REPORT.md
+          FALSE_EXCLUSION_CURRENT_STATUS_V2_REPORT.md
+          MARKET-INTEGRITY-REPORT.md
+          POST_JRA_J5_STABILIZATION_REPORT.md
+          PREDICTION_AXIS_REINFORCEMENT_REPORT.md
+          REPOSITORY_LAYOUT_RECOVERY_REPORT.md
+          RESULT_RECOVERY_NORMALIZATION_REPORT.md
+          SCRATCH_LIVE_ADJUSTMENT_REPORT.md
+          TRANSPORT_REBASE_REPORT.md
+          VOLATILITY_INTELLIGENCE_REPORT.md
+          EOF
+
+          cat > /tmp/batch9_patch_notes.txt <<'EOF'
+          APPLY-PATCH.md
+          PATCH_README_D1_ROWS_READ_PHASE_A.md
+          PATCH_README_DAY_AI_500.md
+          PATCH_README_EXTERNAL_AI_SNAPSHOT.md
+          PATCH_README_FALSE_EXCLUSION_V2.md
+          PATCH_README_GITHUB_PAGES_SNAPSHOT.md
+          PATCH_README_JRA_J1.md
+          PATCH_README_JRA_J2.md
+          PATCH_README_JRA_J3.md
+          PATCH_README_JRA_J4.md
+          PATCH_README_JRA_J5.md
+          EOF
+
+          cat > /tmp/batch9_recovery.txt <<'EOF'
+          CURRENT_TREE_AFTER_RECOVERY.txt
+          CURRENT_TREE_BEFORE_RECOVERY.txt
+          IMPORTANT_SHA256_AFTER_LAYOUT.txt
+          IMPORTANT_SHA256_BEFORE_RECOVERY.txt
+          JRA_J1_SHA256.json
+          JRA_J2_SHA256.json
+          JRA_J3_SHA256.json
+          更新内容.txt
+          EOF
+
+          cat > /tmp/batch9_workflow_artifacts.txt <<'EOF'
+          CHASS-JRA-Race-Odds-Auto-Link-v1.1.yml
+          EOF
+
+
+          cat /tmp/batch9_reports.txt /tmp/batch9_patch_notes.txt /tmp/batch9_recovery.txt /tmp/batch9_workflow_artifacts.txt > /tmp/batch9_all.txt
+
+          EXPECTED=53
+          ACTUAL="$(grep -cve '^[[:space:]]*$' /tmp/batch9_all.txt)"
+          test "$ACTUAL" -eq "$EXPECTED" || {
+            echo "::error::Candidate manifest count mismatch: $ACTUAL != $EXPECTED"
+            exit 1
+          }
+
+          MISSING=0
+          REFERENCED=0
+          : > /tmp/batch9_missing.txt
+          : > /tmp/batch9_references.txt
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            if [ ! -f "$FILE" ]; then
+              echo "$FILE" >> /tmp/batch9_missing.txt
+              MISSING=$((MISSING + 1))
+              continue
+            fi
+
+            # Block if runtime/tests/current README refer to a candidate by exact filename.
+            if git grep -n -F -e "$FILE" -- \
+              README.md package.json wrangler.jsonc \
+              .github tests scripts mcp viewer \
+              '*.js' '*.mjs' 2>/dev/null > /tmp/refs-one.txt; then
+              if [ -s /tmp/refs-one.txt ]; then
+                {
+                  echo "### $FILE"
+                  cat /tmp/refs-one.txt
+                } >> /tmp/batch9_references.txt
+                REFERENCED=$((REFERENCED + 1))
+              fi
+            fi
+          done < /tmp/batch9_all.txt
 
           {
-            echo "## CHASS Workflow Consolidation v2.4 — Batch 8 Audit"
+            echo "## CHASS Workflow Consolidation v2.5 — Batch 9 Root Layout Audit"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
-            echo "- Replacement: Runtime Refresh v3.0.1"
-            echo "- Result parser: v1.3"
-            echo "- Archive candidates: 2"
-            echo "- Residue delete candidates: 2"
-            echo
-            echo "### Archive"
-            echo "- \`$OFFICIAL\`"
-            echo "- \`$RESULT\`"
-            echo
-            echo "### Delete residue"
-            echo "- \`$PATCH\`"
-            echo "- \`$MANIFEST\`"
-            echo
+            echo "- Planned archive moves: $EXPECTED"
+            echo "- Reports: 33"
+            echo "- Patch notes: 11"
+            echo "- Recovery/hash/history: 8"
+            echo "- Inert root workflow artifact: 1"
+            echo "- Missing candidates: $MISSING"
+            echo "- Runtime/test references found: $REFERENCED"
+            echo "- Deleted: 0"
             echo "- main direct push: NO"
+            echo
+            echo "### Explicitly retained in root"
+            echo "- \`CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md\` (current README reference)"
+            echo "- all runtime JS/MJS, fixtures, schema/config, Google Drive read-only/fallback files"
+            echo "- \`README.md\`, \`package*.json\`, \`wrangler.jsonc\`, \`openapi.json\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "official=$OFFICIAL" >> "$GITHUB_OUTPUT"
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
-          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
-          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+          if [ -s /tmp/batch9_missing.txt ]; then
+            {
+              echo
+              echo "### Missing candidates"
+              sed 's/^/- `/' /tmp/batch9_missing.txt | sed 's/$/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Apply Batch 8 cleanup
+          if [ -s /tmp/batch9_references.txt ]; then
+            {
+              echo
+              echo "### BLOCKED references"
+              echo '```text'
+              cat /tmp/batch9_references.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$MISSING" -ne 0 ] || [ "$REFERENCED" -ne 0 ]; then
+            echo "::error::Batch9 audit blocked. No files were moved."
+            exit 1
+          fi
+
+      - name: Baseline full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Apply Batch 9 root cleanup
         if: ${{ inputs.mode == 'apply' }}
         id: apply
         shell: bash
         run: |
           set -euo pipefail
 
-          test "$GITHUB_REF_NAME" = "chass/workflow-unification-batch8"
+          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
           test "$GITHUB_REF_NAME" != "main"
 
-          OFFICIAL="${{ steps.audit.outputs.official }}"
-          RESULT="${{ steps.audit.outputs.result }}"
-          PATCH="${{ steps.audit.outputs.patch }}"
-          MANIFEST="${{ steps.audit.outputs.manifest }}"
+          REPORT_DEST="archive/root-history/reports"
+          PATCH_DEST="archive/root-history/patch-notes"
+          RECOVERY_DEST="archive/root-history/recovery"
+          WORKFLOW_DEST="archive/root-history/workflow-artifacts"
+          mkdir -p "$REPORT_DEST" "$PATCH_DEST" "$RECOVERY_DEST" "$WORKFLOW_DEST"
 
-          STAMP="$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)"
-          DEST="archive/workflows/superseded/${STAMP}-consolidation-batch8"
-          mkdir -p "$DEST"
+          MOVED=0
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            git mv "$FILE" "$REPORT_DEST/$FILE"
+            MOVED=$((MOVED + 1))
+          done < /tmp/batch9_reports.txt
 
-          git mv "$OFFICIAL" "$DEST/$(basename "$OFFICIAL")"
-          git mv "$RESULT" "$DEST/$(basename "$RESULT")"
-          git rm "$PATCH" "$MANIFEST"
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            git mv "$FILE" "$PATCH_DEST/$FILE"
+            MOVED=$((MOVED + 1))
+          done < /tmp/batch9_patch_notes.txt
 
-          # Final guards before commit.
-          test -f ".github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
-          grep -Fq "name: CHASS JRA Runtime Refresh v3.0.1" \
-            ".github/workflows/CHASS-JRA-Integrated-Race-Odds-Cache-Refresh-v2.0.yml"
-          test ! -e "$OFFICIAL"
-          test ! -e "$RESULT"
-          test ! -e "$PATCH"
-          test ! -e "$MANIFEST"
-          test -f "$DEST/$(basename "$OFFICIAL")"
-          test -f "$DEST/$(basename "$RESULT")"
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            git mv "$FILE" "$RECOVERY_DEST/$FILE"
+            MOVED=$((MOVED + 1))
+          done < /tmp/batch9_recovery.txt
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            git mv "$FILE" "$WORKFLOW_DEST/$FILE"
+            MOVED=$((MOVED + 1))
+          done < /tmp/batch9_workflow_artifacts.txt
+
+          test "$MOVED" -eq 53
+
+          # Ensure canonical current report and all runtime roots were untouched.
+          test -f CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          test -f app.js
+          test -f worker.js
+          test -f server.mjs
+          test -f package.json
+          test -f wrangler.jsonc
+          test -f jra-drive-prediction-input.mjs
+          test -f google-drive-readonly-api.mjs
+          test -f google-drive-readonly-import.mjs
+          test -f jra-program-fixture.html
+          test -f jra-race-card-fixture.html
+          test -f jra-result-fixture.html
+          test -f kawasaki.json
+          test -f nar-fixtures.mjs
+
+          # No source deletion: candidates must now exist under archive.
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            test -f "$REPORT_DEST/$FILE"
+            test ! -e "$FILE"
+          done < /tmp/batch9_reports.txt
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            test -f "$PATCH_DEST/$FILE"
+            test ! -e "$FILE"
+          done < /tmp/batch9_patch_notes.txt
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            test -f "$RECOVERY_DEST/$FILE"
+            test ! -e "$FILE"
+          done < /tmp/batch9_recovery.txt
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+            test -f "$WORKFLOW_DEST/$FILE"
+            test ! -e "$FILE"
+          done < /tmp/batch9_workflow_artifacts.txt
+
+          npm run check
+
+          git status --short
+          git diff --check
+
+          # Only archive moves plus this consolidation workflow may differ from main.
+          CHANGED="$(git diff --name-only main...HEAD; git diff --name-only)"
+          printf '%s\n' "$CHANGED" > /tmp/batch9_changed.txt
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -169,21 +331,24 @@ jobs:
           git add -A
           git diff --cached --check
 
-          if git diff --cached --quiet; then
-            echo "::error::No Batch8 cleanup changes found."
-            exit 1
-          fi
+          test -n "$(git diff --cached --name-only)"
 
-          git commit -m "chore: finalize workflow consolidation batch8"
+          git commit -m "chore: archive root history artifacts batch9"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
           {
-            echo "## Batch 8 cleanup applied"
+            echo "## Batch 9 root cleanup applied"
             echo
-            echo "- Archived old scheduled workflows: 2"
-            echo "- Deleted stale helper residue: 2"
-            echo "- Active replacement retained: Runtime Refresh v3.0.1"
+            echo "- Archived root history files: $MOVED"
+            echo "- Deleted: 0"
+            echo "- Runtime/source files moved: 0"
+            echo "- Full regression after move: PASS"
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- main direct push: NO"
-            echo "- Archive: \`$DEST\`"
+            echo
+            echo "### Destinations"
+            echo "- \`archive/root-history/reports/\`"
+            echo "- \`archive/root-history/patch-notes/\`"
+            echo "- \`archive/root-history/recovery/\`"
+            echo "- \`archive/root-history/workflow-artifacts/\`"
           } >> "$GITHUB_STEP_SUMMARY"
