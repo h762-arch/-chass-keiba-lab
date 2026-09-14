@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {parseJraWinOdds,createJraOddsService,JRA_ODDS_PARSER_VERSION} from '../jra-odds-fetch.mjs';
 import worker from '../worker.js';
-const html=fs.readFileSync(new URL('../jra-race-card-fixture.html',import.meta.url),'utf8');
+const html=fs.readFileSync(new URL('./fixtures/jra/jra-race-card-fixture.html',import.meta.url),'utf8');
 const query={date:'2026-09-05',track:'中山',race:5},token='pw01dde0106202604010520260905/16';
 const listing=`<html><body><a href="/JRADB/accessD.html?CNAME=${token}">5R</a></body></html>`;
 const request=()=>new Request('https://app.test/api/jra/odds?date=2026-09-05&track='+encodeURIComponent('中山')+'&race=5');

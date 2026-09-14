@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {fetchOfficialNarResult,parseRaceMeta,runScheduledResultQueue} from '../worker.js';
-import {resultHtml} from '../nar-fixtures.mjs';
+import {resultHtml} from './fixtures/nar/nar-fixtures.mjs';
 
 async function loadCore(fetchImpl=async()=>new Response(JSON.stringify({ok:true}),{status:200})){
   const source=await readFile(new URL('../app.js',import.meta.url),'utf8'),memory=new Map(),window={__CHASS_TEST__:true};

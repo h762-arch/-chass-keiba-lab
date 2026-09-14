@@ -1,10 +1,10 @@
-name: CHASS Workflow Consolidation v2.5.2 Root Layout Cleanup
+name: CHASS Workflow Consolidation v2.6.2 Root Slim Phase A
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "audit_only=確認のみ / apply=Batch9 root履歴資料をarchiveへ移動"
+        description: "audit_only=確認 / apply=fixtures+docsを正式配置へ移動"
         required: true
         default: "audit_only"
         type: choice
@@ -16,11 +16,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: chass-root-layout-cleanup-batch9-${{ github.ref_name }}
+  group: chass-root-slim-batch10-phase-a-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  consolidate:
+  phase_a:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -43,7 +43,7 @@ jobs:
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix mcp
 
-      - name: Batch 9 root-layout safety audit
+      - name: Phase A safety preflight
         id: audit
         shell: bash
         env:
@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
 
           test "$MODE" = "audit_only" -o "$MODE" = "apply"
-          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
 
           if [ "$MODE" = "apply" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
             echo "::error::apply on main is forbidden."
@@ -62,181 +62,63 @@ jobs:
           test "$(node -p "require('./package.json').name")" = "chass-keiba-lab"
           test "$(node -p "require('./package.json').version")" = "10.0.1"
 
-          # Core/runtime files that must remain in root.
-          for KEEP in \
-            README.md package.json package-lock.json server.mjs worker.js app.js \
-            index.html styles.css wrangler.jsonc .gitignore .assetsignore \
-            chass-latest.js d1-schema.sql openapi.json manifest.webmanifest \
-            jra-result-fetch.mjs jra-race-fetch.mjs jra-odds-fetch.mjs \
-            jra-official-cache.mjs jra-drive-prediction-input.mjs \
-            google-drive-readonly-api.mjs google-drive-readonly-import.mjs \
-            research-storage-sync.mjs similarity-intelligence.mjs \
+          # Phase A is deliberately limited to fixtures and two documents.
+          for FILE in \
+            jra-program-fixture.html \
+            jra-race-card-fixture.html \
+            jra-result-fixture.html \
+            nar-fixtures.mjs \
+            AI_BRIDGE.md \
             CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
           do
-            test -e "$KEEP" || {
-              echo "::error::Critical root file missing: $KEEP"
+            test -f "$FILE" || {
+              echo "::error::Phase A source missing: $FILE"
               exit 1
             }
           done
 
-          for DIR in .github archive docs mcp migrations scripts tests viewer; do
-            test -d "$DIR" || {
-              echo "::error::Critical directory missing: $DIR"
-              exit 1
-            }
+          # Exact current references observed in Batch10 audit.
+          grep -Fq "../jra-program-fixture.html" tests/jra-j1.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j2.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j3.test.mjs
+          grep -Fq "../jra-race-card-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "../jra-result-fixture.html" tests/jra-j4.test.mjs
+
+          grep -Fq "nar-fixtures.mjs" regression.test.mjs
+          grep -Fq "nar-fixtures.mjs" tests/auto-result-queue.test.mjs
+          grep -Fq "nar-fixtures.mjs" README.md
+          grep -Fq "CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
+
+          # kawasaki.json is a published/snapshot-style root artifact, not a test fixture.
+          # Keep it in root until its external/static role is separately proven safe to move.
+          test -f kawasaki.json
+
+          # Runtime/config surfaces remain untouched in Phase A.
+          for KEEP in \
+            app.js worker.js server.mjs package.json package-lock.json wrangler.jsonc \
+            jra-race-fetch.mjs jra-odds-fetch.mjs jra-result-fetch.mjs \
+            google-drive-readonly-api.mjs google-drive-readonly-import.mjs
+          do
+            test -f "$KEEP"
           done
-
-          cat > /tmp/batch9_reports.txt <<'EOF'
-          AUTO_RESULT_QUEUE_REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0-dev-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-ACTIVE-RACE-INTEGRITY-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-DAY-PUBLIC-API-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-GOOGLE-DRIVE-PRODUCTION-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-INTEGRATED-OPTIMIZATION-FINAL-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE0-1-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE2-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE3-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE4-PUBLIC-API-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE5-RESEARCH-STORAGE-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE6-LONGSHOT-SCENARIO-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-PHASE7-REPORT.md
-          CHASS-KEIBA-LAB-Ver10.0.1-VALIDATION-PLACEHOLDER-FIX-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.30-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.31-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.32-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.33-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.34-REPORT.md
-          CHASS-KEIBA-LAB-Ver9.9.35-REPORT.md
-          D1_ROWS_READ_PHASE_A_REPORT.md
-          DAY-AI-LIGHT-REPORT.md
-          DAY_AI_500_RESILIENCE_REPORT.md
-          EXTERNAL_AI_SNAPSHOT_API_REPORT.md
-          FALSE_EXCLUSION_CURRENT_STATUS_V2_REPORT.md
-          MARKET-INTEGRITY-REPORT.md
-          POST_JRA_J5_STABILIZATION_REPORT.md
-          PREDICTION_AXIS_REINFORCEMENT_REPORT.md
-          REPOSITORY_LAYOUT_RECOVERY_REPORT.md
-          RESULT_RECOVERY_NORMALIZATION_REPORT.md
-          SCRATCH_LIVE_ADJUSTMENT_REPORT.md
-          TRANSPORT_REBASE_REPORT.md
-          VOLATILITY_INTELLIGENCE_REPORT.md
-          EOF
-
-          cat > /tmp/batch9_patch_notes.txt <<'EOF'
-          APPLY-PATCH.md
-          PATCH_README_D1_ROWS_READ_PHASE_A.md
-          PATCH_README_DAY_AI_500.md
-          PATCH_README_EXTERNAL_AI_SNAPSHOT.md
-          PATCH_README_FALSE_EXCLUSION_V2.md
-          PATCH_README_GITHUB_PAGES_SNAPSHOT.md
-          PATCH_README_JRA_J1.md
-          PATCH_README_JRA_J2.md
-          PATCH_README_JRA_J3.md
-          PATCH_README_JRA_J4.md
-          PATCH_README_JRA_J5.md
-          EOF
-
-          cat > /tmp/batch9_recovery.txt <<'EOF'
-          CURRENT_TREE_AFTER_RECOVERY.txt
-          CURRENT_TREE_BEFORE_RECOVERY.txt
-          IMPORTANT_SHA256_AFTER_LAYOUT.txt
-          IMPORTANT_SHA256_BEFORE_RECOVERY.txt
-          JRA_J1_SHA256.json
-          JRA_J2_SHA256.json
-          JRA_J3_SHA256.json
-          更新内容.txt
-          EOF
-
-          cat > /tmp/batch9_workflow_artifacts.txt <<'EOF'
-          CHASS-JRA-Race-Odds-Auto-Link-v1.1.yml
-          EOF
-
-
-          cat /tmp/batch9_reports.txt /tmp/batch9_patch_notes.txt /tmp/batch9_recovery.txt /tmp/batch9_workflow_artifacts.txt > /tmp/batch9_all.txt
-
-          EXPECTED=53
-          ACTUAL="$(grep -cve '^[[:space:]]*$' /tmp/batch9_all.txt)"
-          test "$ACTUAL" -eq "$EXPECTED" || {
-            echo "::error::Candidate manifest count mismatch: $ACTUAL != $EXPECTED"
-            exit 1
-          }
-
-          MISSING=0
-          REFERENCED=0
-          : > /tmp/batch9_missing.txt
-          : > /tmp/batch9_references.txt
-
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            if [ ! -f "$FILE" ]; then
-              echo "$FILE" >> /tmp/batch9_missing.txt
-              MISSING=$((MISSING + 1))
-              continue
-            fi
-
-            # Block if runtime/tests/current README refer to a candidate by exact filename.
-            # Exclude this audit workflow itself, because its candidate manifest necessarily
-            # contains every filename and would otherwise self-trigger the safety guard.
-            : > /tmp/refs-raw.txt
-            : > /tmp/refs-one.txt
-            git grep -n -F -e "$FILE" -- \
-              README.md package.json wrangler.jsonc \
-              .github tests scripts mcp viewer \
-              '*.js' '*.mjs' 2>/dev/null > /tmp/refs-raw.txt || true
-            grep -v -F '.github/workflows/CHASS-Workflow-Consolidation-v2.0.yml:' \
-              /tmp/refs-raw.txt > /tmp/refs-one.txt || true
-            if [ -s /tmp/refs-one.txt ]; then
-              {
-                echo "### $FILE"
-                cat /tmp/refs-one.txt
-              } >> /tmp/batch9_references.txt
-              REFERENCED=$((REFERENCED + 1))
-            fi
-          done < /tmp/batch9_all.txt
 
           {
-            echo "## CHASS Workflow Consolidation v2.5.2 — Batch 9 Root Layout Audit"
+            echo "## CHASS Root Slim Batch10 — Phase A Audit v2.6.2"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
-            echo "- Planned archive moves: $EXPECTED"
-            echo "- Reports: 33"
-            echo "- Patch notes: 11"
-            echo "- Recovery/hash/history: 8"
-            echo "- Inert root workflow artifact: 1"
-            echo "- Missing candidates: $MISSING"
-            echo "- Runtime/test references found: $REFERENCED"
-            echo "- Deleted: 0"
-            echo "- main direct push: NO"
+            echo "- Fixture moves: **4**"
+            echo "- Document moves: **2**"
+            echo "- Runtime/source module moves: **0**"
+            echo "- Delete operations: **0**"
+            echo "- main direct push: **NO**"
             echo
-            echo "### Explicitly retained in root"
-            echo "- \`CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md\` (current README reference)"
-            echo "- all runtime JS/MJS, fixtures, schema/config, Google Drive read-only/fallback files"
-            echo "- \`README.md\`, \`package*.json\`, \`wrangler.jsonc\`, \`openapi.json\`"
+            echo "### Planned destinations"
+            echo "- \`tests/fixtures/jra/\`"
+            echo "- \`tests/fixtures/nar/\`"
+            echo "- \`docs/\`"
+            echo "- \`docs/reports/\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -s /tmp/batch9_missing.txt ]; then
-            {
-              echo
-              echo "### Missing candidates"
-              sed 's/^/- `/' /tmp/batch9_missing.txt | sed 's/$/`/'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ -s /tmp/batch9_references.txt ]; then
-            {
-              echo
-              echo "### BLOCKED references"
-              echo '```text'
-              cat /tmp/batch9_references.txt
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ "$MISSING" -ne 0 ] || [ "$REFERENCED" -ne 0 ]; then
-            echo "::error::Batch9 audit blocked. No files were moved."
-            exit 1
-          fi
 
       - name: Baseline full regression
         shell: bash
@@ -244,98 +126,116 @@ jobs:
           set -euo pipefail
           npm run check
 
-      - name: Apply Batch 9 root cleanup
+      - name: Apply Phase A moves and reference updates
         if: ${{ inputs.mode == 'apply' }}
-        id: apply
         shell: bash
         run: |
           set -euo pipefail
-
-          test "$GITHUB_REF_NAME" = "chass/root-layout-cleanup-batch9"
+          test "$GITHUB_REF_NAME" = "chass/root-slim-batch10"
           test "$GITHUB_REF_NAME" != "main"
 
-          REPORT_DEST="archive/root-history/reports"
-          PATCH_DEST="archive/root-history/patch-notes"
-          RECOVERY_DEST="archive/root-history/recovery"
-          WORKFLOW_DEST="archive/root-history/workflow-artifacts"
-          mkdir -p "$REPORT_DEST" "$PATCH_DEST" "$RECOVERY_DEST" "$WORKFLOW_DEST"
+          mkdir -p tests/fixtures/jra tests/fixtures/nar docs/reports
 
-          MOVED=0
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$REPORT_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_reports.txt
+          git mv jra-program-fixture.html tests/fixtures/jra/jra-program-fixture.html
+          git mv jra-race-card-fixture.html tests/fixtures/jra/jra-race-card-fixture.html
+          git mv jra-result-fixture.html tests/fixtures/jra/jra-result-fixture.html
+          git mv nar-fixtures.mjs tests/fixtures/nar/nar-fixtures.mjs
+          git mv AI_BRIDGE.md docs/AI_BRIDGE.md
+          git mv CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$PATCH_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_patch_notes.txt
+          python3 - <<'PY'
+          from pathlib import Path
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$RECOVERY_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_recovery.txt
+          replacements = {
+              "tests/jra-j1.test.mjs": [
+                  ("../jra-program-fixture.html",
+                   "./fixtures/jra/jra-program-fixture.html"),
+              ],
+              "tests/jra-j2.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+              ],
+              "tests/jra-j3.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+              ],
+              "tests/jra-j4.test.mjs": [
+                  ("../jra-race-card-fixture.html",
+                   "./fixtures/jra/jra-race-card-fixture.html"),
+                  ("../jra-result-fixture.html",
+                   "./fixtures/jra/jra-result-fixture.html"),
+              ],
+              "regression.test.mjs": [
+                  ("./nar-fixtures.mjs",
+                   "./tests/fixtures/nar/nar-fixtures.mjs"),
+              ],
+              "tests/auto-result-queue.test.mjs": [
+                  ("../nar-fixtures.mjs",
+                   "./fixtures/nar/nar-fixtures.mjs"),
+              ],
+              "README.md": [
+                  ("CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+                   "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md"),
+                  ("nar-fixtures.mjs",
+                   "tests/fixtures/nar/nar-fixtures.mjs"),
+              ],
+          }
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            git mv "$FILE" "$WORKFLOW_DEST/$FILE"
-            MOVED=$((MOVED + 1))
-          done < /tmp/batch9_workflow_artifacts.txt
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text(encoding="utf-8")
+              original = text
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f"Expected reference missing before replacement: {filename}: {old}")
+                  text = text.replace(old, new)
+              if text == original:
+                  raise SystemExit(f"No update made: {filename}")
+              path.write_text(text, encoding="utf-8")
+          PY
 
-          test "$MOVED" -eq 53
+          # Destination guards.
+          test -f tests/fixtures/jra/jra-program-fixture.html
+          test -f tests/fixtures/jra/jra-race-card-fixture.html
+          test -f tests/fixtures/jra/jra-result-fixture.html
+          test -f tests/fixtures/nar/nar-fixtures.mjs
+          test -f docs/AI_BRIDGE.md
+          test -f docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
 
-          # Ensure canonical current report and all runtime roots were untouched.
-          test -f CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
-          test -f app.js
-          test -f worker.js
-          test -f server.mjs
-          test -f package.json
-          test -f wrangler.jsonc
-          test -f jra-drive-prediction-input.mjs
-          test -f google-drive-readonly-api.mjs
-          test -f google-drive-readonly-import.mjs
-          test -f jra-program-fixture.html
-          test -f jra-race-card-fixture.html
-          test -f jra-result-fixture.html
-          test -f kawasaki.json
-          test -f nar-fixtures.mjs
+          # Old root paths must be gone.
+          for OLD in \
+            jra-program-fixture.html \
+            jra-race-card-fixture.html \
+            jra-result-fixture.html \
+            nar-fixtures.mjs \
+            AI_BRIDGE.md \
+            CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md
+          do
+            test ! -e "$OLD"
+          done
 
-          # No source deletion: candidates must now exist under archive.
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$REPORT_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_reports.txt
+          # Updated references must point at new locations.
+          grep -Fq "./fixtures/jra/jra-program-fixture.html" tests/jra-j1.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j2.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j3.test.mjs
+          grep -Fq "./fixtures/jra/jra-race-card-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "./fixtures/jra/jra-result-fixture.html" tests/jra-j4.test.mjs
+          grep -Fq "./tests/fixtures/nar/nar-fixtures.mjs" regression.test.mjs
+          grep -Fq "./fixtures/nar/nar-fixtures.mjs" tests/auto-result-queue.test.mjs
+          grep -Fq "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md" README.md
 
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$PATCH_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_patch_notes.txt
-
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$RECOVERY_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_recovery.txt
-
-          while IFS= read -r FILE; do
-            [ -n "$FILE" ] || continue
-            test -f "$WORKFLOW_DEST/$FILE"
-            test ! -e "$FILE"
-          done < /tmp/batch9_workflow_artifacts.txt
-
+      - name: Post-move full regression
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
           npm run check
 
-          git status --short
-          git diff --check
-
-          # Only archive moves plus this consolidation workflow may differ from main.
-          CHANGED="$(git diff --name-only main...HEAD; git diff --name-only)"
-          printf '%s\n' "$CHANGED" > /tmp/batch9_changed.txt
+      - name: Commit Phase A
+        if: ${{ inputs.mode == 'apply' }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -343,24 +243,52 @@ jobs:
           git add -A
           git diff --cached --check
 
+          # Allow only the seven moves, their known reference updates,
+          # and the consolidation workflow itself.
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          allowed_exact = {
+              ".github/workflows/CHASS-Workflow-Consolidation-v2.0.yml",
+              "README.md",
+              "regression.test.mjs",
+              "tests/jra-j1.test.mjs",
+              "tests/jra-j2.test.mjs",
+              "tests/jra-j3.test.mjs",
+              "tests/jra-j4.test.mjs",
+              "tests/auto-result-queue.test.mjs",
+              "tests/fixtures/jra/jra-program-fixture.html",
+              "tests/fixtures/jra/jra-race-card-fixture.html",
+              "tests/fixtures/jra/jra-result-fixture.html",
+              "tests/fixtures/nar/nar-fixtures.mjs",
+              "docs/AI_BRIDGE.md",
+              "docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md",
+          }
+
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--cached", "--name-only"], text=True
+              ).splitlines()
+          )
+          unexpected = sorted(changed - allowed_exact)
+          if unexpected:
+              raise SystemExit("Unexpected changed files: " + ", ".join(unexpected))
+          PY
+
           test -n "$(git diff --cached --name-only)"
 
-          git commit -m "chore: archive root history artifacts batch9"
+          git commit -m "refactor: organize fixtures and docs batch10 phase a"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
           {
-            echo "## Batch 9 root cleanup applied"
+            echo "## CHASS Root Slim Batch10 — Phase A Applied v2.6.2"
             echo
-            echo "- Archived root history files: $MOVED"
-            echo "- Deleted: 0"
-            echo "- Runtime/source files moved: 0"
-            echo "- Full regression after move: PASS"
+            echo "- Fixtures moved: **4**"
+            echo "- Documents moved: **2**"
+            echo "- Runtime/source modules moved: **0**"
+            echo "- Deleted: **0**"
+            echo "- Full regression after move: **PASS**"
             echo "- Branch: \`$GITHUB_REF_NAME\`"
-            echo "- main direct push: NO"
-            echo
-            echo "### Destinations"
-            echo "- \`archive/root-history/reports/\`"
-            echo "- \`archive/root-history/patch-notes/\`"
-            echo "- \`archive/root-history/recovery/\`"
-            echo "- \`archive/root-history/workflow-artifacts/\`"
+            echo "- main direct push: **NO**"
           } >> "$GITHUB_STEP_SUMMARY"
