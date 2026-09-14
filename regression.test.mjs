@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import worker,{parseResult,parseRaceCard,parseTanFuku,parseRuns,predictTimeFromRuns,fetchNarResultWithRetry,fetchNarResultResilient,fetchNarRaceSources,buildNarRacePayload,buildNarRacePayloadStable,minimalJson,VERSION,getResearchDb,ensureD1Schema,d1RecordRows,d1SyncDescriptor,readD1Manifest,readD1ResearchDataset,saveD1Record} from './worker.js';
-import {resultHtml,raceCardHtml,oddsHtml,debaTableText} from './nar-fixtures.mjs';
+import {resultHtml,raceCardHtml,oddsHtml,debaTableText} from './tests/fixtures/nar/nar-fixtures.mjs';
 
 async function loadCore(fetchImpl){const source=await readFile(new URL('./app.js',import.meta.url),'utf8'),memory=new Map(),window={__CHASS_TEST__:true};const context={window,console,Date,JSON,Math,Number,String,Array,Object,Map,Set,RegExp,TextEncoder,AbortController,setTimeout,clearTimeout,parseFloat,fetch:fetchImpl,localStorage:{getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,v)}};vm.createContext(context);vm.runInContext(source,context,{filename:'app.js'});return window.CHASS_TEST}
 const horses=()=>[

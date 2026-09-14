@@ -37,7 +37,7 @@ Ver.10.0.1ではJRA Phase 1を初回較正し、勝率・2着率・3着内率を
 - 手動結果／公式結果の出所を明示
 - 結果保存後に印、穴馬、危険評価、TIME MAEを自動検証
 
-詳細は `CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md` を参照してください。
+詳細は `docs/reports/CHASS-KEIBA-LAB-Ver10.0.1-REPORT.md` を参照してください。
 
 Ver.9.9.35の地方競馬機能を維持し、同一アプリへJRA Integration Phase 1を追加した開発版です。
 
@@ -308,7 +308,7 @@ npm test
 npm run check
 ```
 
-`regression.test.mjs`が`nar-fixtures.mjs`の固定fixtureを読み込み、Snapshot固定、TOP3・正式複勝判定、95%信頼区間、診断分類、較正、TIME、NAR Parser、旧データ移行を検証します。
+`regression.test.mjs`が`tests/fixtures/nar/nar-fixtures.mjs`の固定fixtureを読み込み、Snapshot固定、TOP3・正式複勝判定、95%信頼区間、診断分類、較正、TIME、NAR Parser、旧データ移行を検証します。
 
 ## Phase 5: Research Archive / Index（既定OFF）
 

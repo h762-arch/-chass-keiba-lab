@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {createJraMeetingService,parseJraProgram,sourceUrl,FEATURE_DEFAULTS,JRA_TRACKS} from '../jra-meeting-discovery.mjs';
 import worker from '../worker.js';
-const html=fs.readFileSync(new URL('../jra-program-fixture.html',import.meta.url),'utf8');
+const html=fs.readFileSync(new URL('./fixtures/jra/jra-program-fixture.html',import.meta.url),'utf8');
 const date='2026-09-12',request=()=>new Request('https://app.test/api/jra/meeting?date='+date);
 const payload=()=>({ok:true,organization:'JRA',date,meetings:parseJraProgram(html,date)});
 test('official DOM excerpt: two meetings, twelve races each, other eight planned non-meetings',()=>{const entries=parseJraProgram(html,date);assert.deepEqual(entries.filter(x=>x.status==='meeting').map(x=>[x.track,x.raceNumbers.length]),[['中山',12],['阪神',12]]);assert.equal(entries.filter(x=>x.status==='non_meeting').length,8);assert.ok(entries.every(x=>x.organization==='JRA'));});
