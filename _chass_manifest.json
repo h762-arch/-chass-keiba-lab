@@ -1,0 +1,9 @@
+{
+  "patch_id": "batch8-result-parser-posttime-scope-v3",
+  "title": "Batch8 JRA result parser post-time scoped race identity fix",
+  "summary": "Keep date/track identity anchored to the JRA main header and scope race-number extraction to the raw HTML after 発走時刻. This avoids picking race-selector navigation images before the main race header while preserving JRA_RACE_MISMATCH fail-closed validation.",
+  "allowed_files": [
+    "jra-result-fetch.mjs"
+  ],
+  "allow_workflow_changes": false
+}
