@@ -1,20 +1,21 @@
-name: Publish CHASS AI snapshot
+name: Publish CHASS AI snapshot v2.0 PR Safe
 
 on:
   workflow_dispatch:
     inputs:
       date:
-        description: Snapshot date (YYYY-MM-DD)
+        description: "Snapshot date (YYYY-MM-DD)"
         required: true
         type: string
       track_slug:
-        description: ASCII track slug (for example kawasaki)
+        description: "ASCII track slug (for example kawasaki)"
         required: true
         default: kawasaki
         type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: chass-ai-snapshot-${{ inputs.date }}-${{ inputs.track_slug }}
@@ -23,34 +24,160 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 10
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout main baseline
+        uses: actions/checkout@v5
         with:
-          node-version: 20
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Validate inputs and create work branch
+        id: branch
+        shell: bash
+        env:
+          SNAPSHOT_DATE: ${{ inputs.date }}
+          TRACK_SLUG: ${{ inputs.track_slug }}
+        run: |
+          set -euo pipefail
+
+          printf '%s' "$SNAPSHOT_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          printf '%s' "$TRACK_SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{1,39}$'
+
+          BRANCH="chass/ai-snapshot-${SNAPSHOT_DATE}-${TRACK_SLUG}-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Fetch and validate snapshot
         env:
           SNAPSHOT_DATE: ${{ inputs.date }}
           TRACK_SLUG: ${{ inputs.track_slug }}
         run: |
+          set -euo pipefail
           test -f publish-ai-snapshot.mjs
           node publish-ai-snapshot.mjs
           touch docs/.nojekyll
 
-      - name: Commit changed snapshot
+      - name: Validate snapshot-only changes
+        id: diff
+        shell: bash
         env:
           SNAPSHOT_DATE: ${{ inputs.date }}
           TRACK_SLUG: ${{ inputs.track_slug }}
         run: |
-          git add "docs/ai-snapshot/${SNAPSHOT_DATE}/${TRACK_SLUG}.json" docs/.nojekyll
+          set -euo pipefail
+
+          TARGET="docs/ai-snapshot/${SNAPSHOT_DATE}/${TRACK_SLUG}.json"
+          test -f "$TARGET"
+
+          git add "$TARGET" docs/.nojekyll
+
           if git diff --cached --quiet; then
-            echo "Snapshot is unchanged."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          git diff --cached --check
+          git diff --cached --name-only > /tmp/snapshot-changed.txt
+
+          while IFS= read -r FILE; do
+            case "$FILE" in
+              "$TARGET"|docs/.nojekyll) ;;
+              *)
+                echo "::error::Unexpected snapshot change: $FILE"
+                exit 20
+                ;;
+            esac
+          done < /tmp/snapshot-changed.txt
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push work branch
+        if: ${{ steps.diff.outputs.changed == 'true' }}
+        id: commit
+        shell: bash
+        env:
+          SNAPSHOT_DATE: ${{ inputs.date }}
+          TRACK_SLUG: ${{ inputs.track_slug }}
+        run: |
+          set -euo pipefail
+
+          test "${{ steps.branch.outputs.name }}" != "main"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "snapshot: ${SNAPSHOT_DATE} ${TRACK_SLUG}"
-          git push
+          SHA="$(git rev-parse HEAD)"
+          git push origin "HEAD:${{ steps.branch.outputs.name }}"
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Open pull request
+        if: ${{ steps.diff.outputs.changed == 'true' }}
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_DATE: ${{ inputs.date }}
+          TRACK_SLUG: ${{ inputs.track_slug }}
+        run: |
+          set -euo pipefail
+
+          BODY=/tmp/snapshot-pr.md
+          cat > "$BODY" <<EOF
+          ## CHASS AI snapshot
+
+          - Date: \`${SNAPSHOT_DATE}\`
+          - Track: \`${TRACK_SLUG}\`
+          - Commit: \`${{ steps.commit.outputs.sha }}\`
+
+          ### Safety
+          - main direct push: NO
+          - snapshot-only allowlist: PASS
+          - production deploy: NOT PERFORMED
+          EOF
+
+          set +e
+          URL="$(gh pr create \
+            --base main \
+            --head "${{ steps.branch.outputs.name }}" \
+            --title "CHASS AI snapshot: ${SNAPSHOT_DATE} ${TRACK_SLUG}" \
+            --body-file "$BODY" 2>/tmp/snapshot-pr-error.log)"
+          RC=$?
+          set -e
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::Automatic PR creation was not permitted."
+            cat /tmp/snapshot-pr-error.log || true
+            echo "url=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Publish CHASS AI snapshot v2.0 PR Safe"
+            echo
+            echo "- Date: \`${{ inputs.date }}\`"
+            echo "- Track: \`${{ inputs.track_slug }}\`"
+            echo "- Changes: ${{ steps.diff.outputs.changed || 'unknown' }}"
+            echo "- Work branch: \`${{ steps.branch.outputs.name || 'not_created' }}\`"
+            echo "- main direct push: NO"
+            if [ -n "${{ steps.pr.outputs.url }}" ]; then
+              echo "- PR: ${{ steps.pr.outputs.url }}"
+            elif [ "${{ steps.diff.outputs.changed }}" = "true" ]; then
+              echo "- PR: automatic creation unavailable; open the branch PR manually."
+            else
+              echo "- PR: not needed (snapshot unchanged)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
