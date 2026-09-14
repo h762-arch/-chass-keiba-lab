@@ -56,6 +56,15 @@ test('track-child routing failure is not mistaken for no meeting',()=>{
   assert.equal(out.failed[0].track,'大井');
 });
 
+test('all child routing failures force parent failure accounting',()=>{
+  const input=Array.from({length:15},(_,i)=>({
+    track:`T${i+1}`,code:String(i+1),active:false,ok:false,status:404,error:'prefetch_track_failed'
+  }));
+  const out=aggregateTracks(input);
+  assert.equal(out.failed.length,15);
+  assert.equal(out.successful.length,0);
+});
+
 test('contiguous missing tail is classified as no-race',()=>{
   const input=[
     ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
@@ -64,8 +73,32 @@ test('contiguous missing tail is classified as no-race',()=>{
   ];
   const out=classifyTailNoRace(input);
   assert.equal(out[10].skipped,true);
+  assert.equal(out[10].status,'no-race');
   assert.equal(out[11].skipped,true);
+  assert.equal(out[11].status,'no-race');
   assert.equal(out.filter(r=>!r.ok).length,0);
+});
+
+test('a missing race before a later success is not hidden',()=>{
+  const input=[
+    ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
+    {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
+    {race:12,ok:true,status:'complete'}
+  ];
+  const out=classifyTailNoRace(input);
+  assert.equal(out[10].ok,false);
+  assert.equal(out[10].skipped,undefined);
+});
+
+test('a non-missing tail error remains a failure',()=>{
+  const input=[
+    ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
+    {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
+    {race:12,ok:false,status:500,error:'upstream_timeout'}
+  ];
+  const out=classifyTailNoRace(input);
+  assert.equal(out[10].ok,false);
+  assert.equal(out[11].ok,false);
 });
 
 test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedule',async()=>{
@@ -82,5 +115,11 @@ test('wrangler keeps public self-fetch and all crons',async()=>{
   assert.ok(cfg.triggers.crons.includes('0 9 * * *'));
   assert.ok(cfg.triggers.crons.includes('30 9 * * *'));
   assert.equal(cfg.vars.ENABLE_NAR_PREFETCH,'true');
+  assert.ok(Array.isArray(cfg.compatibility_flags));
   assert.ok(cfg.compatibility_flags.includes('global_fetch_strictly_public'));
+});
+
+test('manual auto-prefetch endpoint remains present',async()=>{
+  const src=await readFile(workerUrl,'utf8');
+  assert.match(src,/\/api\/nar\/history\/prefetch-auto/);
 });
