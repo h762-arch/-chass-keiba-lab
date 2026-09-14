@@ -178,6 +178,15 @@ export function classifyTailNoRace(input=[]){
   return races;
 }
 
+export function enforceDiscoveredRaceHistory(input=[]){
+  return (Array.isArray(input)?input:[]).map(r=>{
+    if(r?.ok&&Number(r?.horseCount||0)<=0){
+      return {...r,ok:false,status:502,error:'discovered_race_has_no_horse_history'};
+    }
+    return {...r};
+  });
+}
+
 async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   const startedAt=Date.now();
 
@@ -233,12 +242,13 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     return {race:item.race,ok:false,status:item.response?.status||502,error:payload?.error||'chunk_payload_invalid'};
   }).sort((a,b)=>a.race-b.race);
 
-  // Defensive fallback only. RaceList already supplies the exact race numbers.
-  const races=classifyTailNoRace(rawRaces);
-  const successful=races.filter(r=>r.ok&&!r.skipped);
-  const skipped=races.filter(r=>r.skipped);
+  // RaceList already proved these races exist. Never reinterpret a lineage/data
+  // failure as a non-existent race. Also reject false-success payloads with 0 horses.
+  const races=enforceDiscoveredRaceHistory(rawRaces);
+  const successful=races.filter(r=>r.ok);
+  const skipped=[];
   const failed=races.filter(r=>!r.ok);
-  const scheduled=races.filter(r=>!r.skipped);
+  const scheduled=races;
 
   const totals=successful.reduce((a,r)=>{
     a.horseCount+=Number(r.horseCount||0);
@@ -252,7 +262,7 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   return json({
     ok:failed.length===0,
     active:true,
-    apiVersion:'nar-prefetch-scheduler-v3.4-track',
+    apiVersion:'nar-prefetch-scheduler-v3.5-track',
     track,code,date,
     status:failed.length===0?'complete':'partial',
     discoverySource:'nar-race-list',
@@ -290,8 +300,8 @@ async function runAll(origin,date,{maxAgeHours=24}={}){
 
   return {
     ok:failed.length===0,
-    apiVersion:'nar-prefetch-scheduler-v3.4',
-    purpose:'prefetch-tomorrow-nar-recent10-at-18-jst',
+    apiVersion:'nar-prefetch-scheduler-v3.5',
+    purpose:'prefetch-tomorrow-nar-recent10-at-20-jst',
     date,
     checkedTrackCount:TRACKS.length,
     activeTrackCount:active.length,
