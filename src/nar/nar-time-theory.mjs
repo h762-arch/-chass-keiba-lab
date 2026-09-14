@@ -1,6 +1,7 @@
 export const NAR_TIME_THEORY_VERSION='nar-time-theory-v1';
 
 function finite(value){
+  if(value==null||value===''||typeof value==='boolean')return null;
   const n=Number(value);
   return Number.isFinite(n)?n:null;
 }
@@ -57,7 +58,7 @@ function surfaceSet(rows=[]){
 
 export function normalizeNarTimeRun(run,{targetDistance,targetTrack}={}){
   const distance=finite(run?.distance),timeSec=finite(run?.timeSec),target=finite(targetDistance);
-  if(distance==null||timeSec==null||target==null||distance<=0||timeSec<=0)return null;
+  if(distance==null||timeSec==null||target==null||distance<=0||timeSec<=0||target<=0)return null;
   const diff=Math.abs(distance-target),limit=nearDistanceLimit(target);
   const exact=diff===0;
   if(!exact&&(limit<=0||diff>limit))return null;
