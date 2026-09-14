@@ -3,6 +3,7 @@ import {handleNarRecentHistoryRequest} from './src/nar/nar-recent-history.mjs';
 import {handleNarDayPrefetchRequest} from './src/nar/nar-day-prefetch.mjs';
 import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/nar/nar-prefetch-scheduler.mjs';
 import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summarizeNarTimeTheoryRace} from './src/nar/nar-time-theory.mjs';
+import {NAR_RACE_CONTEXT_POLICY_VERSION,classifyAbilityAvailability} from './src/nar/nar-race-context-policy.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -109,7 +110,11 @@ async function buildNarRaceContext(request,env,ctx){
     return json({ok:false,error:'history_payload_invalid_json',status:502},502);
   }
 
-  if(!abilityResponse.ok||abilityPayload?.ok===false){
+  const abilityPolicy=classifyAbilityAvailability({
+    status:abilityResponse.status,
+    payload:abilityPayload
+  });
+  if(!abilityPolicy.available&&!abilityPolicy.historyOnly){
     return json({
       ok:false,
       error:'ability_api_failed',
@@ -130,7 +135,7 @@ async function buildNarRaceContext(request,env,ctx){
     },historyResponse.status||502);
   }
 
-  const abilityHorses=Array.isArray(abilityPayload?.horses)?abilityPayload.horses:[];
+  const abilityHorses=abilityPolicy.available&&Array.isArray(abilityPayload?.horses)?abilityPayload.horses:[];
   const historyHorses=Array.isArray(historyPayload?.horses)?historyPayload.horses:[];
   const abilityByNo=new Map(abilityHorses.map(h=>[Number(h.horseNumber),h]));
   const historyByNo=new Map(historyHorses.map(h=>[Number(h.horseNo),h]));
@@ -182,18 +187,23 @@ async function buildNarRaceContext(request,env,ctx){
     track,
     code:String(code),
     race:Number(race),
-    raceName:abilityPayload?.raceName??null,
+    raceName:abilityPolicy.available?(abilityPayload?.raceName??null):null,
     targetDistance:historyPayload?.targetDistance??null,
     status:historyPayload?.status||'unknown',
+    contextMode:abilityPolicy.historyOnly?'history_only':'ability_plus_history',
+    abilityAvailable:abilityPolicy.available,
+    abilityFallbackReason:abilityPolicy.reason,
+    abilityError:abilityPolicy.historyOnly?(abilityPayload?.error??null):null,
+    raceContextPolicyVersion:NAR_RACE_CONTEXT_POLICY_VERSION,
     horseCount:rankedHorses.length,
     resolvedHorseCount:historyPayload?.resolvedHorseCount??historyHorses.length,
     unresolvedHorseCount:historyPayload?.unresolvedHorseCount??unresolved.length,
     cacheHits:historyPayload?.cacheHits??null,
     cacheMisses:historyPayload?.cacheMisses??null,
     concurrency:historyPayload?.concurrency??null,
-    probabilityValid:abilityPayload?.validation?.probabilityValid??null,
-    predictionGeneratedAt:abilityPayload?.predictionGeneratedAt??null,
-    raceDataUpdatedAt:abilityPayload?.raceDataUpdatedAt??null,
+    probabilityValid:abilityPolicy.available?(abilityPayload?.validation?.probabilityValid??null):null,
+    predictionGeneratedAt:abilityPolicy.available?(abilityPayload?.predictionGeneratedAt??null):null,
+    raceDataUpdatedAt:abilityPolicy.available?(abilityPayload?.raceDataUpdatedAt??null):null,
     timeTheoryVersion:NAR_TIME_THEORY_VERSION,
     timeTheory,
     horses:rankedHorses,
