@@ -1,4 +1,4 @@
-name: CHASS Workflow Consolidation v2.5.1 Root Layout Cleanup
+name: CHASS Workflow Consolidation v2.5.2 Root Layout Cleanup
 
 on:
   workflow_dispatch:
@@ -35,6 +35,13 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
+
+      - name: Install root and MCP dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm ci --ignore-scripts --prefix mcp
 
       - name: Batch 9 root-layout safety audit
         id: audit
@@ -188,7 +195,7 @@ jobs:
           done < /tmp/batch9_all.txt
 
           {
-            echo "## CHASS Workflow Consolidation v2.5.1 — Batch 9 Root Layout Audit"
+            echo "## CHASS Workflow Consolidation v2.5.2 — Batch 9 Root Layout Audit"
             echo
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Mode: \`$MODE\`"
