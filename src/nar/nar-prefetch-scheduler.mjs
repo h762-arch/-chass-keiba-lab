@@ -9,6 +9,11 @@ const TRACKS=[
 const AUTO_PATH='/api/nar/history/prefetch-auto';
 const TRACK_PATH='/api/nar/history/prefetch-auto-track';
 const DAY_PATH='/api/nar/history/prefetch-day';
+const MISSING_RACE_ERRORS=new Set([
+  'horse_lineage_refs_not_found',
+  'race_card_not_found',
+  'race_not_found'
+]);
 
 function json(data,status=200){
   return new Response(JSON.stringify(data),{
@@ -62,8 +67,10 @@ function summarizeTrack(track,code,payload,responseStatus){
   return {
     track,code,active:Boolean(payload.active),ok:true,
     status:payload.status||'complete',
+    probedRaceCount:payload.probedRaceCount??0,
     requestedRaceCount:payload.requestedRaceCount??0,
     successfulRaceCount:payload.successfulRaceCount??0,
+    skippedRaceCount:payload.skippedRaceCount??0,
     failedRaceCount:payload.failedRaceCount??0,
     horseCount:payload.horseCount??0,
     resolvedHorseCount:payload.resolvedHorseCount??0,
@@ -79,8 +86,10 @@ function aggregateTracks(results=[]){
   const successful=active.filter(r=>r.ok&&r.failedRaceCount===0);
   const failed=active.filter(r=>!r.ok||r.failedRaceCount>0);
   const totals=active.reduce((a,r)=>{
+    a.probedRaceCount+=Number(r.probedRaceCount||0);
     a.requestedRaceCount+=Number(r.requestedRaceCount||0);
     a.successfulRaceCount+=Number(r.successfulRaceCount||0);
+    a.skippedRaceCount+=Number(r.skippedRaceCount||0);
     a.failedRaceCount+=Number(r.failedRaceCount||0);
     a.horseCount+=Number(r.horseCount||0);
     a.resolvedHorseCount+=Number(r.resolvedHorseCount||0);
@@ -88,15 +97,50 @@ function aggregateTracks(results=[]){
     a.cacheHits+=Number(r.cacheHits||0);
     a.cacheMisses+=Number(r.cacheMisses||0);
     return a;
-  },{requestedRaceCount:0,successfulRaceCount:0,failedRaceCount:0,horseCount:0,resolvedHorseCount:0,unresolvedHorseCount:0,cacheHits:0,cacheMisses:0});
+  },{
+    probedRaceCount:0,requestedRaceCount:0,successfulRaceCount:0,skippedRaceCount:0,
+    failedRaceCount:0,horseCount:0,resolvedHorseCount:0,unresolvedHorseCount:0,
+    cacheHits:0,cacheMisses:0
+  });
   return {active,successful,failed,totals};
+}
+
+function missingRaceError(value){
+  return MISSING_RACE_ERRORS.has(String(value||''));
+}
+
+/*
+ * Only a contiguous missing-race tail after the last successful race may be
+ * classified as no-race. Any gap before a later successful race, or any
+ * different error at the tail, remains a real failure. This avoids hiding
+ * genuine fetch errors while allowing 10R/11R meetings to finish cleanly.
+ */
+export function classifyTailNoRace(input=[]){
+  const races=(Array.isArray(input)?input:[]).map(r=>({...r})).sort((a,b)=>a.race-b.race);
+  const lastSuccessful=races.reduce((max,r)=>r?.ok&&!r?.skipped?Math.max(max,Number(r.race)||0):max,0);
+
+  for(let i=races.length-1;i>=0;i--){
+    const r=races[i];
+    const raceNo=Number(r?.race)||0;
+    if(raceNo<=lastSuccessful)break;
+    if(r?.ok&&!r?.skipped)break;
+    if(!missingRaceError(r?.error))break;
+    races[i]={
+      ...r,
+      ok:true,
+      skipped:true,
+      status:'no-race',
+      originalStatus:r?.status??null,
+      error:null
+    };
+  }
+  return races;
 }
 
 async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   const startedAt=Date.now();
 
-  // Cheap active-meeting detection: try race 1 through the existing history endpoint.
-  // If the venue is inactive, no 12-race fan-out is created.
+  // Meeting detection via existing race-1 history endpoint.
   const probe=new URL(origin+'/api/nar/history/race');
   probe.searchParams.set('code',code);
   probe.searchParams.set('date',date);
@@ -115,14 +159,13 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   if(!active){
     return json({
       ok:true,active:false,track,code,date,status:'no-meeting',
-      requestedRaceCount:0,successfulRaceCount:0,failedRaceCount:0,
+      probedRaceCount:0,requestedRaceCount:0,successfulRaceCount:0,skippedRaceCount:0,failedRaceCount:0,
       horseCount:0,resolvedHorseCount:0,unresolvedHorseCount:0,
       cacheHits:0,cacheMisses:0,durationMs:Date.now()-startedAt
     });
   }
 
-  // One race per child Worker invocation. This is intentionally conservative:
-  // it fully resets Cloudflare's per-invocation subrequest budget for every race.
+  // One race per child Worker invocation resets the subrequest budget per race.
   const calls=[];
   for(let race=1;race<=12;race++){
     const u=new URL(origin+DAY_PATH);
@@ -134,11 +177,13 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     u.searchParams.set('toRace',String(race));
     u.searchParams.set('horseConcurrency','4');
     u.searchParams.set('maxAgeHours',String(maxAgeHours));
-    calls.push(fetchJson(u.toString()).then(({response,payload})=>({race,response,payload})).catch(error=>({race,error})));
+    calls.push(fetchJson(u.toString())
+      .then(({response,payload})=>({race,response,payload}))
+      .catch(error=>({race,error})));
   }
 
   const settled=await Promise.all(calls);
-  const races=settled.map(item=>{
+  const rawRaces=settled.map(item=>{
     if(item.error)return {race:item.race,ok:false,status:502,error:String(item.error)};
     const payload=item.payload;
     const r=Array.isArray(payload?.races)?payload.races[0]:null;
@@ -146,8 +191,12 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     return {race:item.race,ok:false,status:item.response?.status||502,error:payload?.error||'chunk_payload_invalid'};
   }).sort((a,b)=>a.race-b.race);
 
-  const successful=races.filter(r=>r.ok);
+  const races=classifyTailNoRace(rawRaces);
+  const successful=races.filter(r=>r.ok&&!r.skipped);
+  const skipped=races.filter(r=>r.skipped);
   const failed=races.filter(r=>!r.ok);
+  const scheduled=races.filter(r=>!r.skipped);
+
   const totals=successful.reduce((a,r)=>{
     a.horseCount+=Number(r.horseCount||0);
     a.resolvedHorseCount+=Number(r.resolvedHorseCount||0);
@@ -160,18 +209,20 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   return json({
     ok:failed.length===0,
     active:true,
-    apiVersion:'nar-prefetch-scheduler-v3-track',
+    apiVersion:'nar-prefetch-scheduler-v3.1-track',
     track,code,date,
     status:failed.length===0?'complete':'partial',
-    requestedRaceCount:12,
+    probedRaceCount:races.length,
+    requestedRaceCount:scheduled.length,
     successfulRaceCount:successful.length,
+    skippedRaceCount:skipped.length,
     failedRaceCount:failed.length,
     allResolved:failed.length===0&&totals.unresolvedHorseCount===0,
     ...totals,
     races,
     durationMs:Date.now()-startedAt,
     generatedAt:new Date().toISOString()
-  },failed.length===12?502:200);
+  },failed.length===scheduled.length&&scheduled.length>0?502:200);
 }
 
 async function runAll(origin,date,{maxAgeHours=24}={}){
@@ -187,14 +238,13 @@ async function runAll(origin,date,{maxAgeHours=24}={}){
       .catch(error=>({track,code,active:false,ok:false,status:502,error:String(error)}));
   });
 
-  // Parent invocation makes only 15 child requests. Each child track invocation
-  // owns its own subrequest budget and fans out to 12 one-race invocations.
+  // Parent invocation makes 15 child requests; each track child owns its budget.
   const tracks=await Promise.all(requests);
   const {active,successful,failed,totals}=aggregateTracks(tracks);
 
   return {
     ok:failed.length===0,
-    apiVersion:'nar-prefetch-scheduler-v3',
+    apiVersion:'nar-prefetch-scheduler-v3.1',
     purpose:'prefetch-tomorrow-nar-recent10-at-18-jst',
     date,
     checkedTrackCount:TRACKS.length,
