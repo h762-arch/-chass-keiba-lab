@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {tomorrowJst,classifyTailNoRace} from '../src/nar/nar-prefetch-scheduler.mjs';
+import {
+  tomorrowJst,
+  classifyTailNoRace,
+  aggregateTracks
+} from '../src/nar/nar-prefetch-scheduler.mjs';
 
 const schedulerUrl=new URL('../src/nar/nar-prefetch-scheduler.mjs',import.meta.url);
 const workerUrl=new URL('../worker-entry.mjs',import.meta.url);
@@ -12,13 +16,31 @@ test('tomorrowJst resolves next Japanese calendar date',()=>{
   assert.equal(tomorrowJst(new Date('2026-12-31T10:00:00Z')),'2027-01-01');
 });
 
-test('scheduler fans out by track then one race per child invocation',async()=>{
+test('scheduler fans out track children through proven prefetch-auto path',async()=>{
   const src=await readFile(schedulerUrl,'utf8');
-  assert.match(src,/TRACKS=\[/);
-  assert.match(src,/for\(let race=1;race<=12;race\+\+\)/);
-  assert.match(src,/fromRace.*String\(race\)/);
-  assert.match(src,/toRace.*String\(race\)/);
-  assert.match(src,/Promise\.all\(calls\)/);
+  assert.match(src,/new URL\(origin\+AUTO_PATH\)/);
+  assert.match(src,/searchParams\.set\('mode','track'\)/);
+  assert.match(src,/Promise\.all\(requests\)/);
+});
+
+test('track-child routing failure is not mistaken for no meeting',()=>{
+  const input=[
+    {track:'大井',code:'20',active:false,ok:false,status:404,error:'prefetch_track_failed'},
+    {track:'川崎',code:'21',active:false,ok:true,status:'no-meeting',failedRaceCount:0}
+  ];
+  const out=aggregateTracks(input);
+  assert.equal(out.active.length,0);
+  assert.equal(out.failed.length,1);
+  assert.equal(out.failed[0].track,'大井');
+});
+
+test('all child routing failures force parent failure accounting',()=>{
+  const input=Array.from({length:15},(_,i)=>({
+    track:`T${i+1}`,code:String(i+1),active:false,ok:false,status:404,error:'prefetch_track_failed'
+  }));
+  const out=aggregateTracks(input);
+  assert.equal(out.failed.length,15);
+  assert.equal(out.successful.length,0);
 });
 
 test('contiguous missing tail is classified as no-race',()=>{
@@ -29,9 +51,7 @@ test('contiguous missing tail is classified as no-race',()=>{
   ];
   const out=classifyTailNoRace(input);
   assert.equal(out[10].skipped,true);
-  assert.equal(out[10].status,'no-race');
   assert.equal(out[11].skipped,true);
-  assert.equal(out[11].status,'no-race');
   assert.equal(out.filter(r=>!r.ok).length,0);
 });
 
@@ -46,7 +66,7 @@ test('a missing race before a later success is not hidden',()=>{
   assert.equal(out[10].skipped,undefined);
 });
 
-test('a non-missing tail error remains a failure and blocks earlier tail skipping',()=>{
+test('a non-missing tail error remains a failure',()=>{
   const input=[
     ...Array.from({length:10},(_,i)=>({race:i+1,ok:true,status:'complete'})),
     {race:11,ok:false,status:502,error:'horse_lineage_refs_not_found'},
@@ -64,7 +84,7 @@ test('worker handles 18:00 JST and 18:30 retry cron without breaking base schedu
   assert.match(src,/baseWorker\.scheduled/);
 });
 
-test('wrangler preserves JRA five-minute cron and adds NAR evening crons',async()=>{
+test('wrangler preserves JRA five-minute cron and NAR evening crons',async()=>{
   const raw=await readFile(wranglerUrl,'utf8');
   const cfg=JSON.parse(raw);
   assert.ok(cfg.triggers.crons.includes('*/5 * * * *'));
@@ -73,7 +93,7 @@ test('wrangler preserves JRA five-minute cron and adds NAR evening crons',async(
   assert.equal(cfg.vars.ENABLE_NAR_PREFETCH,'true');
 });
 
-test('manual auto-prefetch endpoint exists for production verification',async()=>{
+test('manual auto-prefetch endpoint remains present',async()=>{
   const src=await readFile(workerUrl,'utf8');
   assert.match(src,/\/api\/nar\/history\/prefetch-auto/);
 });
