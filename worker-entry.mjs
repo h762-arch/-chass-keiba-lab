@@ -1,6 +1,7 @@
 import baseWorker,{parseRaceCard} from './worker.js';
 import {handleNarRecentHistoryRequest} from './src/nar/nar-recent-history.mjs';
 import {handleNarDayPrefetchRequest} from './src/nar/nar-day-prefetch.mjs';
+import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/nar/nar-prefetch-scheduler.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -194,6 +195,10 @@ export default {
     if(u.pathname==='/api/chass/v1/public/race-context'){
       return buildNarRaceContext(request,env,ctx);
     }
+    if(u.pathname==='/api/nar/history/prefetch-auto'||u.pathname==='/api/nar/history/prefetch-auto-track'){
+      const response=await handleNarPrefetchSchedulerRequest(request,env);
+      if(response)return response;
+    }
     if(u.pathname==='/api/nar/history/prefetch-day'){
       const response=await handleNarDayPrefetchRequest(request,env,{raceCardParser:parseRaceCard});
       if(response)return response;
@@ -205,6 +210,10 @@ export default {
     return baseWorker.fetch(request,env,ctx);
   },
   async scheduled(controller,env,ctx){
+    if(controller?.cron==='0 9 * * *'||controller?.cron==='30 9 * * *'){
+      ctx.waitUntil(runNarTomorrowPrefetch(env));
+      return;
+    }
     if(typeof baseWorker.scheduled==='function')return baseWorker.scheduled(controller,env,ctx);
   }
 };
