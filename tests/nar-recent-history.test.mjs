@@ -36,6 +36,31 @@ test('getNarRaceHistory resolves lineage IDs from RaceMarkTable when DebaTableSm
   assert.equal(payload.horses[0].lineageCode,'30007403486');
 });
 
+test('getNarRaceHistory resolves lineage IDs from full DebaTable fallback for future races',async()=>{
+  const deba='<html><body><div>ダート1200ｍ</div><span>マハーギータ</span></body></html>';
+  const mark='<html><body>mark not ready</body></html>';
+  const full='<a href="/KeibaWeb/DataRoom/HorseMarkInfo?k_lineageLoginCode=30009999999">マハーギータ</a>';
+  const horse=`<h4>マハーギータ</h4><table><tr><td>2026/09/01</td><td>大井</td><td>1</td><td>テスト</td><td>C1</td><td>1200</td><td>晴</td><td>良</td><td>ナ</td><td>12</td><td>1</td><td>1</td><td>2</td><td>1</td><td>1:13.0</td><td>0.0</td><td>37.0</td><td>480</td><td>騎手</td><td>56.0</td><td>調教師</td><td>1,000,000</td><td>相手</td></tr></table>`;
+  const seen=[];
+  const fetcher=async url=>{
+    const u=String(url);seen.push(u);
+    if(u.includes('/DebaTableSmall?'))return new Response(deba,{status:200});
+    if(u.includes('/RaceMarkTable?'))return new Response(mark,{status:200});
+    if(u.includes('/TodayRaceInfo/DebaTable?'))return new Response(full,{status:200});
+    if(u.includes('/DataRoom/HorseMarkInfo?'))return new Response(horse,{status:200});
+    return new Response('not found',{status:404});
+  };
+  const payload=await getNarRaceHistory({
+    code:'20',date:'2026/09/15',race:'1',fetcher,
+    raceCardParser:()=>[{horseNo:1,horseName:'マハーギータ'}]
+  });
+  assert.equal(payload.resolvedHorseCount,1);
+  assert.equal(payload.unresolvedHorseCount,0);
+  assert.equal(payload.horses[0].lineageCode,'30009999999');
+  assert.ok(payload.lineageSources.includes('DebaTable'));
+  assert.ok(seen.some(u=>u.includes('/TodayRaceInfo/DebaTable?')));
+});
+
 test('parseNarHorseMarkInfo parses official HorseMarkInfo row layout',()=>{
   const html=`<h4>サトノエンパイア</h4><table><tr><td>2026/07/21</td><td>大井</td><td>12</td><td>三宅坂賞Ｂ３二選抜特別</td><td>Ｂ３二</td><td>1800</td><td>晴</td><td>良</td><td>ナ</td><td>16</td><td>2</td><td>3</td><td>6</td><td>5</td><td>1:55.4</td><td>1.5</td><td>39.1</td><td>439</td><td>和田譲 (大井)</td><td>56.0</td><td>赤嶺亮</td><td>400,000</td><td>ナンパセン</td></tr></table>`;
   const x=parseNarHorseMarkInfo(html,{limit:10,lineageCode:'30007403486'});
