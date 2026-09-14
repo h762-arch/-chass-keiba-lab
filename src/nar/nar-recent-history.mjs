@@ -47,7 +47,9 @@ function pct(n,d){return d?round(100*n/d,1):null}
 
 export function extractHorseRefsFromRaceHtml(html=''){
   const out=[];const seen=new Set();
-  const re=/<a\b[^>]*href=["']([^"']*HorseMarkInfo[^"']*k_lineageLoginCode=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  // NAR race pages do not always link horses through HorseMarkInfo.
+  // Treat any horse link carrying k_lineageLoginCode as authoritative.
+  const re=/<a\b[^>]*href=["']([^"']*k_lineageLoginCode=(\d+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m;
   while((m=re.exec(String(html)))){
     const lineageCode=m[2],horseName=text(m[3]);
@@ -204,8 +206,13 @@ export async function getNarRaceHistory({code,date,race,refresh=false,DB=null,fe
   if(!code||!date||!race)throw Object.assign(new Error('code,date,race are required'),{status:400});
   const q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(fmtDate(date))}&k_raceNo=${encodeURIComponent(race)}`;
   const detailUrl=`${NAR_BASE}/KeibaWeb/TodayRaceInfo/DebaTableSmall?${q}`;
+  const markUrl=`${NAR_BASE}/KeibaWeb/TodayRaceInfo/RaceMarkTable?${q}`;
   const detailHtml=await fetchText(detailUrl,{fetcher});
-  const refs=extractHorseRefsFromRaceHtml(detailHtml),refByName=new Map(refs.map(x=>[x.horseName.replace(/\s/g,''),x]));
+  let markHtml='';
+  try{markHtml=await fetchText(markUrl,{fetcher})}catch{}
+  const refs=[...extractHorseRefsFromRaceHtml(detailHtml),...extractHorseRefsFromRaceHtml(markHtml)]
+    .filter((x,i,a)=>a.findIndex(y=>y.lineageCode===x.lineageCode)===i);
+  const refByName=new Map(refs.map(x=>[x.horseName.replace(/\s/g,''),x]));
   const parsedCard=typeof raceCardParser==='function'?raceCardParser(detailHtml):[],hasParsedCard=Array.isArray(parsedCard)&&parsedCard.length>0;
   const targets=(hasParsedCard?parsedCard:refs.map((x,i)=>({horseNo:i+1,horseName:x.horseName}))).map((h,i)=>{
     const horseName=String(h.horseName||'').trim(),ref=refByName.get(horseName.replace(/\s/g,''))||(!hasParsedCard?refs[i]:null)||null;
