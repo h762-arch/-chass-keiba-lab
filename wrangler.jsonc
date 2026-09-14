@@ -11,6 +11,8 @@
     "ENABLE_JRA_BACKGROUND_REFRESH": "false",
     "ENABLE_JRA_DIRECT_FETCH": "false",
     "ENABLE_JRA_ODDS_DIRECT_FETCH": "false",
+    "ENABLE_NAR_PREFETCH": "true",
+    "CHASS_PUBLIC_ORIGIN": "https://chass-keiba-lab7.h7625421.workers.dev",
     "CHASS_DRIVE_SPREADSHEET_ID": "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
   },
   "assets": {
@@ -32,7 +34,9 @@
   },
   "triggers": {
     "crons": [
-      "*/5 * * * *"
+      "*/5 * * * *",
+      "0 9 * * *",
+      "30 9 * * *"
     ]
   }
 }
