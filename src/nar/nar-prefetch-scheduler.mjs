@@ -81,10 +81,12 @@ function summarizeTrack(track,code,payload,responseStatus){
   };
 }
 
-function aggregateTracks(results=[]){
+export function aggregateTracks(results=[]){
   const active=results.filter(r=>r.active);
   const successful=active.filter(r=>r.ok&&r.failedRaceCount===0);
-  const failed=active.filter(r=>!r.ok||r.failedRaceCount>0);
+  // IMPORTANT: track-child transport/routing failures may have active=false.
+  // They must still make the parent scheduler fail.
+  const failed=results.filter(r=>!r.ok||(r.active&&r.failedRaceCount>0));
   const totals=active.reduce((a,r)=>{
     a.probedRaceCount+=Number(r.probedRaceCount||0);
     a.requestedRaceCount+=Number(r.requestedRaceCount||0);
@@ -109,12 +111,6 @@ function missingRaceError(value){
   return MISSING_RACE_ERRORS.has(String(value||''));
 }
 
-/*
- * Only a contiguous missing-race tail after the last successful race may be
- * classified as no-race. Any gap before a later successful race, or any
- * different error at the tail, remains a real failure. This avoids hiding
- * genuine fetch errors while allowing 10R/11R meetings to finish cleanly.
- */
 export function classifyTailNoRace(input=[]){
   const races=(Array.isArray(input)?input:[]).map(r=>({...r})).sort((a,b)=>a.race-b.race);
   const lastSuccessful=races.reduce((max,r)=>r?.ok&&!r?.skipped?Math.max(max,Number(r.race)||0):max,0);
@@ -140,7 +136,6 @@ export function classifyTailNoRace(input=[]){
 async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   const startedAt=Date.now();
 
-  // Meeting detection via existing race-1 history endpoint.
   const probe=new URL(origin+'/api/nar/history/race');
   probe.searchParams.set('code',code);
   probe.searchParams.set('date',date);
@@ -165,7 +160,6 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
     });
   }
 
-  // One race per child Worker invocation resets the subrequest budget per race.
   const calls=[];
   for(let race=1;race<=12;race++){
     const u=new URL(origin+DAY_PATH);
@@ -209,7 +203,7 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
   return json({
     ok:failed.length===0,
     active:true,
-    apiVersion:'nar-prefetch-scheduler-v3.1-track',
+    apiVersion:'nar-prefetch-scheduler-v3.2-track',
     track,code,date,
     status:failed.length===0?'complete':'partial',
     probedRaceCount:races.length,
@@ -228,7 +222,11 @@ async function runTrack(origin,{date,track,code,maxAgeHours=24}){
 async function runAll(origin,date,{maxAgeHours=24}={}){
   const startedAt=Date.now();
   const requests=TRACKS.map(({track,code})=>{
-    const u=new URL(origin+TRACK_PATH);
+    // HOTFIX v3.2:
+    // Fan out through the already-proven AUTO_PATH instead of relying on a
+    // separate /prefetch-auto-track route, which returned 404 in production.
+    const u=new URL(origin+AUTO_PATH);
+    u.searchParams.set('mode','track');
     u.searchParams.set('date',date);
     u.searchParams.set('track',track);
     u.searchParams.set('code',code);
@@ -238,13 +236,12 @@ async function runAll(origin,date,{maxAgeHours=24}={}){
       .catch(error=>({track,code,active:false,ok:false,status:502,error:String(error)}));
   });
 
-  // Parent invocation makes 15 child requests; each track child owns its budget.
   const tracks=await Promise.all(requests);
   const {active,successful,failed,totals}=aggregateTracks(tracks);
 
   return {
     ok:failed.length===0,
-    apiVersion:'nar-prefetch-scheduler-v3.1',
+    apiVersion:'nar-prefetch-scheduler-v3.2',
     purpose:'prefetch-tomorrow-nar-recent10-at-18-jst',
     date,
     checkedTrackCount:TRACKS.length,
@@ -263,6 +260,7 @@ export async function handleNarPrefetchSchedulerRequest(request,env){
   const u=new URL(request.url);
   const origin=originOf(env);
 
+  // Legacy route retained for manual/backward compatibility.
   if(u.pathname===TRACK_PATH){
     const date=parseDateOnly(u.searchParams.get('date'));
     const track=u.searchParams.get('track')||'';
@@ -273,8 +271,18 @@ export async function handleNarPrefetchSchedulerRequest(request,env){
   }
 
   if(u.pathname===AUTO_PATH){
-    const date=parseDateOnly(u.searchParams.get('date'))||tomorrowJst();
+    const mode=u.searchParams.get('mode')||'all';
     const maxAgeHours=Math.max(0.1,Number(u.searchParams.get('maxAgeHours')||24));
+
+    if(mode==='track'){
+      const date=parseDateOnly(u.searchParams.get('date'));
+      const track=u.searchParams.get('track')||'';
+      const code=u.searchParams.get('code')||'';
+      if(!date||!track||!code)return json({ok:false,error:'date, track and code are required',status:400},400);
+      return runTrack(origin,{date,track,code,maxAgeHours});
+    }
+
+    const date=parseDateOnly(u.searchParams.get('date'))||tomorrowJst();
     const result=await runAll(origin,date,{maxAgeHours});
     return json(result,result.ok?200:207);
   }
