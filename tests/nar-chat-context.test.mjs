@@ -23,3 +23,22 @@ test('chat context projects up to 10 compact history runs',async()=>{
   assert.match(src,/slice\(0,runsLimit\)\.map\(compactRun\)/);
   assert.match(src,/recentFormShape|summary/);
 });
+
+test('chat context adds recent10 time theory without changing ability probability fields',async()=>{
+  const src=await readFile(new URL('../worker-entry.mjs',import.meta.url),'utf8');
+  assert.match(src,/nar-time-theory\.mjs/);
+  assert.match(src,/buildNarTimeTheory/);
+  assert.match(src,/rankNarTimeTheoryHorses/);
+  assert.match(src,/summarizeNarTimeTheoryRace/);
+  assert.match(src,/timeTheoryVersion:NAR_TIME_THEORY_VERSION/);
+  assert.match(src,/winProb:a\.winProb/);
+  assert.match(src,/top3Prob:a\.top3Prob/);
+});
+
+test('time theory is explicitly research-only until post-race calibration',async()=>{
+  const theory=await readFile(new URL('../src/nar/nar-time-theory.mjs',import.meta.url),'utf8');
+  assert.match(theory,/researchOnly:true/);
+  assert.match(theory,/affectsProbability:false/);
+  assert.match(theory,/time_theory_upside/);
+  assert.match(theory,/time_theory_risk/);
+});
