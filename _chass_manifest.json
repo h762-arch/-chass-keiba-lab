@@ -1,11 +1,9 @@
 {
-  "patch_id": "workflow-safety-batch7-v1",
-  "title": "CHASS Workflow Safety Batch7",
-  "summary": "Remove remaining direct-main-write paths from active workflows. Result cache becomes runtime-only, production finalize/deploy becomes source-immutable, and AI snapshot publishing uses an isolated branch plus pull request.",
+  "patch_id": "batch8-result-parser-header-identity-v1",
+  "title": "Batch8 JRA result parser header identity fix",
+  "summary": "Parse date/track/race from the main JRA result header near 発走時刻 instead of scanning the whole page, avoiding navigation-menu false matches such as 中山 on a 阪神 page.",
   "allowed_files": [
-    ".github/workflows/CHASS-JRA-Result-Cache-Bridge-v1.0.yml",
-    ".github/workflows/finalize-deploy.yml",
-    ".github/workflows/publish-ai-snapshot.yml"
+    "jra-result-fetch.mjs"
   ],
-  "allow_workflow_changes": true
+  "allow_workflow_changes": false
 }
