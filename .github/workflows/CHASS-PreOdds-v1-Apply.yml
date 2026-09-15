@@ -210,7 +210,7 @@ jobs:
           s=replace_once(s,"const idleLabel='JRA公式から利用可能なオッズを取得';","const idleLabel='JRA公式から事前オッズを取得・固定';",'JRA idle label')
           s=replace_once(s,"if(button){button.disabled=true;button.textContent='オッズ取得中…'}if(status)status.textContent='JRA公式の利用可能な単勝オッズを確認中…';","if(button){button.disabled=true;button.textContent='事前オッズ確認中…'}if(status)status.textContent='JRA公式の事前単勝オッズを1回確認中…';",'JRA loading label')
           s=replace_once(s,"if(status)status.textContent='JRA公式出馬表を取得しました。利用可能な単勝オッズを自動連動しています…';","if(status)status.textContent='JRA公式出馬表を取得しました。事前単勝オッズを1回だけ確認します…';",'JRA race ready label')
-          s=replace_once(s,"if(status)status.textContent='JRA出馬表取得後は現在オッズを優先し、未取得時は取得時刻付き保存オッズを利用します。';","if(status)status.textContent='JRA出馬表取得後に事前オッズを1回確認し、完全取得できたSnapshotを固定します。現在オッズはチャス側で確認します。';",'JRA active label')
+          s=replace_once(s,"if(status)status.textContent='JRA出馬表取得後は現在オッズを優先し、未取得時は取得時刻付き保存オッズを利用します。'","if(status)status.textContent='JRA出馬表取得後に事前オッズを1回確認し、完全取得できたSnapshotを固定します。現在オッズはチャス側で確認します。'",'JRA active label')
           s=replace_once(s,
           """const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜現在値ではありません':'';
              if(status)status.textContent=`JRA公式 単勝オッズ ${data.quality.oddsHorseCount}/${data.quality.activeHorseCount}頭反映｜${meta.label}${timePart}${savedNote}`;""",
