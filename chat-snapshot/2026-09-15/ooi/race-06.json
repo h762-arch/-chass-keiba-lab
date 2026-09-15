@@ -7,14 +7,14 @@
   "organization": "NAR",
   "freshness": {
     "latestPredictionAt": "2026-09-15T01:51:31.007Z",
-    "latestOddsAt": "2026-09-15T03:41:22.049Z",
+    "latestOddsAt": "2026-09-15T01:51:31.007Z",
     "latestResultAt": null
   },
   "diagnostics": {
     "marketTextAvailable": true,
-    "marketHorseCount": 14,
-    "staleMarketHorseCount": 14,
-    "unavailableMarketHorseCount": 127,
+    "marketHorseCount": 0,
+    "staleMarketHorseCount": 0,
+    "unavailableMarketHorseCount": 141,
     "identityMismatchCount": 0,
     "abilityOnlyFallback": false
   },
