@@ -4,6 +4,7 @@ import {handleNarDayPrefetchRequest} from './src/nar/nar-day-prefetch.mjs';
 import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/nar/nar-prefetch-scheduler.mjs';
 import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summarizeNarTimeTheoryRace} from './src/nar/nar-time-theory.mjs';
 import {NAR_RACE_CONTEXT_POLICY_VERSION,classifyAbilityAvailability} from './src/nar/nar-race-context-policy.mjs';
+import {handleFavoriteRiskResearchRequest,runFavoriteRiskCollector} from './src/research/favorite-risk-snapshot.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -215,6 +216,10 @@ async function buildNarRaceContext(request,env,ctx){
 export default {
   async fetch(request,env,ctx){
     const u=new URL(request.url);
+    if(u.pathname==='/api/chass/v1/research/favorite-risk'){
+      const response=await handleFavoriteRiskResearchRequest(request,env);
+      if(response)return response;
+    }
     if(u.pathname==='/api/chass/v1/public/race-context'){
       return buildNarRaceContext(request,env,ctx);
     }
@@ -233,6 +238,8 @@ export default {
     return baseWorker.fetch(request,env,ctx);
   },
   async scheduled(controller,env,ctx){
+    const favoriteRiskTask=runFavoriteRiskCollector(env,{now:new Date(controller?.scheduledTime||Date.now())});
+    if(ctx?.waitUntil)ctx.waitUntil(favoriteRiskTask);else await favoriteRiskTask;
     if(controller?.cron==='0 11 * * *'||controller?.cron==='30 11 * * *'){
       ctx.waitUntil(runNarTomorrowPrefetch(env));
       return;
