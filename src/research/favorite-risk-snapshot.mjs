@@ -13,6 +13,12 @@ function horseNameOf(h){return h?.horseName??h?.name??''}
 function scoreOf(h){return finite(h?.overall??h?.overallScore??h?.abilityScore??h?.score)}
 function winOf(h){return finite(h?.win??h?.winProb??h?.aiWinProbability??h?.aiWinRate)}
 function placeOf(h){return finite(h?.place??h?.top3Prob??h?.aiPlaceProbability??h?.aiPlaceRate)}
+export function outside3RateFromPlace(placeRate){
+  const p=finite(placeRate);
+  if(p==null||p<0||p>100)return null;
+  const outside=p<=1?1-p:100-p;
+  return Number(outside.toFixed(6));
+}
 function oddsOf(h){return positive(h?.odds??h?.winOdds??h?.finalOdds)}
 function popularityOf(h){const p=int(h?.popularity??h?.pop??h?.finalPopularity);return p!=null&&p>0?p:null}
 function iso(value){const ms=Date.parse(value||'');return Number.isFinite(ms)?new Date(ms).toISOString():null}
@@ -67,7 +73,7 @@ export function pickMarketFavorite(market,prediction){
   const place=placeOf(pred);
   return {
     horseNo:no,horseName:horseNameOf(favorite)||horseNameOf(pred),popularity:popularityOf(favorite)??1,odds:oddsOf(favorite),
-    secondFavoriteOdds:otherOdds[0]??null,aiWinRate:winOf(pred),aiPlaceRate:place,aiOutside3Rate:place==null?null:Number((1-place).toFixed(6)),
+    secondFavoriteOdds:otherOdds[0]??null,aiWinRate:winOf(pred),aiPlaceRate:place,aiOutside3Rate:outside3RateFromPlace(place),
     abilityRank:abilityRankForHorse(prediction,no)
   };
 }
@@ -85,7 +91,7 @@ export function pickFinalFavorite(result,prediction){
   return {
     horseNo:no,horseName:horseNameOf(favorite)||horseNameOf(pred),popularity:int(favorite?.finalPopularity??favorite?.popularity)??1,
     odds:positive(favorite?.finalOdds??favorite?.odds),secondFavoriteOdds:null,aiWinRate:winOf(pred),aiPlaceRate:place,
-    aiOutside3Rate:place==null?null:Number((1-place).toFixed(6)),abilityRank:abilityRankForHorse(prediction,no),finish,
+    aiOutside3Rate:outside3RateFromPlace(place),abilityRank:abilityRankForHorse(prediction,no),finish,
     top3Flag:finish==null?null:(finish>=1&&finish<=3?1:0),outside3Flag:finish==null?null:(finish>=4?1:0)
   };
 }
