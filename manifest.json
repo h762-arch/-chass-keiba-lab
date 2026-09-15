@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "schemaVersion": "chass-chat-mirror-manifest-v1",
+  "sourceOfTruth": "Cloudflare D1",
+  "branch": "chass-data",
+  "snapshots": [
+    {
+      "date": "2026-09-15",
+      "track": "大井",
+      "trackSlug": "ooi",
+      "organization": "NAR",
+      "raceCount": 12,
+      "totalHorseCount": 141,
+      "latestPredictionAt": "2026-09-15T01:51:31.007Z",
+      "latestOddsAt": "2026-09-15T03:41:22.049Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-09-15/ooi/day.json"
+    }
+  ]
+}
