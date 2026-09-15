@@ -215,7 +215,7 @@ jobs:
           s=replace_once(s,
           """const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜現在値ではありません':'';
              if(status)status.textContent=`JRA公式 単勝オッズ ${data.quality.oddsHorseCount}/${data.quality.activeHorseCount}頭反映｜${meta.label}${timePart}${savedNote}`;""",
-          """const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜保存値を事前候補として利用':'';
+          """const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜現在値ではありません｜保存値を事前候補として利用':'';
              if(status)status.textContent=`JRA公式 事前単勝オッズ ${data.quality.oddsHorseCount}/${data.quality.activeHorseCount}頭反映｜${meta.label}${timePart}${savedNote}`;""",
           'JRA applied label')
           write(p,s)
