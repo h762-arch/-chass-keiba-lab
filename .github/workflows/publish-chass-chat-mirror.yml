@@ -1,0 +1,184 @@
+name: Publish CHASS Chat Mirror v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Optional JST snapshot date (YYYY-MM-DD). Blank = today in Japan."
+        required: false
+        type: string
+      track_slug:
+        description: "all or comma-separated canonical slugs (for example ooi,kawasaki)"
+        required: false
+        default: all
+        type: string
+  schedule:
+    # 08:00-22:45 JST every 15 minutes. GitHub cron is UTC.
+    - cron: '*/15 23 * * *'
+    - cron: '*/15 0-13 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-chat-mirror
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout main code
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Verify publisher tests
+        run: node --test tests/chass-chat-snapshot.test.mjs
+
+      - name: Build read-only ChatGPT mirror from CHASS public APIs
+        id: publish
+        shell: bash
+        env:
+          SNAPSHOT_DATE: ${{ github.event.inputs.date || '' }}
+          TRACK_SLUG: ${{ github.event.inputs.track_slug || 'all' }}
+          OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
+        run: |
+          set -euo pipefail
+          rm -rf "$OUTPUT_ROOT"
+          mkdir -p "$OUTPUT_ROOT"
+          node publish-chass-chat-snapshot.mjs | tee /tmp/chass-chat-mirror.log
+          COUNT="$(find "$OUTPUT_ROOT/chat-snapshot" -type f -name 'day.json' 2>/dev/null | wc -l | tr -d ' ')"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "has_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Switch safely to dedicated data branch
+        if: ${{ steps.publish.outputs.has_data == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin refs/heads/chass-data >/dev/null 2>&1; then
+            git fetch origin refs/heads/chass-data:refs/remotes/origin/chass-data
+            git switch -C chass-data origin/chass-data
+          else
+            git switch --orphan chass-data
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          test "$(git branch --show-current)" = "chass-data"
+          test "$(git branch --show-current)" != "main"
+
+      - name: Copy snapshots and rebuild stable manifest
+        if: ${{ steps.publish.outputs.has_data == 'true' }}
+        shell: bash
+        env:
+          OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
+        run: |
+          set -euo pipefail
+          mkdir -p chat-snapshot
+          cp -R "$OUTPUT_ROOT/chat-snapshot/." chat-snapshot/
+          cat > README.md <<'TXT'
+          # CHASS Chat Mirror
+
+          Machine-generated, read-only mirror for ChatGPT/GitHub connector access.
+
+          - Source of truth: CHASS Cloudflare D1
+          - Branch: `chass-data`
+          - App code is not stored on this branch.
+          - Files are updated only when snapshot data actually changes.
+          - `day.json` is for whole-day screening.
+          - `race-XX.json` is for focused race analysis.
+          TXT
+          node --input-type=module <<'NODE'
+          import { readdir, readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
+          async function walk(dir) {
+            const out=[];
+            for (const ent of await readdir(dir,{withFileTypes:true})) {
+              const p=path.join(dir,ent.name);
+              if(ent.isDirectory()) out.push(...await walk(p));
+              else if(ent.isFile() && ent.name==='day.json') out.push(p);
+            }
+            return out;
+          }
+          const files=await walk('chat-snapshot').catch(()=>[]), snapshots=[];
+          for(const file of files){
+            const x=JSON.parse(await readFile(file,'utf8'));
+            snapshots.push({
+              date:x.date,track:x.track,trackSlug:x.trackSlug,organization:x.organization,
+              raceCount:x.raceCount,totalHorseCount:x.totalHorseCount,
+              latestPredictionAt:x.freshness?.latestPredictionAt??null,
+              latestOddsAt:x.freshness?.latestOddsAt??null,
+              abilityOnlyFallback:x.diagnostics?.abilityOnlyFallback===true,
+              identityMismatchCount:x.diagnostics?.identityMismatchCount??0,
+              path:file.replaceAll('\\','/')
+            });
+          }
+          snapshots.sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(a.trackSlug).localeCompare(String(b.trackSlug)));
+          const manifest={ok:true,schemaVersion:'chass-chat-mirror-manifest-v1',sourceOfTruth:'Cloudflare D1',branch:'chass-data',snapshots};
+          await writeFile('manifest.json',`${JSON.stringify(manifest,null,2)}\n`,'utf8');
+          NODE
+
+      - name: Validate data-only branch changes
+        if: ${{ steps.publish.outputs.has_data == 'true' }}
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add README.md manifest.json chat-snapshot
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --cached --check
+          git diff --cached --name-only > /tmp/chass-chat-changed.txt
+          while IFS= read -r FILE; do
+            case "$FILE" in
+              README.md|manifest.json|chat-snapshot/*) ;;
+              *)
+                echo "::error::Unexpected data-branch change: $FILE"
+                exit 20
+                ;;
+            esac
+          done < /tmp/chass-chat-changed.txt
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit data-only mirror
+        if: ${{ steps.publish.outputs.has_data == 'true' && steps.diff.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          SNAPSHOT_DATE: ${{ github.event.inputs.date || '' }}
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "chass-data"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          DATE_LABEL="${SNAPSHOT_DATE:-$(TZ=Asia/Tokyo date +%F)}"
+          git commit -m "mirror: CHASS chat snapshot ${DATE_LABEL}"
+          git push origin HEAD:chass-data
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CHASS Chat Mirror v1"
+            echo
+            echo "- Published track files: ${{ steps.publish.outputs.count || '0' }}"
+            echo "- Data branch: \`chass-data\`"
+            echo "- main direct push: NO"
+            echo "- production deploy: NO"
+            echo "- D1 mutation: NO"
+            echo "- changed: ${{ steps.diff.outputs.changed || 'false' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
