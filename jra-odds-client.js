@@ -1,6 +1,6 @@
 (() => {
  'use strict';
- // CHASS-JRA-SAVED-ODDS-OVERLAY-FALLBACK-v1.9.9.2
+ // CHASS-JRA-PREODDS-FREEZE-v1
  const formatOddsTime=value=>{
   if(!value)return '';
   const d=new Date(value);
@@ -33,20 +33,20 @@
  window.CHASS_JRA_ODDS_CLIENT={create({isActive,getSelection,getGeneration,apply}){
   const button=document.getElementById('liveOddsSync'),status=document.getElementById('liveOddsStatus');
   let active=false,token=0,controller,autoTimer;
-  const idleLabel='JRA公式から利用可能なオッズを取得';
+  const idleLabel='JRA公式から事前オッズを取得・固定';
   const cancel=()=>{token++;clearTimeout(autoTimer);controller?.abort();controller=null;if(active&&button){button.disabled=false;button.textContent=idleLabel}};
   const showApplied=(data,generation)=>{
    if(!data?.odds?.length||!data?.quality?.oddsHorseCount)throw Error('JRA_ODDS_UNAVAILABLE');
    const applied=apply(data,generation);
    if(applied===false)throw Error('JRA_ODDS_RACE_IDENTITY_MISMATCH');
-   const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜現在値ではありません':'';
-   if(status)status.textContent=`JRA公式 単勝オッズ ${data.quality.oddsHorseCount}/${data.quality.activeHorseCount}頭反映｜${meta.label}${timePart}${savedNote}`;
+   const meta=oddsMeta(data),timePart=meta.time?`｜取得 ${meta.time}`:'',savedNote=meta.freshness==='saved'?'｜現在値ではありません｜保存値を事前候補として利用':'';
+   if(status)status.textContent=`JRA公式 事前単勝オッズ ${data.quality.oddsHorseCount}/${data.quality.activeHorseCount}頭反映｜${meta.label}${timePart}${savedNote}`;
    return true;
   };
   async function load(){
    cancel();if(!active||!isActive())return;
    const own=token,generation=getGeneration(),selection=getSelection();controller=new AbortController();
-   if(button){button.disabled=true;button.textContent='オッズ取得中…'}if(status)status.textContent='JRA公式の利用可能な単勝オッズを確認中…';
+   if(button){button.disabled=true;button.textContent='事前オッズ確認中…'}if(status)status.textContent='JRA公式の事前単勝オッズを1回確認中…';
    const timeout=setTimeout(()=>controller.abort(),10000);let primaryCode='JRA_OFFICIAL_UNAVAILABLE';
    try{
     const currentQ=new URLSearchParams({date:selection.date,track:selection.track,race:String(selection.race)});
@@ -72,8 +72,8 @@
    }finally{clearTimeout(timeout);if(own===token){controller=null;if(button){button.disabled=false;button.textContent=idleLabel}}}
   }
   const sameSelection=(detail,current)=>String(detail?.date||'')===String(current?.date||'')&&String(detail?.track||'')===String(current?.track||'')&&Number(detail?.race)===Number(current?.race);
-  const onRaceReady=event=>{if(!active||!isActive())return;const current=getSelection();if(!sameSelection(event?.detail,current))return;clearTimeout(autoTimer);if(status)status.textContent='JRA公式出馬表を取得しました。利用可能な単勝オッズを自動連動しています…';autoTimer=setTimeout(load,80)};
+  const onRaceReady=event=>{if(!active||!isActive())return;const current=getSelection();if(!sameSelection(event?.detail,current))return;clearTimeout(autoTimer);if(status)status.textContent='JRA公式出馬表を取得しました。事前単勝オッズを1回だけ確認します…';autoTimer=setTimeout(load,80)};
   if(typeof window.addEventListener==='function')window.addEventListener('chass:jra-race-ready',onRaceReady);
-  return {load,cancel,setActive(value){active=value;if(!value)cancel();else{if(button){button.disabled=false;button.textContent=idleLabel}if(status)status.textContent='JRA出馬表取得後は現在オッズを優先し、未取得時は取得時刻付き保存オッズを利用します。'}}};
+  return {load,cancel,setActive(value){active=value;if(!value)cancel();else{if(button){button.disabled=false;button.textContent=idleLabel}if(status)status.textContent='JRA出馬表取得後に事前オッズを1回確認し、完全取得できたSnapshotを固定します。現在オッズはチャス側で確認します。'}}};
  }};
 })();

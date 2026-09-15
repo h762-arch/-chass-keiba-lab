@@ -19,7 +19,10 @@ const LEGACY_KEY='chass_v80_races';
 const CURRENT='chass_v90_current';
 const LEGACY_CURRENT='chass_v80_current';
 const ODDS_HISTORY='chass_v90_odds_history';
-let oddsTimer=null;
+const PREODDS_POLICY_VERSION='PREODDS-v1';
+const PREODDS_MARKET_ROLE='longshot_discovery_only';
+const PREODDS_FALLBACK_HOUR_JST=9,PREODDS_FALLBACK_MINUTE_JST=30;
+let oddsTimer=null,preOddsFallbackTimer=null;
 let raceLoadController=null,liveOddsController=null;
 let raceLoadGeneration=0,liveOddsGeneration=0;
 let resultFetchInProgress=null;
@@ -513,7 +516,7 @@ function renderMarketDisplayState(){
 }
 function marketSourceLabel(race=state.race){
  const snapshot=String(race?.oddsSnapshotType||'').toLowerCase(),type=String(race?.oddsType||'');
- if(raceTypeOf({race})==='JRA')return /predicted|forecast|予想/.test(snapshot+type)?'予想':'入力';
+ if(/pre_frozen|pre_provisional|事前/.test(snapshot+type))return '事前';if(raceTypeOf({race})==='JRA')return /predicted|forecast|予想/.test(snapshot+type)?'予想':'入力';
  if(/final|確定|historical_official/.test(snapshot+type))return '最終';
  if(type==='実オッズ')return '現在';
  if(/予想|想定|参考|predicted|forecast/.test(snapshot+type))return '予想';
@@ -916,7 +919,7 @@ function jraPayloadMatchesActive(data){
   return !!expected&&active.organization==='JRA'&&active.raceId===expected;
 }
 function fillJraRace(race={}){jraMeetingSelector?.manual();if($('jraDate'))$('jraDate').value=race.date||$('jraDate').value;if($('jraCourse')&&race.racecourse)$('jraCourse').value=race.racecourse;if($('jraRaceNo')&&race.raceNo)$('jraRaceNo').value=race.raceNo;if($('jraRaceName'))$('jraRaceName').value=race.raceName||'';if($('jraSurface')&&race.surface)$('jraSurface').value=race.surface;if($('jraDistance')&&race.distance)$('jraDistance').value=race.distance;if($('jraCourseType'))$('jraCourseType').value=race.courseType||'';if($('jraCondition'))$('jraCondition').value=race.trackCondition||'不明';if($('jraWeather'))$('jraWeather').value=race.weather||'';if($('jraPace'))$('jraPace').value=race.pace||'標準'}
-function setRaceMode(mode,{announce=true,preserveState=false}={}){const jra=mode==='JRA',changed=raceTypeOf(state)!==mode;if(changed&&!preserveState)beginActiveRaceTransition(mode);else if(changed)activeRaceGeneration++;if($('raceMode'))$('raceMode').value=jra?'JRA':'NAR';if($('narInputPanel'))$('narInputPanel').hidden=jra;if($('jraInputPanel'))$('jraInputPanel').hidden=!jra;if($('jraActualFields'))$('jraActualFields').hidden=!jra;if($('legacyJsonImport'))$('legacyJsonImport').hidden=jra;if($('raceModeStatus'))$('raceModeStatus').textContent=jra?'中央競馬 J5｜公式データ・安全なバックグラウンド更新':'地方競馬 Ver.9.9.35互換モード';if($('category'))$('category').value=jra?'中央競馬':'地方競馬';const marketCard=document.querySelector('.market-card'),autoOddsRow=$('autoOdds')?.closest?.('.switch-row');if(marketCard)marketCard.hidden=false;if(autoOddsRow)autoOddsRow.hidden=jra;if($('liveOddsSync')){$('liveOddsSync').disabled=false;$('liveOddsSync').textContent=jra?'JRA公式から現在オッズを取得':'NAR公式から現在オッズを取得'}if($('narSync')){$('narSync').disabled=false;$('narSync').textContent=jra?'JRA公式から結果取得・自動検証':'NAR公式から結果取得・自動保存'}jraMeetingSelector?.setActive(jra,{discover:!preserveState});jraRaceClient?.setActive(jra);jraOddsClient?.setActive(jra);jraResultClient?.setActive(jra);if(announce&&jra&&$('jraStatus'))$('jraStatus').textContent='JRA公式出馬表・単勝オッズ・発走後結果を利用できます。開催と結果は低頻度でバックグラウンド更新します。';if(changed&&!preserveState)render()}
+function setRaceMode(mode,{announce=true,preserveState=false}={}){const jra=mode==='JRA',changed=raceTypeOf(state)!==mode;if(changed&&!preserveState)beginActiveRaceTransition(mode);else if(changed)activeRaceGeneration++;if($('raceMode'))$('raceMode').value=jra?'JRA':'NAR';if($('narInputPanel'))$('narInputPanel').hidden=jra;if($('jraInputPanel'))$('jraInputPanel').hidden=!jra;if($('jraActualFields'))$('jraActualFields').hidden=!jra;if($('legacyJsonImport'))$('legacyJsonImport').hidden=jra;if($('raceModeStatus'))$('raceModeStatus').textContent=jra?'中央競馬 J5｜公式データ・安全なバックグラウンド更新':'地方競馬 Ver.9.9.35互換モード';if($('category'))$('category').value=jra?'中央競馬':'地方競馬';const marketCard=document.querySelector('.market-card'),autoOddsRow=$('autoOdds')?.closest?.('.switch-row');if(marketCard)marketCard.hidden=false;if(autoOddsRow)autoOddsRow.hidden=true;if($('liveOddsSync')){$('liveOddsSync').disabled=false;$('liveOddsSync').textContent=jra?'JRA公式から事前オッズを取得・固定':'NAR公式から事前オッズを取得・固定'}if($('narSync')){$('narSync').disabled=false;$('narSync').textContent=jra?'JRA公式から結果取得・自動検証':'NAR公式から結果取得・自動保存'}jraMeetingSelector?.setActive(jra,{discover:!preserveState});jraRaceClient?.setActive(jra);jraOddsClient?.setActive(jra);jraResultClient?.setActive(jra);if(announce&&jra&&$('jraStatus'))$('jraStatus').textContent='JRA公式出馬表＋能力先行。オッズは最初の完全な事前Snapshotだけ固定し、現在オッズはチャス側で確認します。';if(changed&&!preserveState)render()}
 function mergeJraRace(normalized){return window.CHASS_JRA_NORMALIZER.normalizeJraData({race:{...normalized.race,...jraRaceInput()},horses:normalized.horses})}
 function registerJraResultQueue(){const rid=raceId(state.race);registerResultWaiting(state,rid)}
 function commitJraNormalized(normalized,provenance=null){const prepared=mergeJraRace(normalized),result=window.CHASS_JRA_ADAPTER.run(prepared);activeRaceGeneration++;state=result.state;abilityMarks(state.horses,state.race);if(provenance){state.race.dataMode='JRA公式出馬表・CHASS独自指数';state.race.dataSource='JRA_OFFICIAL / Existing JRA Adapter';state.race.autoGenerated=true;state.race.parserVersion=provenance.parserVersion;state.race.officialFetchedAt=provenance.fetchedAt;state.race.officialSourceUrl=provenance.sourceUrl;state.race.officialQuality=provenance.quality;}clearValidationTransient(state);state.modelVersion=result.prediction.modelVersion;fillRace(state.race);predictionViewMode='original';makeSnapshot();state.predictionSaved=true;registerJraResultQueue();persist(false);render();renderAutoResultQueue();if($('jraStatus')){$('jraStatus').textContent=`JRA ${state.horses.length}頭｜CHASS指数・確率計算完了｜AI勝率合計 ${result.prediction.quality.winProbabilityTotal.toFixed(2)}%｜TIME ${result.prediction.quality.withTime}/${state.horses.length}｜市場 ${result.prediction.quality.withMarket}/${state.horses.length}`}$('quickCard')?.scrollIntoView?.({behavior:'smooth',block:'start'});return result}
@@ -966,7 +969,7 @@ function analyzeJraManual(){try{const raw=$('jraManualHorses')?.value||'',horses
 function abilityPlace(win,allWins){const w=Math.pow(Math.max(Number(win)||.01,.01),.72),den=allWins.reduce((s,x)=>s+Math.pow(Math.max(Number(x)||.01,.01),.72),0)||1;return Math.max(1,Math.min(88,300*w/den))}
 function buildAbilityRoot(d,date,track,raceNo){
  const horses=Array.isArray(d.horses)?d.horses:[],ready=horses.filter(h=>Number.isFinite(Number(h.abilityWinRate))).length,wins=horses.map(h=>Number(h.abilityWinRate)||0),abilityMode=ready>=Math.max(2,Math.ceil(horses.length*.5));
- return {race:{category:'地方競馬',raceDate:date,track:d.track||track,raceNo,postTime:d.postTime||'',raceName:d.raceName||'',distance:d.distance||'',surface:d.surface||'ダート',weather:d.weather||'',trackCondition:d.trackCondition||'不明',chaos:d.chaos??50,pace:d.pace||'標準',bias:d.bias||'',oddsType:Array.isArray(d.odds)&&d.odds.length?'実オッズ':'オッズなし',oddsSnapshotType:d.oddsSnapshotType||(Array.isArray(d.odds)&&d.odds.length?'unknown':'none'),autoGenerated:true,dataSource:`NAR公式 Ver.${APP_VERSION}`,dataMode:abilityMode?'NAR自動・能力先行':'NAR自動・能力不足',autoModel:abilityMode?'NAR past-runs ability first + market second':'NAR past-runs insufficient; no market-as-ability fallback',predictedTimePolicy:'NAR公式の同距離・近距離実走TIMEから標準／展開ハマり／展開不利を推定'},horses:horses.map(h=>({horseNo:h.horseNo,horseName:h.horseName||`馬番${h.horseNo}`,popularity:h.popularity??null,realOdds:h.odds??null,runningStyle:h.runningStyle||'不明',weight:h.weight??null,jockey:h.jockey||'',trainer:h.trainer||'',sexAge:h.sexAge||'',runs:Array.isArray(h.runs)?cloneData(h.runs):[],transferOrigin:h.transferOrigin||'',previousOrganization:h.previousOrganization||'',transferStartNo:h.transferStartNo??null,restDays:h.restDays??null,startAfterBreak:h.startAfterBreak??null,debut:!!h.debut,timeIndex:h.timeIndex??null,fiveRaceAvgIndex:h.fiveRaceAvgIndex??null,distanceIndex:h.distanceIndex??null,courseIndex:h.courseIndex??null,recentIndex:Array.isArray(h.recentIndex)?h.recentIndex:[],abilityScore:h.abilityScore??null,features:h.features??null,abilityPriorOdds:h.abilityPriorOdds??null,predictedTime:h.predictedTime||'',predictedTimeType:h.predictedTimeType||'',predictedTimeMissingReason:h.predictedTimeMissingReason||null,predictedTimeConfidence:h.predictedTimeConfidence??null,predictedTimeScenarios:h.predictedTimeScenarios??null,aiWinRate:abilityMode?(h.abilityWinRate??null):null,aiPlaceRate:abilityMode&&Number.isFinite(Number(h.abilityWinRate))?abilityPlace(h.abilityWinRate,wins):null,dataMode:abilityMode?'NAR自動・能力先行':'NAR自動・能力不足',dataConfidence:h.dataConfidence??null,reason:h.reason||(abilityMode?'NAR公式過去走を能力側へ反映。実オッズは期待値判定のみで使用。':'解析可能な過去走が不足。市場を能力の代用には使用しません。')}))};
+ return {race:{category:'地方競馬',raceDate:date,track:d.track||track,raceNo,postTime:d.postTime||'',raceName:d.raceName||'',distance:d.distance||'',surface:d.surface||'ダート',weather:d.weather||'',trackCondition:d.trackCondition||'不明',chaos:d.chaos??50,pace:d.pace||'標準',bias:d.bias||'',oddsType:Array.isArray(d.odds)&&d.odds.length?'実オッズ':'オッズなし',oddsSnapshotType:d.oddsSnapshotType||(Array.isArray(d.odds)&&d.odds.length?'unknown':'none'),oddsUpdatedAt:Array.isArray(d.odds)&&d.odds.length?(d.acquiredAt||null):null,marketDataSource:Array.isArray(d.odds)&&d.odds.length?'NAR_OFFICIAL_PRE_ODDS':null,autoGenerated:true,dataSource:`NAR公式 Ver.${APP_VERSION}`,dataMode:abilityMode?'NAR自動・能力先行':'NAR自動・能力不足',autoModel:abilityMode?'NAR past-runs ability first + market second':'NAR past-runs insufficient; no market-as-ability fallback',predictedTimePolicy:'NAR公式の同距離・近距離実走TIMEから標準／展開ハマり／展開不利を推定'},horses:horses.map(h=>({horseNo:h.horseNo,horseName:h.horseName||`馬番${h.horseNo}`,popularity:h.popularity??null,realOdds:h.odds??null,runningStyle:h.runningStyle||'不明',weight:h.weight??null,jockey:h.jockey||'',trainer:h.trainer||'',sexAge:h.sexAge||'',runs:Array.isArray(h.runs)?cloneData(h.runs):[],transferOrigin:h.transferOrigin||'',previousOrganization:h.previousOrganization||'',transferStartNo:h.transferStartNo??null,restDays:h.restDays??null,startAfterBreak:h.startAfterBreak??null,debut:!!h.debut,timeIndex:h.timeIndex??null,fiveRaceAvgIndex:h.fiveRaceAvgIndex??null,distanceIndex:h.distanceIndex??null,courseIndex:h.courseIndex??null,recentIndex:Array.isArray(h.recentIndex)?h.recentIndex:[],abilityScore:h.abilityScore??null,features:h.features??null,abilityPriorOdds:h.abilityPriorOdds??null,predictedTime:h.predictedTime||'',predictedTimeType:h.predictedTimeType||'',predictedTimeMissingReason:h.predictedTimeMissingReason||null,predictedTimeConfidence:h.predictedTimeConfidence??null,predictedTimeScenarios:h.predictedTimeScenarios??null,aiWinRate:abilityMode?(h.abilityWinRate??null):null,aiPlaceRate:abilityMode&&Number.isFinite(Number(h.abilityWinRate))?abilityPlace(h.abilityWinRate,wins):null,dataMode:abilityMode?'NAR自動・能力先行':'NAR自動・能力不足',dataConfidence:h.dataConfidence??null,reason:h.reason||(abilityMode?'NAR公式過去走を能力側へ反映。実オッズは期待値判定のみで使用。':'解析可能な過去走が不足。市場を能力の代用には使用しません。')}))};
 }
 function predictionAvailability(horses=state.horses||[]){const total=horses.length,ability=horses.filter(h=>h.sourceAbilityAvailable===true||h.abilityScore!=null).length,time=horses.filter(h=>h.predictedTime).length,timeActual=horses.filter(h=>h.predictedTime&&h.predictedTimeType==='実績').length,timeAdjusted=horses.filter(h=>h.predictedTime&&h.predictedTimeType==='補正').length,market=horses.filter(h=>num(h.odds??h.realOdds)!=null).length,missingReasons={};for(const h of horses){if(h.predictedTime)continue;const code=h.predictedTimeMissingReason||'time_missing_unknown';missingReasons[code]=(missingReasons[code]||0)+1}return {total,ability,time,timeActual,timeAdjusted,timeMissing:Math.max(0,total-time),market,missingReasons}}
 function normalizeResultFetchOutcome({primarySuccess=false,recoverySuccess=false,published=true,finishOrder=[]}={}){const complete=Array.isArray(finishOrder)&&finishOrder.length>=3;if((primarySuccess||recoverySuccess)&&complete)return {resultStatus:'success',resultOutcome:'success',resultFetchMode:primarySuccess?'primary':'recovery',finalStatus:primarySuccess?'success_primary':'success_recovery'};if(!published)return {resultStatus:'waiting',resultOutcome:'waiting',resultFetchMode:null,finalStatus:'result_waiting'};return {resultStatus:'retry',resultOutcome:'retry',resultFetchMode:null,finalStatus:'result_retry'}}
@@ -1101,9 +1104,65 @@ function applyMarketOdds(items, acquiredAt, options={}){
  }
  return valid.length;
 }
+function preOddsStats(record=state){
+ const eligible=(record?.horses||[]).filter(isEligibleHorse),totalHorseCount=eligible.length,oddsHorseCount=eligible.filter(h=>num(h?.odds??h?.realOdds)!=null).length;
+ return {totalHorseCount,oddsHorseCount,oddsCoverage:totalHorseCount?Number((oddsHorseCount/totalHorseCount).toFixed(4)):0,complete:totalHorseCount>0&&oddsHorseCount===totalHorseCount};
+}
+function preOddsFrozen(record=state){return record?.marketSnapshot?.marketPolicyVersion===PREODDS_POLICY_VERSION&&record?.marketSnapshot?.preOddsFrozen===true}
+function preOddsStamp(record=state,{acquiredAt=null,sourceOddsSnapshotType=null}={}){
+ if(!record||record.validationCompleted)return false;
+ const market=record.marketSnapshot;if(!market)return false;
+ const stats=preOddsStats(record),hasAny=stats.oddsHorseCount>0,at=acquiredAt||market.acquiredAt||record.race?.oddsUpdatedAt||new Date().toISOString(),alreadyFrozen=preOddsFrozen(record);
+ market.marketPolicyVersion=PREODDS_POLICY_VERSION;market.marketRole=PREODDS_MARKET_ROLE;market.sourceOddsSnapshotType=sourceOddsSnapshotType||market.sourceOddsSnapshotType||market.oddsSnapshotType||null;
+ market.oddsHorseCount=stats.oddsHorseCount;market.totalHorseCount=stats.totalHorseCount;market.oddsCoverage=stats.oddsCoverage;market.evRankStatus=!hasAny?'unavailable':stats.complete?'complete':'partial';
+ market.preOddsFrozen=alreadyFrozen||stats.complete;market.preOddsFrozenAt=market.preOddsFrozen?(market.preOddsFrozenAt||at):null;market.preOddsStatus=market.preOddsFrozen?'frozen':hasAny?'provisional':'unavailable';
+ record.race=record.race||{};record.race.marketPolicyVersion=PREODDS_POLICY_VERSION;record.race.marketRole=PREODDS_MARKET_ROLE;record.race.preOddsStatus=market.preOddsStatus;record.race.oddsType=market.preOddsFrozen?'事前オッズ（固定）':hasAny?'事前オッズ（暫定）':'オッズなし';
+ record.race.oddsHorseCount=stats.oddsHorseCount;record.race.totalHorseCount=stats.totalHorseCount;record.race.oddsCoverage=stats.oddsCoverage;record.race.evRankStatus=market.evRankStatus;
+ if(hasAny){record.race.oddsUpdatedAt=market.preOddsFrozenAt||at;record.race.marketDataAvailable=true}else record.race.marketDataAvailable=false;
+ sealSnapshotIntegrity(record,true);
+ return market.preOddsFrozen;
+}
+function preOddsFallbackTargetMs(date){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(String(date||'')))return null;
+ const target=Date.parse(`${date}T00:30:00.000Z`);
+ return Number.isFinite(target)?target:null;
+}
+function schedulePreOddsFallback(record=state){
+ if(preOddsFallbackTimer){clearTimeout(preOddsFallbackTimer);preOddsFallbackTimer=null}
+ if(!record||record.validationCompleted||preOddsFrozen(record))return false;
+ const target=preOddsFallbackTargetMs(record?.race?.raceDate),delay=target==null?null:target-Date.now();
+ if(delay==null||delay<=0||delay>36*60*60_000)return false;
+ preOddsFallbackTimer=setTimeout(async()=>{
+  preOddsFallbackTimer=null;
+  if(state.validationCompleted||preOddsFrozen(state))return;
+  state.race.preOddsFallbackAttemptedAt=new Date().toISOString();
+  try{await syncLiveOdds(true)}catch{}
+  try{persist(existingValidated(raceId(state.race)))}catch{}
+ },delay);
+ return true;
+}
+const makeSnapshotPreOddsBase=makeSnapshot;
+makeSnapshot=function(...args){
+ const sourceType=state?.race?.oddsSnapshotType||null,value=makeSnapshotPreOddsBase(...args);
+ if(!state.validationCompleted)preOddsStamp(state,{acquiredAt:state?.marketSnapshot?.acquiredAt||state?.race?.oddsUpdatedAt||null,sourceOddsSnapshotType:sourceType});
+ schedulePreOddsFallback(state);
+ return value;
+};
 const applyMarketOddsBase=applyMarketOdds;
-applyMarketOdds=function(items,acquiredAt,options){return applyMarketOddsBase(items,acquiredAt,options)};
+applyMarketOdds=function(items,acquiredAt,options={}){
+ if(!state.validationCompleted&&preOddsFrozen(state)&&options?.forcePreOddsRefresh!==true){
+  state.oddsLastCheckedAt=acquiredAt||new Date().toISOString();state.lastOddsApplyChanged=false;
+  return Number(state.marketSnapshot?.oddsHorseCount)||0;
+ }
+ const sourceOddsSnapshotType=options?.oddsSnapshotType||null,count=applyMarketOddsBase(items,acquiredAt,options);
+ if(!state.validationCompleted&&count)preOddsStamp(state,{acquiredAt,sourceOddsSnapshotType});
+ return count;
+};
 async function syncLiveOdds(silent=false){
+ if(!state.validationCompleted&&preOddsFrozen(state)){
+  if($('liveOddsStatus'))$('liveOddsStatus').textContent='事前オッズは固定済みです。現在オッズはチャス側のLive Assessmentで確認します。';
+  return {ok:true,status:'pre_odds_frozen',marketPolicyVersion:PREODDS_POLICY_VERSION};
+ }
  if(raceTypeOf(state)==='JRA'){
   return jraOddsClient?.load()||{ok:false,status:'jra_odds_unavailable'};
  }
@@ -1113,16 +1172,16 @@ async function syncLiveOdds(silent=false){
  liveOddsController?.abort();const controller=new AbortController(),generation=++liveOddsGeneration,requestedId=raceId(r);liveOddsController=controller;
  const isCurrent=()=>generation===liveOddsGeneration&&!controller.signal.aborted&&raceId(raceFromForm())===requestedId;
  if(!silent)setButtonBusy('liveOddsSync',true,'オッズ取得中…');
- if(!silent)$('liveOddsStatus').textContent='NAR公式の現在オッズを確認中…';
+ if(!silent)$('liveOddsStatus').textContent='NAR公式の事前オッズを1回確認中…';
  try{
    storageDiagnostic('oddsFetch');storageDiagnostic('externalFetch');const u=`/api/nar/odds?code=${code}&date=${encodeURIComponent(r.raceDate)}&race=${r.raceNo}`,res=await fetch(u,{cache:'no-store',signal:controller.signal}),d=await responseJson(res);
    if(!res.ok)throw requestError(d.errorCode||'nar_temporary',d.error||'取得失敗',res.status);if(!isCurrent())throw requestError('stale_request','古いオッズ取得を破棄しました。');
    const count=applyMarketOdds(d.odds,d.acquiredAt);if(!count)throw requestError('odds_unpublished','現在オッズはまだ公開されていません。');
-   render();persist(existingValidated(raceId(r)));const changed=state.lastOddsApplyChanged,t=new Date(changed?state.race.oddsUpdatedAt:state.oddsLastCheckedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=changed?`NAR公式 現在オッズ ${count}頭反映｜変更 ${t}｜人気・期待回収率・穴馬/危険馬を再計算済み`:`NAR公式 現在オッズ ${count}頭確認｜値変更なし ${t}`;
+   render();persist(existingValidated(raceId(r)));const changed=state.lastOddsApplyChanged,t=new Date(changed?state.race.oddsUpdatedAt:state.oddsLastCheckedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});renderMarketDisplayState();$('liveOddsStatus').textContent=preOddsFrozen(state)?`NAR公式 事前オッズ ${count}頭を固定｜${t}｜以後アプリでは追跡しません`:`NAR公式 事前オッズ ${count}頭を暫定反映｜${t}｜全頭揃うまで固定待ち`;
  }catch(e){if(e?.name==='AbortError'||e?.code==='stale_request'||!isCurrent())return;renderMarketDisplayState();$('liveOddsStatus').textContent=e?.code==='odds_unpublished'?'現在オッズはまだ公開されていません。':`取得エラー｜${errorLabel(e)}`}
  finally{if(generation===liveOddsGeneration){liveOddsController=null;if(!silent)setButtonBusy('liveOddsSync',false)}}
 }
-function setAutoOdds(on){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if(on){syncLiveOdds();oddsTimer=setInterval(()=>syncLiveOdds(true),60000)}if($('autoOddsState')){$('autoOddsState').textContent=on?'ON':'OFF';$('autoOddsState').classList.toggle('is-on',on)}}
+function setAutoOdds(){if(oddsTimer){clearInterval(oddsTimer);oddsTimer=null}if($('autoOdds')){$('autoOdds').checked=false;$('autoOdds').disabled=true}if($('autoOddsState')){$('autoOddsState').textContent='固定運用';$('autoOddsState').classList.remove('is-on')}}
 
 function saveFetchedResult(finishOrder,{silent=true,source='NAR公式自動保存',resultData=null,onStage=null}={}){
  const stage=name=>{if(typeof onStage==='function')onStage(name)};
@@ -1941,7 +2000,7 @@ function migrateLegacy(){
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
    APP_VERSION,BACKUP_SCHEMA_VERSION,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
-   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
+   normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,PREODDS_POLICY_VERSION,preOddsFrozen,preOddsStats,preOddsStamp,schedulePreOddsFallback,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
  };
  return;
 }
@@ -1986,7 +2045,7 @@ $('raceImportFile').addEventListener('change',async e=>{const f=e.target.files?.
 $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=async()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView'){renderDashboard();if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:true})}});
 bindHistoricalCollector();
-$('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);if($('autoResultToggle'))$('autoResultToggle').onchange=e=>setAutoResult(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
+$('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);setAutoOdds(false);if($('autoResultToggle'))$('autoResultToggle').onchange=e=>setAutoResult(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
 if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.status==='syncing')return;setButtonBusy('cloudSyncButton',true,'差分確認中');try{await syncAllResearchToCloud();renderCloudSyncState();renderDashboard()}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudSyncButton',false)} };
