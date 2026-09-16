@@ -1,0 +1,5 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {createPrecomputedSnapshot,stableHash,appendLayerRevision,viewerState} from '../src/prediction/precomputed-snapshot.mjs';
+test('inputHash is key-order stable and same input is idempotent',()=>assert.equal(stableHash({b:2,a:1}),stableHash({a:1,b:2})));
+test('five layers keep DATA market-independent and Original FINAL frozen',()=>{const s=createPrecomputedSnapshot({raceId:'20260910-NAR-川崎-01',organization:'NAR',source:{acquiredAt:'2026-09-10T00:00:00Z'},data:{ability:80},market:{odds:2},final:{mark:'◎'}});assert.equal(s.layers.DATA.odds,undefined);assert.throws(()=>appendLayerRevision(s,'FINAL',{mark:'○'}),/frozen/);});
+test('viewer explicitly reports missing partial stale and ready',()=>{assert.equal(viewerState(null).status,'NOT_CALCULATED');const partial=createPrecomputedSnapshot({raceId:'x',organization:'NAR',source:{},data:{}});assert.equal(viewerState(partial).status,'PARTIAL');const ready=createPrecomputedSnapshot({raceId:'x',organization:'NAR',source:{},data:{},final:{},now:new Date().toISOString()});assert.equal(viewerState(ready).status,'READY');});
