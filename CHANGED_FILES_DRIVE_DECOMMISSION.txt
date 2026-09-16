@@ -1,0 +1,31 @@
+Baseline: f77949584fe6e4d83dde95033ba5c894d244eb46
+
+MODIFIED
+.github/workflows/CHASS-JRA-Health-Smoke-v1.0.yml
+worker.js
+wrangler.jsonc
+
+ADDED
+tests/google-drive-runtime-decommission.test.mjs
+reports/10_DRIVE_RUNTIME_DECOMMISSION.md
+CHANGED_FILES_DRIVE_DECOMMISSION.txt
+
+DELETED
+.github/workflows/CHASS-JRA-D1-Retention-v1.0.yml
+google-drive-readonly-api.mjs
+google-drive-readonly-import.mjs
+jra-drive-prediction-input.mjs
+tests/google-drive-cloudflare-api.test.mjs
+tests/google-drive-readonly-import.test.mjs
+tests/jra-drive-friday-fallback-v15.test.mjs
+tests/jra-drive-prediction-input.test.mjs
+
+UNCHANGED BY DESIGN
+migrations/0001_research_cloud.sql through migrations/0012_precomputed_snapshots.sql
+src/research/research-storage-sync.mjs
+src/prediction/precomputed-snapshot.mjs
+app.js
+
+PATCH DELETION NOTE
+ZIP archives cannot express a filesystem deletion by omission alone. The PATCH ZIP
+therefore carries this manifest; consumers must remove every path under DELETED.
