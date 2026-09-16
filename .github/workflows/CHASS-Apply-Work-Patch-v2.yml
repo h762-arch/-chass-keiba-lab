@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'CHASS_WORK_PATCH_v2.zip'
+      - '.github/workflows/CHASS-Apply-Work-Patch-v2.yml'
 
 permissions:
   contents: write
@@ -16,6 +17,7 @@ concurrency:
 
 jobs:
   apply-tested-patch:
+    if: github.actor != 'github-actions[bot]'
     name: Verify, expand, test, and commit PATCH v2
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -293,26 +295,38 @@ jobs:
           print("Migration dry-run 0001-0012 OK")
           PY
 
+      - name: Stage approved PATCH and remove transport files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r file; do
+            git add -- "${file}"
+          done < /tmp/expected-files.txt
+
+          # The ZIP and this temporary apply workflow are transport-only.
+          # Remove both from the final branch tree so the PR contains only
+          # the 33 approved PATCH files.
+          git rm -f -- "${PATCH_ZIP}"
+          git rm -f -- ".github/workflows/CHASS-Apply-Work-Patch-v2.yml"
+
       - name: Verify final staged diff is exactly approved PATCH
         shell: bash
         run: |
           set -euo pipefail
 
-          git diff --name-only "${BASELINE_SHA}" -- \
-            ':!.github/workflows/CHASS-Apply-Work-Patch-v2.yml' \
-            ':!CHASS_WORK_PATCH_v2.zip' \
-            | sort > /tmp/final-source-files.txt
+          # Compare the INDEX to the protected baseline. Using --cached is
+          # required because newly expanded PATCH files may be new/untracked
+          # paths until they are staged.
+          git diff --cached --name-only "${BASELINE_SHA}" | sort > /tmp/final-source-files.txt
+
+          echo "Final staged files:"
+          cat /tmp/final-source-files.txt
 
           diff -u /tmp/expected-files.txt /tmp/final-source-files.txt
 
-          echo "Approved PATCH diff:"
-          git diff --stat "${BASELINE_SHA}" -- \
-            ':!.github/workflows/CHASS-Apply-Work-Patch-v2.yml' \
-            ':!CHASS_WORK_PATCH_v2.zip'
-
-      - name: Remove transport ZIP
-        shell: bash
-        run: rm -f "${PATCH_ZIP}"
+          echo "Approved PATCH staged diff:"
+          git diff --cached --stat "${BASELINE_SHA}"
 
       - name: Commit tested PATCH to work branch only
         shell: bash
@@ -321,12 +335,6 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          while IFS= read -r file; do
-            git add "${file}"
-          done < /tmp/expected-files.txt
-
-          git add -u -- "${PATCH_ZIP}" || true
 
           if git diff --cached --quiet; then
             echo "No PATCH changes to commit."
