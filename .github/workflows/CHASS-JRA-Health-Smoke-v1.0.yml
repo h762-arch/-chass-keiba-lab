@@ -11,7 +11,6 @@ on:
         options:
           - app_all
           - official_d1
-          - drive_fallback
       date:
         description: "開催日 YYYY-MM-DD。空欄なら日本時間の今日"
         required: false
@@ -30,7 +29,7 @@ on:
         type: choice
         options: [札幌, 函館, 福島, 新潟, 東京, 中山, 中京, 京都, 阪神, 小倉]
       race:
-        description: "official_d1 / drive_fallback用のR"
+        description: "official_d1用のR"
         required: true
         default: "1"
         type: choice
@@ -41,11 +40,6 @@ on:
         default: "ANY"
         type: choice
         options: [ANY, current, saved]
-      require_any_past_run:
-        description: "drive_fallback: Drive過去走が1頭以上あることを必須にする"
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -119,18 +113,18 @@ jobs:
             if (Number(x.quality?.horseCount || 0) < 2) reasons.push('HORSE_COUNT_LT_2');
             if (String(x.race?.racecourse || '') !== track) reasons.push('TRACK_MISMATCH');
             if (Number(x.race?.raceNo) !== race) reasons.push('RACE_MISMATCH');
-            const valid = new Set(['JRA_OFFICIAL','JRA_SAVED_OFFICIAL_BASE','JRA_DRIVE_FRIDAY_BASE']);
+            const valid = new Set(['JRA_OFFICIAL','JRA_SAVED_OFFICIAL_BASE']);
             if (!valid.has(String(x.source || ''))) reasons.push(`UNEXPECTED_SOURCE:${x.source || 'blank'}`);
             if (x.source === 'JRA_SAVED_OFFICIAL_BASE' && x.liveFieldsVerified !== false) {
               reasons.push('SAVED_LIVE_FIELDS_NOT_UNVERIFIED');
             }
+            if (x.driveInput != null) reasons.push('DRIVE_FALLBACK_OR_MERGE_DETECTED');
           }
           const source = x?.source || '';
-          const freshness = x?.bridgeCache?.freshness || (source === 'JRA_DRIVE_FRIDAY_BASE' ? 'drive' : '');
-          const drive = x?.driveInput?.status || '';
+          const freshness = x?.bridgeCache?.freshness || '';
           const horses = Number(x?.quality?.horseCount || 0);
           process.stdout.write([
-            reasons.length ? 'FAIL' : 'PASS', code || '000', source, freshness, drive,
+            reasons.length ? 'FAIL' : 'PASS', code || '000', source, freshness,
             String(horses), reasons.join(',') || '-'
           ].join('\t'));
           NODE
@@ -153,10 +147,10 @@ jobs:
             echo "- PASS: $PASS_COUNT / 24"
             echo "- FAIL: $FAIL_COUNT"
             echo
-            echo "| 競馬場 | R | 判定 | HTTP | source | freshness | Drive | 頭数 | 理由 |"
-            echo "|---|---:|---|---:|---|---|---|---:|---|"
-            while IFS=$'\t' read -r TRACK RACE STATUS HTTP SOURCE FRESHNESS DRIVE HORSES REASON; do
-              echo "| $TRACK | ${RACE}R | $STATUS | $HTTP | ${SOURCE:--} | ${FRESHNESS:--} | ${DRIVE:--} | $HORSES | $REASON |"
+            echo "| 競馬場 | R | 判定 | HTTP | source | freshness | 頭数 | 理由 |"
+            echo "|---|---:|---|---:|---|---|---:|---|"
+            while IFS=$'\t' read -r TRACK RACE STATUS HTTP SOURCE FRESHNESS HORSES REASON; do
+              echo "| $TRACK | ${RACE}R | $STATUS | $HTTP | ${SOURCE:--} | ${FRESHNESS:--} | $HORSES | $REASON |"
             done < "$RESULTS"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -240,141 +234,3 @@ jobs:
             echo "- Horse count: ${{ steps.call.outputs.horse_count || 'unknown' }}"
             echo "- Drive fallback/merge: NOT USED"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  drive_fallback:
-    if: ${{ inputs.mode == 'drive_fallback' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON }}
-      ENABLE_DRIVE_READ_IMPORT: "true"
-      CHASS_DRIVE_SPREADSHEET_ID: "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI"
-    steps:
-      - name: Checkout selected ref
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-
-      - name: Resolve date and safety preflight
-        id: date
-        shell: bash
-        env:
-          INPUT_DATE: ${{ inputs.date }}
-        run: |
-          set -euo pipefail
-          DATE_ARG="${INPUT_DATE:-}"
-          [ -n "$DATE_ARG" ] || DATE_ARG="$(TZ=Asia/Tokyo date +%F)"
-          printf '%s' "$DATE_ARG" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-          echo "value=$DATE_ARG" >> "$GITHUB_OUTPUT"
-
-          for f in google-drive-readonly-import.mjs jra-drive-prediction-input.mjs jra-normalizer.js jra-model.js jra-adapter.js; do
-            test -f "$f"
-          done
-          test -n "${GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON:-}"
-          grep -q "JRA_DRIVE_FRIDAY_BASE" jra-drive-prediction-input.mjs
-          grep -q "JRA_DRIVE_PAST_RUN_LIMIT = 10" jra-drive-prediction-input.mjs
-
-      - name: Verify real Drive fallback through JRA model
-        shell: bash
-        env:
-          TEST_DATE: ${{ steps.date.outputs.value }}
-          TEST_TRACK: ${{ inputs.track }}
-          TEST_RACE: ${{ inputs.race }}
-          REQUIRE_ANY_PAST_RUN: ${{ inputs.require_any_past_run }}
-        run: |
-          set -euo pipefail
-
-          # Keep the temporary ESM module in the repository root so its
-          # relative imports resolve to the checked-out CHASS modules.
-          SMOKE_SCRIPT="$GITHUB_WORKSPACE/.chass-jra-drive-health.mjs"
-          trap 'rm -f "$SMOKE_SCRIPT"' EXIT
-
-          cat > "$SMOKE_SCRIPT" <<'NODE'
-          import fs from 'node:fs';
-          import vm from 'node:vm';
-          import { getDriveReadReadiness, readChassArchiveSheet } from './google-drive-readonly-import.mjs';
-          import {
-            JRA_DRIVE_INDEX_SHEET, JRA_DRIVE_PAST_RUN_LIMIT,
-            extractJraDriveRaceRows, createDriveJraFallback
-          } from './jra-drive-prediction-input.mjs';
-
-          const env = {
-            ENABLE_DRIVE_READ_IMPORT: process.env.ENABLE_DRIVE_READ_IMPORT,
-            CHASS_DRIVE_SPREADSHEET_ID: process.env.CHASS_DRIVE_SPREADSHEET_ID,
-            GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON,
-          };
-          const context = {date: process.env.TEST_DATE, track: process.env.TEST_TRACK, race: Number(process.env.TEST_RACE)};
-          const requirePast = /^(1|true|yes|on)$/i.test(String(process.env.REQUIRE_ANY_PAST_RUN || ''));
-          const readiness = getDriveReadReadiness(env);
-          if (!readiness.enabled || !readiness.configured) throw new Error('Drive reader not ready');
-
-          const sheet = await readChassArchiveSheet(env, JRA_DRIVE_INDEX_SHEET, {
-            organization:'JRA', maxRows:5000, maxColumn:'AZ'
-          });
-          const rows = extractJraDriveRaceRows(sheet.records, context);
-          if (rows.length < 2) throw new Error(`Drive rows incomplete: ${rows.length}`);
-
-          const fallback = createDriveJraFallback(context, rows, 'SMOKE_OFFICIAL_DISABLED');
-          if (fallback.source !== 'JRA_DRIVE_FRIDAY_BASE') throw new Error('unexpected Drive source');
-          if (fallback.officialStatus !== 'unavailable') throw new Error('officialStatus must be unavailable');
-          if (fallback.driveInput?.status !== 'fallback') throw new Error('Drive status must be fallback');
-          if (!fallback.quality?.raceParsed || fallback.quality.horseCount < 2) throw new Error('Drive race incomplete');
-          if (fallback.horses.some(h => h.odds != null || h.popularity != null)) throw new Error('market leak');
-          if (fallback.horses.some(h => (h.pastRuns?.length || 0) > JRA_DRIVE_PAST_RUN_LIMIT)) throw new Error('past run limit exceeded');
-
-          const pastRunHorseCount = fallback.horses.filter(h => (h.pastRuns?.length || 0) > 0).length;
-          if (requirePast && pastRunHorseCount === 0) throw new Error('No Drive past runs');
-
-          const ctx = vm.createContext({console,Date,Math,JSON,Number,String,Array,Object,Map,Set,RegExp,Intl});
-          ctx.globalThis = ctx;
-          for (const file of ['jra-normalizer.js','jra-model.js','jra-adapter.js']) {
-            vm.runInContext(fs.readFileSync(file,'utf8'), ctx, {filename:file});
-          }
-          const normalized = ctx.CHASS_JRA_NORMALIZER.normalizeJraData(fallback);
-          if (!normalized.validation?.ok) throw new Error('Normalizer rejected Drive fallback');
-          const result = ctx.CHASS_JRA_ADAPTER.run(normalized);
-          const predicted = result?.prediction?.horses || [];
-          if (predicted.length !== fallback.horses.length) throw new Error('Model horse count mismatch');
-          const win = Number(result?.prediction?.quality?.winProbabilityTotal);
-          const place = Number(result?.prediction?.quality?.placeProbabilityTotal);
-          if (!Number.isFinite(win) || Math.abs(win-100) >= .05) throw new Error(`win total ${win}`);
-          if (!Number.isFinite(place) || Math.abs(place-300) >= .10) throw new Error(`place total ${place}`);
-          if (result?.prediction?.quality?.probabilityInvariant !== true) throw new Error('probability invariant');
-
-          const report = {
-            ok:true, context, source:fallback.source, rowCount:rows.length,
-            horseCount:fallback.quality.horseCount, pastRunHorseCount,
-            pastRunLimit:JRA_DRIVE_PAST_RUN_LIMIT, winProbabilityTotal:win,
-            placeProbabilityTotal:place, probabilityInvariant:true
-          };
-          fs.writeFileSync('/tmp/chass-jra-drive-health.json', JSON.stringify(report,null,2));
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
-            '## CHASS JRA Health Smoke v1.0.1 — drive_fallback','',
-            `- Target: ${context.date} ${context.track} ${context.race}R`,
-            '- JRA official request: NOT USED',
-            `- Source: ${fallback.source}`,
-            `- Drive rows / horses: ${rows.length} / ${fallback.quality.horseCount}`,
-            `- Past-run coverage: ${pastRunHorseCount}/${fallback.horses.length}`,
-            `- AI win total: ${win.toFixed(2)}%`,
-            `- AI place total: ${place.toFixed(2)}%`,
-            '- Normalizer -> Model: PASS'
-          ].join('\n')+'\n');
-          console.log(JSON.stringify(report,null,2));
-          NODE
-
-          node "$SMOKE_SCRIPT"
-
-      - name: Upload Drive smoke report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: chass-jra-drive-health-${{ steps.date.outputs.value }}-${{ inputs.track }}-${{ inputs.race }}R
-          path: /tmp/chass-jra-drive-health.json
-          if-no-files-found: ignore
-          retention-days: 14
