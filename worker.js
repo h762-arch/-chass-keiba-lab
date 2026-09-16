@@ -8,6 +8,7 @@ import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} fr
 import {parseNarRaceList} from './meeting-discovery.mjs';
 import {enqueueResearchSync,runResearchSyncQueue} from './src/research/research-storage-sync.mjs';
 import {handleDriveReadHealth,handleDriveReadBridge} from './google-drive-readonly-api.mjs';
+import {classifyHorseOrigin,classifyRunVenue,mergeCardIdentities,summarizeHorseOrigins} from './src/nar/exchange-origin.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
@@ -215,7 +216,9 @@ export function parseRaceCard(html){
    const texts=c.slice(start).filter(x=>x&&!/^\d+(?:\.\d+)?$/.test(String(x)));
    if(texts.length)jockey=String(texts[0]||'').trim();
    if(texts.length>1)trainer=String(texts[texts.length-1]||'').trim();
-   const currentText=currentStatusText(row,statusIndex),horseStatus=horseStatusFromText(currentText),statusText=horseStatus==='active'?'':currentText;out.push({horseNo:no,horseName:cleanText(name),weight,sexAge,jockey,trainer,rowHtml:row.raw,horseStatus,statusText,eligible:horseStatus==='active'});
+   if(nameIndex>=0&&c[nameIndex+1])trainer=String(c[nameIndex+1]).trim();
+   if(nameIndex>=0&&c[nameIndex+2])jockey=String(c[nameIndex+2]).trim();
+   const currentText=currentStatusText(row,statusIndex),horseStatus=horseStatusFromText(currentText),statusText=horseStatus==='active'?'':currentText;out.push({horseNo:no,horseName:cleanText(name),weight,sexAge,jockey,trainer,...classifyHorseOrigin(trainer),rowHtml:row.raw,horseStatus,statusText,eligible:horseStatus==='active'});
  }
  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);
  return [...byNo.values()].sort((a,b)=>Number(a.horseNo)-Number(b.horseNo));
@@ -241,9 +244,9 @@ export function compactTimeToSec(v){
  const tenth=Number(s.at(-1)),sec=Number(s.slice(-3,-1)),min=Number(s.slice(0,-3)||0);
  if(sec>59)return null;return min*60+sec+tenth/10;
 }
-function locateHorseSegments(detailHtml,horses){
- const detailHorses=parseRaceCard(detailHtml),byNo=new Map(detailHorses.map(h=>[String(h.horseNo),h.rowHtml]));
- const byName=new Map(detailHorses.map(h=>[String(h.horseName),h.rowHtml]));
+function locateHorseSegments(detailHtml,horses,fallbackHtml=''){
+ const detailHorses=parseRaceCard(detailHtml),fallbackHorses=parseRaceCard(fallbackHtml),all=mergeCardIdentities(detailHorses,fallbackHorses,[]),byNo=new Map(all.map(h=>[String(h.horseNo),h.rowHtml]));
+ const byName=new Map(all.map(h=>[String(h.horseName),h.rowHtml]));
  return horses.map(h=>cleanText(byNo.get(String(h.horseNo))||byName.get(String(h.horseName))||''));
 }
 export function parseRuns(segment,targetDistance,trackName){
@@ -266,7 +269,7 @@ export function parseRuns(segment,targetDistance,trackName){
    const corners=chunk.match(/\b(\d{1,2}(?:-\d{1,2}){1,4})\b/)?.[1]||'';
    const decimals=[...chunk.matchAll(/\b([2-5]\d\.\d)\b/g)].map(x=>Number(x[1])).filter(v=>v>=30&&v<=55);
    const last3f=decimals.length?decimals[decimals.length-1]:null;
-   const venue=(String(m[1]||'').match(/[一-龠々ヶァ-ヶー]+/)||[])[0]||'';
+   const {rawVenue,venue,runOrganization}=classifyRunVenue(String(m[1]||''));
    const exactDistance=!!(dist&&targetDistance&&dist===targetDistance);
    const nearDistance=!!(dist&&targetDistance&&Math.abs(dist-targetDistance)<=100);
    const sameTrack=!!(trackName&&(venue===trackName||chunk.startsWith(trackName)||chunk.includes(trackName+m[2])));
@@ -275,7 +278,7 @@ export function parseRuns(segment,targetDistance,trackName){
    if(sameTrack)score+=3;
    if(last3f!=null)score+=clamp((41-last3f)*1.15,-8,8);
    runs.push({
-     finish,fieldSize,popularity,date:m[2],condition:m[3],direction:m[4]||'',venue,distance:dist,timeSec,last3f,corners,
+     finish,fieldSize,popularity,date:m[2],condition:m[3],direction:m[4]||'',rawVenue,venue,runOrganization,distance:dist,timeSec,last3f,corners,
      exactDistance,nearDistance,sameDistance:exactDistance,sameTrack,
      score:clamp(score,30,110)
    });
@@ -336,8 +339,8 @@ export function classifyPredictedTimeMissing(runs,targetDistance,targetSurface='
  if(!rows.some(r=>Number.isFinite(r.timeSec)))return 'time_missing_parse';
  return 'time_missing_unknown';
 }
-function enrichAbility(detailHtml,horses,targetDistance,trackName){
- const segments=locateHorseSegments(detailHtml,horses);
+function enrichAbility(detailHtml,horses,targetDistance,trackName,fallbackHtml=''){
+ const segments=locateHorseSegments(detailHtml,horses,fallbackHtml);
  const enriched=horses.map((h,i)=>{
    const runs=parseRuns(segments[i]||'',targetDistance,trackName);
    const recentIndex=runs.map(r=>Math.round(r.score));
@@ -369,20 +372,25 @@ function enrichAbility(detailHtml,horses,targetDistance,trackName){
  return enriched;
 }
 
-export async function buildNarRacePayload({code,date,race,urls,fetcher=fetchText,sleeper=wait}){const sources=await fetchNarRaceSources(urls,{fetcher,sleeper}),{detailHtml:dh,cardHtml:ch,oddsHtml:oh,audit}=sources,detailHorses=parseRaceCard(dh),fallbackHorses=parseRaceCard(ch),cardHorses=detailHorses.length>=2?detailHorses:fallbackHorses;if(cardHorses.length<2){const e=Object.assign(new Error('出走馬データを取得できませんでした'),{code:!dh&&!ch?'network_error':'parser_error',stage:'race_parse',raceFetchAudit:audit});throw e}const meta=parseRaceMeta(dh||ch),odds=parseTanFuku(oh),track=TRACK_NAMES[Number(code)]||'',enriched=enrichAbility(dh||ch,cardHorses,meta.distance,track),cm=new Map(enriched.map(x=>[String(x.horseNo),x])),om=new Map(odds.map(x=>[String(x.horseNo),x])),numbers=[...new Set(enriched.map(x=>String(x.horseNo)))].sort((a,b)=>Number(a)-Number(b)),merged=numbers.map(no=>{const c=cm.get(no)||{},o=om.get(no)||{},cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim(),cardOk=plausibleHorseName(cardName),oddsOk=plausibleHorseName(oddsName),horseName=cardOk?cardName:oddsOk?oddsName:`馬番${no}`;return {...c,horseNo:no,horseName,odds:o.odds??null,popularity:o.popularity??null,nameSource:cardOk?'出馬表':oddsOk?'オッズ表':'fallback'}}),abilityCount=merged.filter(x=>x.abilityScore!=null).length,invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;return {ok:true,status:'success',stage:'race_parse_complete',raceSuccess:true,source:'NAR公式',version:VERSION,track,code,date,race,...meta,horses:merged,odds,marketStatus:audit.odds.success?'available':'unavailable',raceFetchAudit:{...audit,parse:{success:true,horseCount:merged.length,abilityCount,predictedTimeCount:merged.filter(x=>x.predictedTime).length}},quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,featureData:merged.filter(x=>x.features?.evidence?.runs>0).length,marketSeparated:true,parser:detailHorses.length>=2?'DebaTableSmall-row-v9.8':'RaceMarkTable-fallback',predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length,predictedTimeScenarios:merged.filter(x=>x.predictedTimeScenarios).length},partialSuccess:!audit.card.success||!audit.odds.success,optionalErrors:[!audit.card.success?'card_fetch_failed':null,!audit.odds.success?'odds_fetch_failed':null].filter(Boolean),acquiredAt:new Date().toISOString()}}
+function assembleNarRace(dh,ch,oh,code){
+ const detailHorses=parseRaceCard(dh),fallbackHorses=parseRaceCard(ch),odds=parseTanFuku(oh),cardHorses=mergeCardIdentities(detailHorses,fallbackHorses,odds);
+ if(cardHorses.length<2)throw Object.assign(new Error('出走馬データを取得できませんでした'),{code:!dh&&!ch?'network_error':'parser_error',stage:'race_parse'});
+ const meta=parseRaceMeta(dh||ch),track=TRACK_NAMES[Number(code)]||'',enriched=enrichAbility(dh||ch,cardHorses,meta.distance,track,ch),om=new Map(odds.map(x=>[String(x.horseNo),x]));
+ const horses=enriched.map(c=>{const o=om.get(String(c.horseNo))||{};return {...c,odds:o.odds??null,popularity:o.popularity??null};}),origins=summarizeHorseOrigins(horses);
+ return {detailHorses,fallbackHorses,odds,meta,track,horses,...origins,cardDiagnostics:{detailHorseCount:detailHorses.length,fallbackHorseCount:fallbackHorses.length,oddsHorseCount:odds.length,mergedHorseCount:horses.length,recoveredHorseCount:horses.filter(x=>x.identityRecovered).length}};
+}
+
+export async function buildNarRacePayload({code,date,race,urls,fetcher=fetchText,sleeper=wait}){const sources=await fetchNarRaceSources(urls,{fetcher,sleeper}),{detailHtml:dh,cardHtml:ch,oddsHtml:oh,audit}=sources;let a;try{a=assembleNarRace(dh,ch,oh,code)}catch(e){e.raceFetchAudit=audit;throw e}const {detailHorses,odds,meta,track,horses,originCounts,mixedOrigin,raceHost,cardDiagnostics}=a,abilityCount=horses.filter(x=>x.abilityScore!=null).length,invalidHorseNames=horses.filter(x=>!plausibleHorseName(x.horseName)).length;return {ok:true,status:'success',stage:'race_parse_complete',raceSuccess:true,source:'NAR公式',version:VERSION,organization:'NAR',raceType:'NAR',raceHost,mixedOrigin,originCounts,track,code,date,race,...meta,horses,odds,marketStatus:audit.odds.success?'available':'unavailable',raceFetchAudit:{...audit,parse:{success:true,horseCount:horses.length,abilityCount,predictedTimeCount:horses.filter(x=>x.predictedTime).length,...cardDiagnostics,...originCounts,mixedOrigin,raceHost}},quality:{horseNames:horses.length-invalidHorseNames,invalidHorseNames,total:horses.length,abilityData:abilityCount,abilityRate:horses.length?Math.round(100*abilityCount/horses.length):0,featureData:horses.filter(x=>x.features?.evidence?.runs>0).length,marketSeparated:true,parser:detailHorses.length===0?'RaceMarkTable-fallback':detailHorses.length===horses.length?'DebaTableSmall-row-v10.0.1':'NAR-card-merge-v10.0.1',...cardDiagnostics,...originCounts,mixedOrigin,raceHost,predictedTime:horses.filter(x=>x.predictedTime).length,predictedTimeActual:horses.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:horses.filter(x=>x.predictedTimeType==='補正').length,predictedTimeScenarios:horses.filter(x=>x.predictedTimeScenarios).length},partialSuccess:!audit.card.success||!audit.odds.success,optionalErrors:[!audit.card.success?'card_fetch_failed':null,!audit.odds.success?'odds_fetch_failed':null].filter(Boolean),acquiredAt:new Date().toISOString()}}
 export async function buildNarRacePayloadStable({code,date,race,urls,fetcher=fetchText}){
  const audit={detail:{success:false,route:'DebaTableSmall'},card:{success:false,route:'RaceMarkTable',optional:true},odds:{success:false,route:'OddsTanFuku',optional:true}};
  let dh='',ch='',oh='';
  try{dh=await fetcher(urls.detail,{timeoutMs:8000});audit.detail={...audit.detail,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.detail.errorCode=errorPayload(e).errorCode}
  try{ch=await fetcher(urls.card,{timeoutMs:8000});audit.card={...audit.card,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.card.errorCode=errorPayload(e).errorCode}
  try{oh=await fetcher(urls.odds,{timeoutMs:4000});audit.odds={...audit.odds,success:true,httpStatus:200,attemptCount:1}}catch(e){audit.odds.errorCode=errorPayload(e).errorCode}
- const detailHorses=parseRaceCard(dh),cardHorses=parseRaceCard(ch),base=detailHorses.length>=2?detailHorses:cardHorses;
- if(base.length<2)throw Object.assign(new Error('出走馬データを取得できませんでした'),{code:!dh&&!ch?'network_error':'parse_error',raceFetchAudit:audit});
- const meta=parseRaceMeta(dh||ch),track=TRACK_NAMES[Number(code)]||'',odds=parseTanFuku(oh),enriched=enrichAbility(dh||ch,base,meta.distance,track),cm=new Map(enriched.map(x=>[String(x.horseNo),x])),om=new Map(odds.map(x=>[String(x.horseNo),x]));
- const merged=enriched.map(c=>{const no=String(c.horseNo),o=om.get(no)||{},cardName=String(c.horseName||'').trim(),oddsName=String(o.horseName||'').trim(),horseName=plausibleHorseName(cardName)?cardName:plausibleHorseName(oddsName)?oddsName:`馬番${no}`;return {...c,horseNo:no,horseName,odds:o.odds??null,popularity:o.popularity??null,nameSource:plausibleHorseName(cardName)?'出馬表':plausibleHorseName(oddsName)?'オッズ表':'fallback'}}),abilityCount=merged.filter(x=>x.abilityScore!=null).length,invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
+ let a;try{a=assembleNarRace(dh,ch,oh,code)}catch(e){e.code=e.code==='parser_error'?'parse_error':e.code;e.raceFetchAudit=audit;throw e}const {detailHorses,odds,meta,track,horses:merged,originCounts,mixedOrigin,raceHost,cardDiagnostics}=a,abilityCount=merged.filter(x=>x.abilityScore!=null).length,invalidHorseNames=merged.filter(x=>!plausibleHorseName(x.horseName)).length;
  const timeMissing=merged.filter(x=>!x.predictedTime).reduce((counts,x)=>{const code=x.predictedTimeMissingReason||'time_missing_unknown';counts[code]=(counts[code]||0)+1;return counts},{});
- audit.parse={success:true,horseCount:merged.length,abilityCount,predictedTimeCount:merged.filter(x=>x.predictedTime).length};
- return {ok:true,status:'success',stage:'race_parse_complete',raceSuccess:true,source:'NAR公式',version:VERSION,track,code,date,race,...meta,horses:merged,odds,marketStatus:odds.length?'available':'unavailable',raceFetchAudit:audit,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,featureData:merged.filter(x=>x.features?.evidence?.runs>0).length,marketSeparated:true,marketData:merged.filter(x=>x.odds!=null).length,marketMissing:merged.filter(x=>x.odds==null).length,parser:detailHorses.length>=2?'DebaTableSmall-row-v9.8':'RaceMarkTable-fallback',predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length,predictedTimeMissing:merged.filter(x=>!x.predictedTime).length,predictedTimeMissingReasons:timeMissing,predictedTimeScenarios:merged.filter(x=>x.predictedTimeScenarios).length},partialSuccess:!audit.card.success||!audit.odds.success,optionalErrors:[!audit.card.success?'card_fetch_failed':null,!audit.odds.success?'odds_fetch_failed':null].filter(Boolean),acquiredAt:new Date().toISOString()};
+ audit.parse={success:true,horseCount:merged.length,abilityCount,predictedTimeCount:merged.filter(x=>x.predictedTime).length,...cardDiagnostics,...originCounts,mixedOrigin,raceHost};
+ return {ok:true,status:'success',stage:'race_parse_complete',raceSuccess:true,source:'NAR公式',version:VERSION,organization:'NAR',raceType:'NAR',raceHost,mixedOrigin,originCounts,track,code,date,race,...meta,horses:merged,odds,marketStatus:odds.length?'available':'unavailable',raceFetchAudit:audit,quality:{horseNames:merged.length-invalidHorseNames,invalidHorseNames,total:merged.length,abilityData:abilityCount,abilityRate:merged.length?Math.round(100*abilityCount/merged.length):0,featureData:merged.filter(x=>x.features?.evidence?.runs>0).length,marketSeparated:true,marketData:merged.filter(x=>x.odds!=null).length,marketMissing:merged.filter(x=>x.odds==null).length,parser:detailHorses.length===0?'RaceMarkTable-fallback':detailHorses.length===merged.length?'DebaTableSmall-row-v10.0.1':'NAR-card-merge-v10.0.1',...cardDiagnostics,...originCounts,mixedOrigin,raceHost,predictedTime:merged.filter(x=>x.predictedTime).length,predictedTimeActual:merged.filter(x=>x.predictedTimeType==='実績').length,predictedTimeAdjusted:merged.filter(x=>x.predictedTimeType==='補正').length,predictedTimeMissing:merged.filter(x=>!x.predictedTime).length,predictedTimeMissingReasons:timeMissing,predictedTimeScenarios:merged.filter(x=>x.predictedTimeScenarios).length},partialSuccess:!audit.card.success||!audit.odds.success,optionalErrors:[!audit.card.success?'card_fetch_failed':null,!audit.odds.success?'odds_fetch_failed':null].filter(Boolean),acquiredAt:new Date().toISOString()};
 }
 
 const AUTO_RESULT_RETRY_MINUTES=[5,5,10,15,30],AUTO_RESULT_MAX_ATTEMPTS=6;

@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {sampleGate,canPromote,transitionModel,shadowEvaluation} from '../src/research/model-governance.js';
+test('20/50 gates never auto-promote',()=>{assert.equal(sampleGate(19),'EXPLORATION');assert.equal(sampleGate(20),'SHADOW_CANDIDATE');assert.equal(sampleGate(50),'PROMOTION_REVIEW');assert.equal(shadowEvaluation({sampleCount:50}).productionChanged,false);});
+test('promotion requires all gates and explicit human approval',()=>{const base={sampleCount:50,walkForwardPass:true,multiKpiImprovement:true,materialRegression:false,baselineRetained:true,organization:'NAR',theme:'calibration'};assert.equal(canPromote(base),false);assert.equal(canPromote({...base,explicitHumanApproval:true}),true);assert.throws(()=>transitionModel({...base,stage:'APPROVED'},'PRODUCTION'),/blocked/);});

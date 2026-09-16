@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
+test('governance and precompute migrations are additive and separated by organization',()=>{for(const file of ['0011_model_governance.sql','0012_precomputed_snapshots.sql']){const sql=fs.readFileSync(new URL(`../migrations/${file}`,import.meta.url),'utf8');assert.doesNotMatch(sql,/\b(?:DROP|DELETE|ALTER)\b/i);assert.match(sql,/organization/);} });
