@@ -1,0 +1,162 @@
+name: CHASS PR47 Preview Smoke
+
+on:
+  push:
+    branches:
+      - chass/drive-runtime-decommission-20260916
+    paths:
+      - '.github/workflows/CHASS-PR47-Preview-Smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BASE_URL: https://chass-drive-runtime-decommission-20260916-chass-keiba-lab7.h7625421.workers.dev
+      EXPECTED_BRANCH: chass/drive-runtime-decommission-20260916
+
+    steps:
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$GITHUB_REF_NAME" != "main"
+
+      - name: Preview app root is live
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -sS --max-time 25 \
+            -D /tmp/root.headers \
+            -o /tmp/root.body \
+            "$BASE_URL/"
+
+          CODE="$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}' /tmp/root.headers)"
+          echo "Root HTTP: $CODE"
+          test "$CODE" = "200"
+
+          BYTES="$(wc -c < /tmp/root.body)"
+          echo "Root bytes: $BYTES"
+          test "$BYTES" -gt 100
+
+      - name: Core static assets are live
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for PATHNAME in /index.html /app.js; do
+            BODY="/tmp/$(basename "$PATHNAME").body"
+            CODE="$(curl -sS --max-time 25 \
+              -o "$BODY" \
+              -w '%{http_code}' \
+              "$BASE_URL$PATHNAME")"
+
+            echo "$PATHNAME HTTP: $CODE"
+            test "$CODE" = "200"
+
+            BYTES="$(wc -c < "$BODY")"
+            echo "$PATHNAME bytes: $BYTES"
+            test "$BYTES" -gt 100
+          done
+
+      - name: Removed Drive health route stays gone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CODE="$(curl -sS --max-time 25 \
+            -o /tmp/drive-health.body \
+            -w '%{http_code}' \
+            "$BASE_URL/api/drive-read/health" || true)"
+
+          echo "Drive health HTTP: $CODE"
+
+          case "$CODE" in
+            404|405|410) ;;
+            *)
+              echo "::error::Removed Drive health route unexpectedly returned HTTP $CODE"
+              cat /tmp/drive-health.body || true
+              exit 1
+              ;;
+          esac
+
+          ! grep -Eqi \
+            'chass-google-drive-readonly|spreadsheetReachable|drive_read_not_configured|GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON' \
+            /tmp/drive-health.body
+
+      - name: Removed Drive Bridge route stays gone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CODE="$(curl -sS --max-time 25 \
+            --get \
+            --data-urlencode 'organization=JRA' \
+            --data-urlencode 'sheet=JRA_指数マスター' \
+            --data-urlencode 'maxRows=1' \
+            -o /tmp/drive-bridge.body \
+            -w '%{http_code}' \
+            "$BASE_URL/api/chass/v1/drive" || true)"
+
+          echo "Drive Bridge HTTP: $CODE"
+
+          case "$CODE" in
+            404|405|410) ;;
+            *)
+              echo "::error::Removed Drive Bridge route unexpectedly returned HTTP $CODE"
+              cat /tmp/drive-bridge.body || true
+              exit 1
+              ;;
+          esac
+
+          ! grep -Eqi \
+            'drive_read_not_configured|spreadsheet|service_account|oauth2.googleapis.com|sheets.googleapis.com' \
+            /tmp/drive-bridge.body
+
+      - name: JRA route wiring remains present without fetching a race
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CODE="$(curl -sS --max-time 25 \
+            -o /tmp/jra-route.body \
+            -w '%{http_code}' \
+            "$BASE_URL/api/jra/race" || true)"
+
+          echo "JRA route HTTP without parameters: $CODE"
+
+          # Missing required parameters must fail closed as a client error.
+          # Do not call a concrete race here, so this smoke test does not
+          # intentionally read/write production race data.
+          case "$CODE" in
+            400|422) ;;
+            *)
+              echo "::error::JRA route wiring returned unexpected HTTP $CODE"
+              cat /tmp/jra-route.body || true
+              exit 1
+              ;;
+          esac
+
+      - name: Final summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## PR #47 Preview Smoke"
+            echo
+            echo "- Preview only: **YES**"
+            echo "- Production deploy triggered by this workflow: **NO**"
+            echo "- Production D1 migration: **NO**"
+            echo "- Concrete race/D1 data fetch intentionally performed: **NO**"
+            echo "- App root/assets: checked"
+            echo "- Drive health route: checked removed"
+            echo "- Drive Bridge route: checked removed"
+            echo "- JRA route wiring: checked fail-closed on missing parameters"
+          } >> "$GITHUB_STEP_SUMMARY"
