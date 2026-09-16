@@ -32,16 +32,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          curl -sS --max-time 25 \
-            -D /tmp/root.headers \
+          CODE="$(curl -sS -L --max-time 25 \
             -o /tmp/root.body \
-            "$BASE_URL/"
-
-          CODE="$(awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}' /tmp/root.headers)"
+            -w '%{http_code}' \
+            "$BASE_URL/")"
           echo "Root HTTP: $CODE"
           test "$CODE" = "200"
-
           BYTES="$(wc -c < /tmp/root.body)"
           echo "Root bytes: $BYTES"
           test "$BYTES" -gt 100
@@ -50,17 +46,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           for PATHNAME in /index.html /app.js; do
             BODY="/tmp/$(basename "$PATHNAME").body"
-            CODE="$(curl -sS --max-time 25 \
+            CODE="$(curl -sS -L --max-time 25 \
               -o "$BODY" \
               -w '%{http_code}' \
               "$BASE_URL$PATHNAME")"
-
-            echo "$PATHNAME HTTP: $CODE"
+            echo "$PATHNAME final HTTP: $CODE"
             test "$CODE" = "200"
-
             BYTES="$(wc -c < "$BODY")"
             echo "$PATHNAME bytes: $BYTES"
             test "$BYTES" -gt 100
@@ -70,14 +63,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           CODE="$(curl -sS --max-time 25 \
             -o /tmp/drive-health.body \
             -w '%{http_code}' \
             "$BASE_URL/api/drive-read/health" || true)"
-
           echo "Drive health HTTP: $CODE"
-
           case "$CODE" in
             404|405|410) ;;
             *)
@@ -86,7 +76,6 @@ jobs:
               exit 1
               ;;
           esac
-
           ! grep -Eqi \
             'chass-google-drive-readonly|spreadsheetReachable|drive_read_not_configured|GOOGLE_DRIVE_READ_SERVICE_ACCOUNT_JSON' \
             /tmp/drive-health.body
@@ -95,7 +84,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           CODE="$(curl -sS --max-time 25 \
             --get \
             --data-urlencode 'organization=JRA' \
@@ -104,9 +92,7 @@ jobs:
             -o /tmp/drive-bridge.body \
             -w '%{http_code}' \
             "$BASE_URL/api/chass/v1/drive" || true)"
-
           echo "Drive Bridge HTTP: $CODE"
-
           case "$CODE" in
             404|405|410) ;;
             *)
@@ -115,7 +101,6 @@ jobs:
               exit 1
               ;;
           esac
-
           ! grep -Eqi \
             'drive_read_not_configured|spreadsheet|service_account|oauth2.googleapis.com|sheets.googleapis.com' \
             /tmp/drive-bridge.body
@@ -124,17 +109,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           CODE="$(curl -sS --max-time 25 \
             -o /tmp/jra-route.body \
             -w '%{http_code}' \
             "$BASE_URL/api/jra/race" || true)"
-
           echo "JRA route HTTP without parameters: $CODE"
-
-          # Missing required parameters must fail closed as a client error.
-          # Do not call a concrete race here, so this smoke test does not
-          # intentionally read/write production race data.
           case "$CODE" in
             400|422) ;;
             *)
