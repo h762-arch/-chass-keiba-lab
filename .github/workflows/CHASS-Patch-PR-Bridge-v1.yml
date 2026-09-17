@@ -224,6 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --ignore-scripts
+          npm ci --prefix mcp --ignore-scripts
 
       - name: Full repository check
         shell: bash
