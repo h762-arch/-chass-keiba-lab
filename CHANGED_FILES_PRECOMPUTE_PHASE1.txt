@@ -1,0 +1,82 @@
+Baseline: 5a44b8c01f25217b84667eda2a3af3730c730dd1
+Revision: PATCH v7 after sixth independent audit
+
+MODIFIED
+migrations/0012_precomputed_snapshots.sql
+src/prediction/background-precompute.mjs
+src/prediction/precomputed-snapshot.mjs
+tests/background-precompute.test.mjs
+tests/precomputed-snapshot.test.mjs
+
+ADDED
+src/prediction/precomputed-store.mjs
+tests/precomputed-store.test.mjs
+reports/PRECOMPUTE_PHASE1_REPORT.md
+CHANGED_FILES_PRECOMPUTE_PHASE1.txt
+
+MIGRATION CHANGE
+migrations/0012_precomputed_snapshots.sql:
+- Replaced legacy status READY with required status CALCULATED in the CHECK constraint.
+- Added required snapshot_hash column for revision-content identity.
+- Added source_validated_at and data_calculated_at to separate freshness validation from calculation time.
+- Made legacy calculated_at nullable for SOURCE-invalidated PARTIAL revisions.
+- Replaced the UNIQUE inputHash index with a non-unique calculation-input lookup index.
+- Added a UNIQUE snapshotHash index so identical revisions are no-op while MARKET/RESULT revisions with the same inputHash remain appendable.
+
+INDEPENDENT AUDIT V2 CORRECTIONS
+- Existing inputHash lookup now occurs before calculate(), preventing duplicate calculation as well as duplicate save.
+- Runtime-declared versions are checked against calculator-reported versions.
+- DATA market-field rejection covers Japanese market keys and additional common aliases.
+- Focused regression coverage increased from 16 to 18 tests.
+
+INDEPENDENT AUDIT V3 CORRECTIONS
+- inputHash now includes clusterVersion and signalRuleVersion.
+- sourceHash canonicalization excludes acquisition timestamps and fetch metadata while sourceAcquiredAt remains stored separately.
+- snapshotHash now separates revision-content idempotency from calculation-input idempotency.
+- RESULT and pre-FINAL MARKET changes can append revisions with the same inputHash; identical revision content is no-op.
+- FINAL freezes SOURCE, DATA, MARKET, and FINAL; only RESULT can be appended.
+- Pre-FINAL SOURCE changes recompute sourceHash, inputHash, and snapshotHash.
+
+INDEPENDENT AUDIT V4 CORRECTIONS
+- Pre-FINAL SOURCE revisions invalidate DATA, MARKET, FINAL, and RESULT.
+- Pre-FINAL DATA revisions invalidate MARKET, FINAL, and RESULT.
+- MARKET revisions are allowed only before FINAL and invalidate FINAL/RESULT.
+- RESULT creation or append without FINAL is rejected.
+- Ordered SOURCE→DATA→MARKET→FINAL→RESULT lifecycle is covered by regression tests.
+- Calculation, market, and result runner ownership is explicitly separated.
+
+INDEPENDENT AUDIT V5 CORRECTIONS
+- FINAL requires a present MARKET at both snapshot creation and revision append.
+- The calculation runner rejects MARKET, FINAL, or RESULT output and saves SOURCE/DATA as PARTIAL only.
+- Dedicated market, finalization, and result revision runners enforce ownership order.
+- PRECOMPUTE_RUNNER_CONTRACTS now names FINAL ownership explicitly.
+- DATA revision time updates calculatedAt, and viewer freshness follows the latest DATA calculation.
+
+INDEPENDENT AUDIT V6 CORRECTIONS
+- sourceValidatedAt records the latest successful semantic SOURCE validation.
+- dataCalculatedAt records the latest real DATA calculation independently.
+- Viewer freshness uses sourceValidatedAt, with calculation timestamps as compatibility fallback.
+- Matching inputHash with DATA validates SOURCE and persists a freshness revision without recalculation.
+- Matching inputHash without DATA is recalculated instead of short-circuited.
+- Metadata-only SOURCE revision preserves DATA/MARKET/FINAL/RESULT; semantic SOURCE change alone invalidates downstream.
+- snapshotHash includes freshness metadata so validation time is durably revisioned in D1.
+
+INDEPENDENT AUDIT V7 CORRECTIONS
+- sourceValidatedAt is monotonic; an out-of-order older SOURCE validation is a no-op and cannot make a fresh snapshot stale.
+- The calculation runner loads only the latest race revision and short-circuits solely when that latest revision has the current inputHash and DATA.
+- Historical A→B→A inputHash matches cannot restore old MARKET, FINAL, or RESULT; a new SOURCE/DATA partial cycle is calculated.
+- The loader dependency is explicitly named loadLatest so historical input lookup cannot accidentally satisfy the runner contract.
+- Initial and validation save results propagate saved, reason, revision, and UNCHANGED status instead of falsely reporting SAVED.
+
+UNCHANGED BY DESIGN
+migrations/0001_research_cloud.sql through migrations/0011_model_governance.sql
+migrations/0006_jra_background_refresh.sql
+worker.js
+worker-entry.mjs
+app.js
+wrangler.jsonc
+JRA J1-J5 runtime/model files
+NAR runtime/model files
+Public API
+AI Data Bridge
+Google Drive Runtime decommission files and guards
