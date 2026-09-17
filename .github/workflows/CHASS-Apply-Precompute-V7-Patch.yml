@@ -1,0 +1,194 @@
+name: CHASS Apply Precompute Phase1 v7 Patch
+
+on:
+  push:
+    branches:
+      - chass/jra-precompute-phase1-v7
+    paths:
+      - '.github/workflows/CHASS-Apply-Precompute-V7-Patch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chass-precompute-v7-patch
+  cancel-in-progress: false
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/chass/jra-precompute-phase1-v7'
+
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: chass/jra-precompute-phase1-v7
+          fetch-depth: 0
+
+      - name: Verify baseline ancestry and PATCH ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASELINE='5a44b8c01f25217b84667eda2a3af3730c730dd1'
+          ZIP='CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip'
+          EXPECTED_ZIP_SHA='2d21e541f664d3be0f4fe3796badf396e929f32238efc26ade2b7c7c3bf4ead7'
+
+          git merge-base --is-ancestor "$BASELINE" HEAD
+          test -f "$ZIP"
+          echo "$EXPECTED_ZIP_SHA  $ZIP" | sha256sum -c -
+
+      - name: Validate ZIP paths before extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP='CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip'
+          python3 - <<'PY'
+          import zipfile, sys
+
+          zip_path = 'CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip'
+          allowed = {
+              'migrations/0012_precomputed_snapshots.sql',
+              'src/prediction/background-precompute.mjs',
+              'src/prediction/precomputed-snapshot.mjs',
+              'src/prediction/precomputed-store.mjs',
+              'tests/background-precompute.test.mjs',
+              'tests/precomputed-snapshot.test.mjs',
+              'tests/precomputed-store.test.mjs',
+              'reports/PRECOMPUTE_PHASE1_REPORT.md',
+              'CHANGED_FILES_PRECOMPUTE_PHASE1.txt',
+          }
+
+          with zipfile.ZipFile(zip_path) as z:
+              files = []
+              for info in z.infolist():
+                  name = info.filename.replace('\\', '/')
+                  if name.endswith('/'):
+                      continue
+                  if name.startswith('/') or '..' in name.split('/'):
+                      raise SystemExit(f'Unsafe ZIP path: {name}')
+                  mode = (info.external_attr >> 16) & 0o170000
+                  if mode == 0o120000:
+                      raise SystemExit(f'Symlink forbidden: {name}')
+                  files.append(name)
+
+          actual = set(files)
+          if actual != allowed or len(files) != len(allowed):
+              print('Expected exactly these 9 files:')
+              print('\n'.join(sorted(allowed)))
+              print('\nActual ZIP files:')
+              print('\n'.join(files))
+              raise SystemExit('PATCH ZIP file list mismatch')
+
+          print('ZIP allowlist OK: exactly 9 files')
+          PY
+
+      - name: Extract PATCH v7 into repository paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .tmp-precompute-v7
+          mkdir .tmp-precompute-v7
+          unzip -q CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip -d .tmp-precompute-v7
+
+          while IFS= read -r path; do
+            mkdir -p "$(dirname "$path")"
+            cp ".tmp-precompute-v7/$path" "$path"
+          done <<'EOF'
+          migrations/0012_precomputed_snapshots.sql
+          src/prediction/background-precompute.mjs
+          src/prediction/precomputed-snapshot.mjs
+          src/prediction/precomputed-store.mjs
+          tests/background-precompute.test.mjs
+          tests/precomputed-snapshot.test.mjs
+          tests/precomputed-store.test.mjs
+          reports/PRECOMPUTE_PHASE1_REPORT.md
+          CHANGED_FILES_PRECOMPUTE_PHASE1.txt
+          EOF
+
+          rm -rf .tmp-precompute-v7
+
+      - name: Verify protected files and safety flags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo 'a6287099178296d31c745cb49a25b9736d807c3665bf7364a665e0842ab6ad77  migrations/0006_jra_background_refresh.sql' | sha256sum -c -
+          echo 'fc2cf81652c6475ee9341471145b26249eb83792ba2768dd2604ebd9a0241a46  migrations/0011_model_governance.sql' | sha256sum -c -
+
+          grep -Eq 'ENABLE_BACKGROUND_PRECOMPUTE[^A-Za-z0-9]*("false"|false)' wrangler.jsonc
+          grep -Eq 'ENABLE_PRECOMPUTED_VIEWER[^A-Za-z0-9]*("false"|false)' wrangler.jsonc
+
+      - name: Verify only intended repository changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The ZIP and this temporary workflow are intentionally removed in the final commit.
+          rm -f CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip
+          rm -f .github/workflows/CHASS-Apply-Precompute-V7-Patch.yml
+
+          git add -A
+
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              'migrations/0012_precomputed_snapshots.sql',
+              'src/prediction/background-precompute.mjs',
+              'src/prediction/precomputed-snapshot.mjs',
+              'src/prediction/precomputed-store.mjs',
+              'tests/background-precompute.test.mjs',
+              'tests/precomputed-snapshot.test.mjs',
+              'tests/precomputed-store.test.mjs',
+              'reports/PRECOMPUTE_PHASE1_REPORT.md',
+              'CHANGED_FILES_PRECOMPUTE_PHASE1.txt',
+              'CHASS_JRA_PRECOMPUTE_PHASE1_PATCH_V7.zip',
+              '.github/workflows/CHASS-Apply-Precompute-V7-Patch.yml',
+          }
+          changed = subprocess.check_output(
+              ['git', 'diff', '--cached', '--name-only'], text=True
+          ).splitlines()
+          unexpected = set(changed) - allowed
+          if unexpected:
+              raise SystemExit('Unexpected changed paths: ' + ', '.join(sorted(unexpected)))
+
+          required = {
+              'migrations/0012_precomputed_snapshots.sql',
+              'src/prediction/background-precompute.mjs',
+              'src/prediction/precomputed-snapshot.mjs',
+              'src/prediction/precomputed-store.mjs',
+              'tests/background-precompute.test.mjs',
+              'tests/precomputed-snapshot.test.mjs',
+              'tests/precomputed-store.test.mjs',
+              'reports/PRECOMPUTE_PHASE1_REPORT.md',
+              'CHANGED_FILES_PRECOMPUTE_PHASE1.txt',
+          }
+          missing = required - set(changed)
+          if missing:
+              raise SystemExit('Expected Phase 1 paths not changed: ' + ', '.join(sorted(missing)))
+
+          print('Staged path guard OK')
+          PY
+
+      - name: Run Phase 1 focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/precomputed-snapshot.test.mjs \
+            tests/precomputed-store.test.mjs \
+            tests/background-precompute.test.mjs
+
+      - name: Commit extracted v7 files to feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git commit -m 'feat: apply JRA precompute foundation phase 1 v7'
+          git push origin HEAD:chass/jra-precompute-phase1-v7
