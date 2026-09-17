@@ -1,0 +1,411 @@
+name: CHASS Patch PR Bridge v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_base_sha:
+        description: "Expected current main SHA (40 hex). Stops if main has moved."
+        required: true
+        type: string
+      branch_name:
+        description: "New branch name. Must start with chass/ and must not already exist."
+        required: true
+        type: string
+      pr_title:
+        description: "Commit and PR title."
+        required: true
+        type: string
+      allowed_paths:
+        description: "Exact changed paths only, separated by commas or new lines."
+        required: true
+        type: string
+      patch_sha256:
+        description: "SHA-256 of the uncompressed .patch file."
+        required: true
+        type: string
+      patch_gzip_b64:
+        description: "gzip+base64 encoded patch. Use this OR patch_url."
+        required: false
+        type: string
+      patch_url:
+        description: "HTTPS URL to raw .patch file. Use this OR patch_gzip_b64."
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: chass-patch-pr-bridge-${{ inputs.branch_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate patch in read-only job
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout main read-only
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate inputs and base
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          PATCH_GZIP_B64: ${{ inputs.patch_gzip_b64 }}
+          PATCH_URL: ${{ inputs.patch_url }}
+        run: |
+          set -euo pipefail
+
+          [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::expected_base_sha must be exactly 40 lowercase hex characters."
+            exit 1
+          }
+
+          [[ "$PATCH_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+            echo "::error::patch_sha256 must be exactly 64 hex characters."
+            exit 1
+          }
+
+          git check-ref-format --branch "$BRANCH_NAME" >/dev/null
+          case "$BRANCH_NAME" in
+            chass/*) ;;
+            *)
+              echo "::error::branch_name must start with chass/."
+              exit 1
+              ;;
+          esac
+
+          case "$BRANCH_NAME" in
+            *".."*|*"@{"*|*"//"*|*/|main|master)
+              echo "::error::unsafe branch name."
+              exit 1
+              ;;
+          esac
+
+          if [[ -n "$PATCH_GZIP_B64" && -n "$PATCH_URL" ]]; then
+            echo "::error::Provide only one of patch_gzip_b64 or patch_url."
+            exit 1
+          fi
+          if [[ -z "$PATCH_GZIP_B64" && -z "$PATCH_URL" ]]; then
+            echo "::error::One of patch_gzip_b64 or patch_url is required."
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          ACTUAL_BASE_SHA="$(git rev-parse origin/main)"
+          if [[ "$ACTUAL_BASE_SHA" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved. expected=$EXPECTED_BASE_SHA actual=$ACTUAL_BASE_SHA"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "::error::remote branch already exists: $BRANCH_NAME"
+            exit 1
+          fi
+
+      - name: Materialize and verify patch
+        shell: bash
+        env:
+          PATCH_GZIP_B64: ${{ inputs.patch_gzip_b64 }}
+          PATCH_URL: ${{ inputs.patch_url }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$PATCH_GZIP_B64" ]]; then
+            printf '%s' "$PATCH_GZIP_B64" | base64 --decode | gzip -dc > /tmp/chass-change.patch
+          else
+            [[ "$PATCH_URL" == https://* ]] || {
+              echo "::error::patch_url must use HTTPS."
+              exit 1
+            }
+            curl --fail --location --silent --show-error \
+              --proto '=https' --tlsv1.2 \
+              --max-time 60 \
+              "$PATCH_URL" \
+              -o /tmp/chass-change.patch
+          fi
+
+          test -s /tmp/chass-change.patch || {
+            echo "::error::patch is empty."
+            exit 1
+          }
+
+          PATCH_BYTES="$(wc -c < /tmp/chass-change.patch | tr -d ' ')"
+          if (( PATCH_BYTES > 2097152 )); then
+            echo "::error::patch exceeds 2 MiB safety limit."
+            exit 1
+          fi
+
+          ACTUAL_SHA="$(sha256sum /tmp/chass-change.patch | awk '{print $1}')"
+          EXPECTED_SHA="$(printf '%s' "$PATCH_SHA256" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+            echo "::error::patch SHA-256 mismatch. expected=$EXPECTED_SHA actual=$ACTUAL_SHA"
+            exit 1
+          fi
+
+          if grep -Eq '^(GIT binary patch|rename from |rename to |copy from |copy to )' /tmp/chass-change.patch; then
+            echo "::error::binary/rename/copy patches are intentionally not supported by this bridge."
+            exit 1
+          fi
+
+      - name: Enforce exact path allowlist
+        shell: bash
+        env:
+          ALLOWED_PATHS: ${{ inputs.allowed_paths }}
+        run: |
+          set -euo pipefail
+
+          git apply --check /tmp/chass-change.patch
+
+          git apply --numstat /tmp/chass-change.patch \
+            | cut -f3- \
+            | sed '/^[[:space:]]*$/d' \
+            | sort -u > /tmp/changed-paths.txt
+
+          printf '%s\n' "$ALLOWED_PATHS" \
+            | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | sed '/^$/d' \
+            | sort -u > /tmp/allowed-paths.txt
+
+          test -s /tmp/changed-paths.txt || {
+            echo "::error::no changed paths detected."
+            exit 1
+          }
+          test -s /tmp/allowed-paths.txt || {
+            echo "::error::allowed_paths is empty."
+            exit 1
+          }
+
+          while IFS= read -r path; do
+            case "$path" in
+              /*|../*|*/../*|.git|.git/*|.github/workflows/*)
+                echo "::error::forbidden path in patch: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/changed-paths.txt
+
+          if ! diff -u /tmp/allowed-paths.txt /tmp/changed-paths.txt; then
+            echo "::error::patch paths do not exactly match allowed_paths."
+            exit 1
+          fi
+
+          {
+            echo "## CHASS Patch Bridge — validated paths"
+            echo
+            sed 's/^/- `/' /tmp/changed-paths.txt | sed 's/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply patch in read-only job
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/chass-change.patch
+          git diff --cached --check
+
+          if git diff --cached --summary | grep -E 'mode change|create mode 120000|delete mode 120000'; then
+            echo "::error::file mode or symlink changes are not supported."
+            exit 1
+          fi
+
+      - name: Install dependencies without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+
+      - name: Full repository check
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+
+      - name: Record validated diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Validation PASS"
+            echo
+            echo "- Base: \`${{ inputs.expected_base_sha }}\`"
+            echo "- Target branch: \`${{ inputs.branch_name }}\`"
+            echo "- Patch SHA-256: \`${{ inputs.patch_sha256 }}\`"
+            echo "- Production deploy: **NOT PERFORMED**"
+            echo "- Production D1: **NOT TOUCHED**"
+            echo
+            echo "### Diff stat"
+            echo '```text'
+            git diff --cached --stat
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload validated patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-chass-patch-${{ github.run_id }}
+          path: /tmp/chass-change.patch
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Create branch and PR
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout main with write token
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download validated patch
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-chass-patch-${{ github.run_id }}
+          path: /tmp/validated
+
+      - name: Recheck base and publish branch
+        id: publish
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+          PR_TITLE: ${{ inputs.pr_title }}
+        run: |
+          set -euo pipefail
+
+          PATCH_FILE="/tmp/validated/chass-change.patch"
+          test -s "$PATCH_FILE"
+
+          git fetch --no-tags origin main
+          ACTUAL_BASE_SHA="$(git rev-parse origin/main)"
+          if [[ "$ACTUAL_BASE_SHA" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main moved after validation. expected=$EXPECTED_BASE_SHA actual=$ACTUAL_BASE_SHA"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "::error::remote branch appeared after validation: $BRANCH_NAME"
+            exit 1
+          fi
+
+          git switch --detach "$EXPECTED_BASE_SHA"
+          git switch -c "$BRANCH_NAME"
+          git apply --index "$PATCH_FILE"
+          git diff --cached --check
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "$PR_TITLE"
+          NEW_SHA="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/$BRANCH_NAME"
+
+          echo "head_sha=$NEW_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+          PR_TITLE: ${{ inputs.pr_title }}
+          EXPECTED_BASE_SHA: ${{ inputs.expected_base_sha }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/pr-body.md <<EOF
+          ## CHASS automated patch bridge
+
+          This PR was created by **CHASS Patch PR Bridge v1** after a read-only validation job completed successfully.
+
+          ### Validation
+          - Base SHA: \`$EXPECTED_BASE_SHA\`
+          - Patch SHA-256: \`$PATCH_SHA256\`
+          - Full repository check: PASS
+          - Exact path allowlist: PASS
+          - Branch overwrite / force-push: NOT USED
+
+          ### Production safety
+          - Production D1 migration/write: **NOT PERFORMED**
+          - Production deploy: **NOT PERFORMED**
+          - Runtime flags: **NOT CHANGED BY THIS WORKFLOW**
+
+          Workflow run:
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+          set +e
+          PR_OUTPUT="$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --title "$PR_TITLE" \
+            --body-file /tmp/pr-body.md 2>&1)"
+          PR_RC=$?
+          set -e
+
+          if (( PR_RC == 0 )); then
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "url=$PR_OUTPUT" >> "$GITHUB_OUTPUT"
+            {
+              echo "## PR created"
+              echo
+              echo "$PR_OUTPUT"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            MANUAL_URL="https://github.com/${{ github.repository }}/compare/main...$BRANCH_NAME?expand=1"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "url=$MANUAL_URL" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Branch pushed, PR creation needs one-time repository permission"
+              echo
+              echo "GitHub returned:"
+              echo '```text'
+              echo "$PR_OUTPUT"
+              echo '```'
+              echo
+              echo "Manual PR URL:"
+              echo "$MANUAL_URL"
+              echo
+              echo "If this is a permissions error, enable:"
+              echo "\`Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::warning::Branch was safely pushed, but automatic PR creation was blocked. See job summary."
+          fi
+
+      - name: Final safety summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## Final safety state"
+            echo
+            echo "- Branch: \`${{ inputs.branch_name }}\`"
+            echo "- Head SHA: \`${{ steps.publish.outputs.head_sha }}\`"
+            echo "- PR auto-created: \`${{ steps.pr.outputs.created }}\`"
+            echo "- PR/manual URL: ${{ steps.pr.outputs.url }}"
+            echo "- Force push: **NO**"
+            echo "- main direct commit: **NO**"
+            echo "- Production deploy: **NO**"
+            echo "- Production D1 operation: **NO**"
+          } >> "$GITHUB_STEP_SUMMARY"
