@@ -8,6 +8,7 @@ import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} fr
 import {parseNarRaceList} from './meeting-discovery.mjs';
 import {enqueueResearchSync,runResearchSyncQueue} from './src/research/research-storage-sync.mjs';
 import {classifyHorseOrigin,classifyRunVenue,mergeCardIdentities,summarizeHorseOrigins} from './src/nar/exchange-origin.mjs';
+import {backgroundPrecomputeEnabled} from './src/prediction/background-precompute.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
 export const CHASS_BRIDGE_SCHEMA_VERSION="1.1";
@@ -738,15 +739,26 @@ async function handleHistoricalJobApi(request,env){
   return json({ok:false,error:'not_found'},404);
  }catch(error){const status=Number(error?.status)||(['historical_job_not_found'].includes(error?.code)?404:400);return json({ok:false,error:error?.code||'historical_job_operation_failed',message:String(error?.message||error).slice(0,160)},status)}
 }
-export async function runScheduledTasks(DB,{now=new Date(),env={},resultRunner=runScheduledResultQueue,meetingRunner=runScheduledJraMeetingRefresh,historicalRunner=runBackgroundHistoricalCollector,researchRunner=runResearchSyncQueue}={}){
+export async function runScheduledPrecomputeGate(env={}, {runner}={}){
+ if(!backgroundPrecomputeEnabled(env))return {status:'DISABLED',enabled:false,ran:false};
+ if(typeof runner!=='function')return {status:'NOT_CONFIGURED',enabled:true,ran:false};
+ try{return {status:'COMPLETED',enabled:true,ran:true,result:await runner()}}
+ catch(error){return {status:'FAILED',enabled:true,ran:true,error:error?.code||error?.message||'precompute_gate_failed'}}
+}
+async function safelyRunScheduledPrecomputeGate(precomputeGate,env,now){
+ try{return await precomputeGate(env,{now})}
+ catch(error){return {status:'FAILED',enabled:backgroundPrecomputeEnabled(env),ran:false,error:error?.code||error?.message||'precompute_gate_failed'}}
+}
+export async function runScheduledTasks(DB,{now=new Date(),env={},resultRunner=runScheduledResultQueue,meetingRunner=runScheduledJraMeetingRefresh,historicalRunner=runBackgroundHistoricalCollector,researchRunner=runResearchSyncQueue,precomputeGate=runScheduledPrecomputeGate}={}){
  const autoResult=await resultRunner(DB,{now,limit:5,env});
  const autoProcessed=Number(autoResult?.processed)||0;
- if(autoProcessed>=3)return {autoResult,jraMeeting:{processed:0,skipped:true,reason:'auto_result_priority'},historical:{processed:0,skipped:true,reason:'auto_result_priority'},research:{processed:0,skipped:true,reason:'auto_result_priority'}};
+ if(autoProcessed>=3){const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,now);return {autoResult,jraMeeting:{processed:0,skipped:true,reason:'auto_result_priority'},historical:{processed:0,skipped:true,reason:'auto_result_priority'},research:{processed:0,skipped:true,reason:'auto_result_priority'},precompute}}
  const jraMeeting=await meetingRunner(DB,{now,env});
  const batchLimit=autoProcessed>0?1:HISTORICAL_RACE_BATCH;
  const historical=await historicalRunner(DB,{now,meetingLimit:batchLimit,raceLimit:batchLimit,deadlineMs:HISTORICAL_JOB_DEADLINE_MS});
  const research=await researchRunner(DB,env,{now,limit:1,deadlineMs:8_000});
- return {autoResult,jraMeeting,historical,research}
+ const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,now);
+ return {autoResult,jraMeeting,historical,research,precompute}
 }
 export default{
  async fetch(request,env){
