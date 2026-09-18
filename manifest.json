@@ -5,6 +5,19 @@
   "branch": "chass-data",
   "snapshots": [
     {
+      "date": "2026-09-18",
+      "track": "大井",
+      "trackSlug": "ooi",
+      "organization": "NAR",
+      "raceCount": 12,
+      "totalHorseCount": 123,
+      "latestPredictionAt": "2026-09-18T00:47:28.997Z",
+      "latestOddsAt": "2026-09-18T00:47:28.997Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-09-18/ooi/day.json"
+    },
+    {
       "date": "2026-09-17",
       "track": "大井",
       "trackSlug": "ooi",
