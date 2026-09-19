@@ -739,25 +739,28 @@ async function handleHistoricalJobApi(request,env){
   return json({ok:false,error:'not_found'},404);
  }catch(error){const status=Number(error?.status)||(['historical_job_not_found'].includes(error?.code)?404:400);return json({ok:false,error:error?.code||'historical_job_operation_failed',message:String(error?.message||error).slice(0,160)},status)}
 }
-export async function runScheduledPrecomputeGate(env={}, {runner}={}){
+export async function runScheduledPrecomputeGate(env={}, {runner,suppressionReason}={}){
  if(!backgroundPrecomputeEnabled(env))return {status:'DISABLED',enabled:false,ran:false};
+ if(suppressionReason)return {status:'SUPPRESSED',enabled:true,ran:false,reason:suppressionReason};
  if(typeof runner!=='function')return {status:'NOT_CONFIGURED',enabled:true,ran:false};
  try{return {status:'COMPLETED',enabled:true,ran:true,result:await runner()}}
  catch(error){return {status:'FAILED',enabled:true,ran:true,error:error?.code||error?.message||'precompute_gate_failed'}}
 }
-async function safelyRunScheduledPrecomputeGate(precomputeGate,env,now){
- try{return await precomputeGate(env,{now})}
+async function safelyRunScheduledPrecomputeGate(precomputeGate,env,{now,runner,suppressionReason}={}){
+ if(!backgroundPrecomputeEnabled(env))return {status:'DISABLED',enabled:false,ran:false};
+ if(suppressionReason)return {status:'SUPPRESSED',enabled:true,ran:false,reason:suppressionReason};
+ try{return await precomputeGate(env,{now,runner})}
  catch(error){return {status:'FAILED',enabled:backgroundPrecomputeEnabled(env),ran:false,error:error?.code||error?.message||'precompute_gate_failed'}}
 }
-export async function runScheduledTasks(DB,{now=new Date(),env={},resultRunner=runScheduledResultQueue,meetingRunner=runScheduledJraMeetingRefresh,historicalRunner=runBackgroundHistoricalCollector,researchRunner=runResearchSyncQueue,precomputeGate=runScheduledPrecomputeGate}={}){
+export async function runScheduledTasks(DB,{now=new Date(),env={},resultRunner=runScheduledResultQueue,meetingRunner=runScheduledJraMeetingRefresh,historicalRunner=runBackgroundHistoricalCollector,researchRunner=runResearchSyncQueue,precomputeGate=runScheduledPrecomputeGate,precomputeRunner}={}){
  const autoResult=await resultRunner(DB,{now,limit:5,env});
  const autoProcessed=Number(autoResult?.processed)||0;
- if(autoProcessed>=3){const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,now);return {autoResult,jraMeeting:{processed:0,skipped:true,reason:'auto_result_priority'},historical:{processed:0,skipped:true,reason:'auto_result_priority'},research:{processed:0,skipped:true,reason:'auto_result_priority'},precompute}}
+ if(autoProcessed>=3){const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,{now,runner:precomputeRunner,suppressionReason:'auto_result_priority'});return {autoResult,jraMeeting:{processed:0,skipped:true,reason:'auto_result_priority'},historical:{processed:0,skipped:true,reason:'auto_result_priority'},research:{processed:0,skipped:true,reason:'auto_result_priority'},precompute}}
  const jraMeeting=await meetingRunner(DB,{now,env});
  const batchLimit=autoProcessed>0?1:HISTORICAL_RACE_BATCH;
  const historical=await historicalRunner(DB,{now,meetingLimit:batchLimit,raceLimit:batchLimit,deadlineMs:HISTORICAL_JOB_DEADLINE_MS});
  const research=await researchRunner(DB,env,{now,limit:1,deadlineMs:8_000});
- const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,now);
+ const precompute=await safelyRunScheduledPrecomputeGate(precomputeGate,env,{now,runner:precomputeRunner});
  return {autoResult,jraMeeting,historical,research,precompute}
 }
 export default{
