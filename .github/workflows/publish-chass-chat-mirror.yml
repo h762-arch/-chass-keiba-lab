@@ -56,7 +56,15 @@ jobs:
           rm -rf "$OUTPUT_ROOT"
           mkdir -p "$OUTPUT_ROOT"
           node publish-chass-chat-snapshot.mjs | tee /tmp/chass-chat-mirror.log
-          COUNT="$(find "$OUTPUT_ROOT/chat-snapshot" -type f -name 'day.json' 2>/dev/null | wc -l | tr -d ' ')"
+                    SNAPSHOT_ROOT="$OUTPUT_ROOT/chat-snapshot"
+          if [ ! -e "$SNAPSHOT_ROOT" ]; then
+            COUNT="0"
+          elif [ ! -d "$SNAPSHOT_ROOT" ]; then
+            echo "::error::Snapshot output exists but is not a directory: $SNAPSHOT_ROOT"
+            exit 1
+          else
+            COUNT="$(find "$SNAPSHOT_ROOT" -type f -name 'day.json' | wc -l | tr -d ' ')"
+          fi
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           if [ "$COUNT" -gt 0 ]; then
             echo "has_data=true" >> "$GITHUB_OUTPUT"
