@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runScheduledPrecomputeGate,runScheduledTasks} from '../worker.js';
+import {createPrecomputeRuntimeRunner} from '../src/prediction/precompute-runtime-adapter.mjs';
 
 test('precompute gate defaults disabled and never invokes its runner',async()=>{
  let calls=0;
@@ -113,6 +114,104 @@ test('precompute failures are contained after existing scheduled tasks complete'
  assert.equal(result.jraMeeting.processed,0);
  assert.equal(result.historical.processed,0);
  assert.equal(result.research.processed,0);
+});
+
+test('disabled scheduled gate never enters the injected runtime adapter',async()=>{
+ const calls={loadMeetings:0,pipeline:0,raceRunner:0,source:0,calculator:0,d1:0};
+ const adapter=createPrecomputeRuntimeRunner({
+  organization:'JRA',maxJobs:1,deadline:100,now:()=>0,
+  loadMeetings:async()=>{calls.loadMeetings++;return []},
+  raceRunner:async()=>{calls.raceRunner++},
+  pipeline:async()=>{calls.pipeline++;calls.source++;calls.calculator++;calls.d1++}
+ });
+ const result=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:'false'},resultRunner:async()=>({processed:0}),
+  meetingRunner:async()=>({processed:0}),historicalRunner:async()=>({processed:0}),researchRunner:async()=>({processed:0}),
+  precomputeRunner:adapter
+ });
+ assert.deepEqual(result.precompute,{status:'DISABLED',enabled:false,ran:false});
+ assert.deepEqual(calls,{loadMeetings:0,pipeline:0,raceRunner:0,source:0,calculator:0,d1:0});
+});
+
+test('result priority suppresses the injected runtime adapter before all dependencies',async()=>{
+ const calls={loadMeetings:0,pipeline:0,raceRunner:0,source:0,calculator:0,d1:0};
+ const adapter=createPrecomputeRuntimeRunner({
+  organization:'JRA',maxJobs:1,deadline:100,now:()=>0,
+  loadMeetings:async()=>{calls.loadMeetings++;return []},
+  raceRunner:async()=>{calls.raceRunner++},
+  pipeline:async()=>{calls.pipeline++;calls.source++;calls.calculator++;calls.d1++}
+ });
+ const result=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:true},resultRunner:async()=>({processed:3}),precomputeRunner:adapter
+ });
+ assert.deepEqual(result.precompute,{status:'SUPPRESSED',enabled:true,ran:false,reason:'auto_result_priority'});
+ assert.deepEqual(calls,{loadMeetings:0,pipeline:0,raceRunner:0,source:0,calculator:0,d1:0});
+});
+
+test('scheduled tasks preserve NOT_CONFIGURED when no adapter runner is supplied',async()=>{
+ const result=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:true},resultRunner:async()=>({processed:0}),
+  meetingRunner:async()=>({processed:0}),historicalRunner:async()=>({processed:0}),researchRunner:async()=>({processed:0})
+ });
+ assert.deepEqual(result.precompute,{status:'NOT_CONFIGURED',enabled:true,ran:false});
+});
+
+test('enabled scheduled gate reaches the real adapter after existing scheduled work',async()=>{
+ const calls=[],meetings=Object.freeze([{organization:'JRA',date:'2026-09-21',track:'中山',status:'meeting',raceNumbers:Object.freeze([]),cancelledRaceNumbers:Object.freeze([])}]);
+ const raceRunner=async()=>{calls.push('raceRunner');return 'race-result'};
+ const adapter=createPrecomputeRuntimeRunner({
+  organization:'JRA',maxJobs:1,deadline:100,now:()=>0,raceRunner,
+  loadMeetings:async()=>{calls.push('loadMeetings');return meetings},
+  pipeline:async argument=>{
+   calls.push('pipeline');
+   assert.equal(argument.meetings,meetings);
+   assert.equal(argument.raceRunner,undefined);
+   assert.equal(argument.runner,raceRunner);
+   assert.equal(await argument.runner({raceId:'fixture'}),'race-result');
+   return {adapter:true};
+  }
+ });
+ const scheduled=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:true},resultRunner:async()=>{calls.push('result');return {processed:0}},
+  meetingRunner:async()=>{calls.push('meeting');return {processed:0}},historicalRunner:async()=>{calls.push('historical');return {processed:0}},researchRunner:async()=>{calls.push('research');return {processed:0}},
+  precomputeRunner:adapter
+ });
+ assert.deepEqual(calls,['result','meeting','historical','research','loadMeetings','pipeline','raceRunner']);
+ assert.deepEqual(scheduled.precompute,{status:'COMPLETED',enabled:true,ran:true,result:{adapter:true}});
+});
+
+test('adapter provider failure is isolated after existing scheduled results without retry',async()=>{
+ const calls=[];
+ const adapter=createPrecomputeRuntimeRunner({
+  organization:'JRA',maxJobs:1,deadline:100,now:()=>0,raceRunner:async()=>{},
+  loadMeetings:async()=>{calls.push('loadMeetings');throw Object.assign(new Error('provider failed'),{code:'provider_failure'})}
+ });
+ const result=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:true},resultRunner:async()=>{calls.push('result');return {processed:0}},
+  meetingRunner:async()=>{calls.push('meeting');return {processed:1}},historicalRunner:async()=>{calls.push('historical');return {processed:2}},researchRunner:async()=>{calls.push('research');return {processed:3}},
+  precomputeRunner:adapter
+ });
+ assert.deepEqual(calls,['result','meeting','historical','research','loadMeetings']);
+ assert.deepEqual(result.precompute,{status:'FAILED',enabled:true,ran:true,error:'provider_failure'});
+ assert.equal(result.jraMeeting.processed,1);
+ assert.equal(result.historical.processed,2);
+ assert.equal(result.research.processed,3);
+});
+
+test('adapter pipeline failure is isolated without retry',async()=>{
+ const calls=[];
+ const adapter=createPrecomputeRuntimeRunner({
+  organization:'JRA',maxJobs:1,deadline:100,now:()=>0,raceRunner:async()=>{},
+  loadMeetings:async()=>{calls.push('loadMeetings');return []},
+  pipeline:async()=>{calls.push('pipeline');throw Object.assign(new Error('pipeline failed'),{code:'pipeline_failure'})}
+ });
+ const result=await runScheduledTasks({}, {
+  env:{ENABLE_BACKGROUND_PRECOMPUTE:true},resultRunner:async()=>({processed:0}),
+  meetingRunner:async()=>({processed:0}),historicalRunner:async()=>({processed:0}),researchRunner:async()=>({processed:0}),
+  precomputeRunner:adapter
+ });
+ assert.deepEqual(calls,['loadMeetings','pipeline']);
+ assert.deepEqual(result.precompute,{status:'FAILED',enabled:true,ran:true,error:'pipeline_failure'});
 });
 
 test('production scheduled wiring remains control-plane only with flags off',async()=>{
