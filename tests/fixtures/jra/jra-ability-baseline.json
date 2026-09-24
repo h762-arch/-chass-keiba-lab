@@ -1,0 +1,540 @@
+{
+  "schemaVersion": "JRA-MODEL-1.1",
+  "modelVersion": "10.0.1-jra-drive1",
+  "raceType": "JRA",
+  "race": {
+    "racecourse": "東京",
+    "distance": 1800,
+    "surface": "芝",
+    "trackCondition": "良",
+    "pace": "標準",
+    "raceClass": "2勝",
+    "favoriteCollapseRate": 0.028,
+    "predictionConfidence": 93,
+    "predictionConfidenceReasons": []
+  },
+  "horses": [
+    {
+      "horseNo": 1,
+      "horseName": "馬1",
+      "sexAge": "牡4",
+      "weightCarried": 55,
+      "odds": 2,
+      "popularity": 1,
+      "pastRuns": [
+        {
+          "distance": 1800,
+          "surface": "芝",
+          "racecourse": "東京",
+          "trackCondition": "良",
+          "raceClass": "2勝",
+          "finish": 1,
+          "fieldSize": 12,
+          "timeSeconds": 107,
+          "margin": 0,
+          "cornerPositions": [
+            1
+          ],
+          "last3F": 34,
+          "weightCarried": 55
+        }
+      ],
+      "runningStyle": "逃げ",
+      "win": 90.97,
+      "second": 8.84,
+      "place": 100,
+      "overall": 87.5,
+      "ev": 181.9,
+      "evConfidence": "高",
+      "fair": 1.1,
+      "predictedTime": "1:48.2",
+      "predictedTimeType": "レース基準補正",
+      "predictedTimeConfidence": 93,
+      "predictedTimeMissingReason": null,
+      "predictedTimeScenarios": {
+        "standard": "1:48.2",
+        "paceFavored": null,
+        "paceAdverse": null,
+        "positionFailure": null
+      },
+      "probabilityUncertainty": 0.18,
+      "abilityMark": "◎",
+      "finalMark": "◎",
+      "valueMark": "",
+      "valueType": "",
+      "warningMark": "",
+      "abilityRisk": [],
+      "marketHeat": [],
+      "longshotScore": 85.6,
+      "marketGapScore": 0,
+      "longshotReasons": [],
+      "jraIndices": {
+        "speed": 95,
+        "recent": 95,
+        "distance": 95,
+        "course": 95,
+        "finish": 95,
+        "pace": 55,
+        "total": 87.5
+      },
+      "features": {
+        "distanceFit": 95,
+        "courseFit": 95,
+        "recentFormScore": 95,
+        "last3fAbility": 95,
+        "paceFit": 55,
+        "frontRealizationRate": 1,
+        "remainingRate": 0.9,
+        "closingRate": 0.8,
+        "favoriteCollapseRate": 0.028,
+        "longshotClass": "",
+        "distanceUncertainty": 0.18,
+        "weightChangeFromPrevious": 0,
+        "timeRank": 1,
+        "abilityRank": 1,
+        "timeAbilityConflict": false
+      },
+      "raw": {
+        "highest": 16.8224,
+        "avg5": 90.2,
+        "distance": 90.2,
+        "course": 90.2,
+        "recent": [
+          90.2
+        ],
+        "kg": 55
+      },
+      "scores": {
+        "timeIndex": 87.5,
+        "distanceFit": 95,
+        "courseFit": 95,
+        "weight": null
+      },
+      "dataConfidence": 93,
+      "dataMode": "JRA手動データ・CHASS独自指数",
+      "reason": "CHASS SPEED 95 / RECENT 95 / DISTANCE 95 / COURSE 95 / FINISH 95 / PACE 55",
+      "warningReasons": []
+    },
+    {
+      "horseNo": 2,
+      "horseName": "馬2",
+      "sexAge": "牡4",
+      "weightCarried": 56,
+      "odds": 5,
+      "popularity": 2,
+      "pastRuns": [
+        {
+          "distance": 1800,
+          "surface": "芝",
+          "racecourse": "東京",
+          "trackCondition": "良",
+          "raceClass": "2勝",
+          "finish": 2,
+          "fieldSize": 12,
+          "timeSeconds": 108,
+          "margin": 0.2,
+          "cornerPositions": [
+            2
+          ],
+          "last3F": 34.2,
+          "weightCarried": 56
+        }
+      ],
+      "runningStyle": "先行",
+      "win": 8.79,
+      "second": 82.79,
+      "place": 99.85,
+      "overall": 70.9,
+      "ev": 44,
+      "evConfidence": "高",
+      "fair": 11.37,
+      "predictedTime": "1:48.6",
+      "predictedTimeType": "レース基準補正",
+      "predictedTimeConfidence": 93,
+      "predictedTimeMissingReason": null,
+      "predictedTimeScenarios": {
+        "standard": "1:48.6",
+        "paceFavored": null,
+        "paceAdverse": null,
+        "positionFailure": null
+      },
+      "probabilityUncertainty": 0.18,
+      "abilityMark": "○",
+      "finalMark": "○",
+      "valueMark": "",
+      "valueType": "",
+      "warningMark": "市場過熱",
+      "abilityRisk": [],
+      "marketHeat": [
+        "単勝市場過熱"
+      ],
+      "longshotScore": 79.7,
+      "marketGapScore": 0,
+      "longshotReasons": [],
+      "jraIndices": {
+        "speed": 75,
+        "recent": 75,
+        "distance": 75,
+        "course": 75,
+        "finish": 75,
+        "pace": 55,
+        "total": 70.9
+      },
+      "features": {
+        "distanceFit": 75,
+        "courseFit": 75,
+        "recentFormScore": 75,
+        "last3fAbility": 75,
+        "paceFit": 55,
+        "frontRealizationRate": 1,
+        "remainingRate": 0.9,
+        "closingRate": 0.7988,
+        "favoriteCollapseRate": 0.028,
+        "longshotClass": "",
+        "distanceUncertainty": 0.18,
+        "weightChangeFromPrevious": 0,
+        "timeRank": 2,
+        "abilityRank": 2,
+        "timeAbilityConflict": false
+      },
+      "raw": {
+        "highest": 16.6917,
+        "avg5": 82.8,
+        "distance": 82.8,
+        "course": 82.8,
+        "recent": [
+          82.8
+        ],
+        "kg": 56
+      },
+      "scores": {
+        "timeIndex": 70.9,
+        "distanceFit": 75,
+        "courseFit": 75,
+        "weight": null
+      },
+      "dataConfidence": 93,
+      "dataMode": "JRA手動データ・CHASS独自指数",
+      "reason": "CHASS SPEED 75 / RECENT 75 / DISTANCE 75 / COURSE 75 / FINISH 75 / PACE 55",
+      "warningReasons": [
+        "単勝市場過熱"
+      ]
+    },
+    {
+      "horseNo": 3,
+      "horseName": "馬3",
+      "sexAge": "牡4",
+      "weightCarried": 57,
+      "odds": 8,
+      "popularity": 3,
+      "pastRuns": [
+        {
+          "distance": 1800,
+          "surface": "芝",
+          "racecourse": "東京",
+          "trackCondition": "良",
+          "raceClass": "2勝",
+          "finish": 3,
+          "fieldSize": 12,
+          "timeSeconds": 109,
+          "margin": 0.4,
+          "cornerPositions": [
+            3
+          ],
+          "last3F": 34.4,
+          "weightCarried": 57
+        }
+      ],
+      "runningStyle": "先行",
+      "win": 0.23,
+      "second": 8.25,
+      "place": 91.81,
+      "overall": 54.3,
+      "ev": 1.9,
+      "evConfidence": "高",
+      "fair": 428.57,
+      "predictedTime": "1:49.0",
+      "predictedTimeType": "レース基準補正",
+      "predictedTimeConfidence": 93,
+      "predictedTimeMissingReason": null,
+      "predictedTimeScenarios": {
+        "standard": "1:49.0",
+        "paceFavored": null,
+        "paceAdverse": null,
+        "positionFailure": null
+      },
+      "probabilityUncertainty": 0.18,
+      "abilityMark": "▲",
+      "finalMark": "▲",
+      "valueMark": "",
+      "valueType": "",
+      "warningMark": "市場過熱",
+      "abilityRisk": [],
+      "marketHeat": [
+        "単勝市場過熱"
+      ],
+      "longshotScore": 69.5,
+      "marketGapScore": 0,
+      "longshotReasons": [],
+      "jraIndices": {
+        "speed": 55,
+        "recent": 55,
+        "distance": 55,
+        "course": 55,
+        "finish": 55,
+        "pace": 55,
+        "total": 54.3
+      },
+      "features": {
+        "distanceFit": 55,
+        "courseFit": 55,
+        "recentFormScore": 55,
+        "last3fAbility": 55,
+        "paceFit": 55,
+        "frontRealizationRate": 1,
+        "remainingRate": 0.9,
+        "closingRate": 0.7344666666666667,
+        "favoriteCollapseRate": 0.028,
+        "longshotClass": "",
+        "distanceUncertainty": 0.18,
+        "weightChangeFromPrevious": 0,
+        "timeRank": 3,
+        "abilityRank": 3,
+        "timeAbilityConflict": false
+      },
+      "raw": {
+        "highest": 16.5633,
+        "avg5": 75.3,
+        "distance": 75.3,
+        "course": 75.3,
+        "recent": [
+          75.3
+        ],
+        "kg": 57
+      },
+      "scores": {
+        "timeIndex": 54.3,
+        "distanceFit": 55,
+        "courseFit": 55,
+        "weight": null
+      },
+      "dataConfidence": 93,
+      "dataMode": "JRA手動データ・CHASS独自指数",
+      "reason": "CHASS SPEED 55 / RECENT 55 / DISTANCE 55 / COURSE 55 / FINISH 55 / PACE 55",
+      "warningReasons": [
+        "単勝市場過熱"
+      ]
+    },
+    {
+      "horseNo": 4,
+      "horseName": "馬4",
+      "sexAge": "牡4",
+      "weightCarried": 58,
+      "odds": 11,
+      "popularity": 4,
+      "pastRuns": [
+        {
+          "distance": 1800,
+          "surface": "芝",
+          "racecourse": "東京",
+          "trackCondition": "良",
+          "raceClass": "2勝",
+          "finish": 4,
+          "fieldSize": 12,
+          "timeSeconds": 110,
+          "margin": 0.6000000000000001,
+          "cornerPositions": [
+            4
+          ],
+          "last3F": 34.6,
+          "weightCarried": 58
+        }
+      ],
+      "runningStyle": "先行",
+      "win": 0,
+      "second": 0.12,
+      "place": 8.18,
+      "overall": 37.7,
+      "ev": 0,
+      "evConfidence": "高",
+      "fair": null,
+      "predictedTime": "1:49.4",
+      "predictedTimeType": "レース基準補正",
+      "predictedTimeConfidence": 93,
+      "predictedTimeMissingReason": null,
+      "predictedTimeScenarios": {
+        "standard": "1:49.4",
+        "paceFavored": null,
+        "paceAdverse": null,
+        "positionFailure": null
+      },
+      "probabilityUncertainty": 0.18,
+      "abilityMark": "△",
+      "finalMark": "△",
+      "valueMark": "",
+      "valueType": "",
+      "warningMark": "",
+      "abilityRisk": [],
+      "marketHeat": [],
+      "longshotScore": 17.7,
+      "marketGapScore": 0,
+      "longshotReasons": [],
+      "jraIndices": {
+        "speed": 35,
+        "recent": 35,
+        "distance": 35,
+        "course": 35,
+        "finish": 35,
+        "pace": 55,
+        "total": 37.7
+      },
+      "features": {
+        "distanceFit": 35,
+        "courseFit": 35,
+        "recentFormScore": 35,
+        "last3fAbility": 35,
+        "paceFit": 55,
+        "frontRealizationRate": 1,
+        "remainingRate": 0.09156000000000002,
+        "closingRate": 0.0654,
+        "favoriteCollapseRate": 0.028,
+        "longshotClass": "",
+        "distanceUncertainty": 0.18,
+        "weightChangeFromPrevious": 0,
+        "timeRank": 4,
+        "abilityRank": 4,
+        "timeAbilityConflict": false
+      },
+      "raw": {
+        "highest": 16.4373,
+        "avg5": 67.9,
+        "distance": 67.9,
+        "course": 67.9,
+        "recent": [
+          67.9
+        ],
+        "kg": 58
+      },
+      "scores": {
+        "timeIndex": 37.7,
+        "distanceFit": 35,
+        "courseFit": 35,
+        "weight": null
+      },
+      "dataConfidence": 93,
+      "dataMode": "JRA手動データ・CHASS独自指数",
+      "reason": "CHASS SPEED 35 / RECENT 35 / DISTANCE 35 / COURSE 35 / FINISH 35 / PACE 55",
+      "warningReasons": []
+    },
+    {
+      "horseNo": 5,
+      "horseName": "馬5",
+      "sexAge": "牡4",
+      "weightCarried": 59,
+      "odds": 14,
+      "popularity": 5,
+      "pastRuns": [
+        {
+          "distance": 1800,
+          "surface": "芝",
+          "racecourse": "東京",
+          "trackCondition": "良",
+          "raceClass": "2勝",
+          "finish": 5,
+          "fieldSize": 12,
+          "timeSeconds": 111,
+          "margin": 0.8,
+          "cornerPositions": [
+            5
+          ],
+          "last3F": 34.8,
+          "weightCarried": 59
+        }
+      ],
+      "runningStyle": "好位",
+      "win": 0,
+      "second": 0,
+      "place": 0.17,
+      "overall": 21.1,
+      "ev": 0,
+      "evConfidence": "高",
+      "fair": null,
+      "predictedTime": "1:49.8",
+      "predictedTimeType": "レース基準補正",
+      "predictedTimeConfidence": 93,
+      "predictedTimeMissingReason": null,
+      "predictedTimeScenarios": {
+        "standard": "1:49.8",
+        "paceFavored": null,
+        "paceAdverse": null,
+        "positionFailure": null
+      },
+      "probabilityUncertainty": 0.18,
+      "abilityMark": "",
+      "finalMark": "",
+      "valueMark": "",
+      "valueType": "",
+      "warningMark": "",
+      "abilityRisk": [],
+      "marketHeat": [],
+      "longshotScore": 7.5,
+      "marketGapScore": 0,
+      "longshotReasons": [],
+      "jraIndices": {
+        "speed": 15,
+        "recent": 15,
+        "distance": 15,
+        "course": 15,
+        "finish": 15,
+        "pace": 55,
+        "total": 21.1
+      },
+      "features": {
+        "distanceFit": 15,
+        "courseFit": 15,
+        "recentFormScore": 15,
+        "last3fAbility": 15,
+        "paceFit": 55,
+        "frontRealizationRate": 1,
+        "remainingRate": 0.0018666666666666666,
+        "closingRate": 0.0013333333333333333,
+        "favoriteCollapseRate": 0.028,
+        "longshotClass": "",
+        "distanceUncertainty": 0.18,
+        "weightChangeFromPrevious": 0,
+        "timeRank": 5,
+        "abilityRank": 5,
+        "timeAbilityConflict": false
+      },
+      "raw": {
+        "highest": 16.3135,
+        "avg5": 60.4,
+        "distance": 60.4,
+        "course": 60.4,
+        "recent": [
+          60.4
+        ],
+        "kg": 59
+      },
+      "scores": {
+        "timeIndex": 21.1,
+        "distanceFit": 15,
+        "courseFit": 15,
+        "weight": null
+      },
+      "dataConfidence": 93,
+      "dataMode": "JRA手動データ・CHASS独自指数",
+      "reason": "CHASS SPEED 15 / RECENT 15 / DISTANCE 15 / COURSE 15 / FINISH 15 / PACE 55",
+      "warningReasons": []
+    }
+  ],
+  "quality": {
+    "horseCount": 5,
+    "winProbabilityTotal": 99.99,
+    "placeProbabilityTotal": 300.01,
+    "probabilityInvariant": true,
+    "simulationIterations": 12000,
+    "withTime": 5,
+    "withMarket": 5
+  }
+}

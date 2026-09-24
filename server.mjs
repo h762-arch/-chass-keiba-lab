@@ -21,7 +21,7 @@ const TRACK_NAMES={
   "22":"笠松","23":"金沢","24":"名古屋","27":"園田","28":"姫路","31":"高知","32":"佐賀","36":"門別"
 };
 const MIME={
-  ".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",
+  ".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".mjs":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",
   ".json":"application/json; charset=utf-8",".webmanifest":"application/manifest+json; charset=utf-8",
   ".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".svg":"image/svg+xml"
 };

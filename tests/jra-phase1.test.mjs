@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import * as abilityCore from '../src/prediction/jra-ability-core.mjs';
 
 const root=new URL('..',import.meta.url);
 const context=vm.createContext({console,Date,Math,JSON,Number,String,Array,Object,Map,Set,RegExp,Intl});
 context.globalThis=context;
+context.CHASS_JRA_ABILITY_CORE=abilityCore;
 for(const file of ['jra-normalizer.js','jra-model.js','jra-adapter.js'])vm.runInContext(fs.readFileSync(new URL(file,root),'utf8'),context,{filename:file});
 const N=context.CHASS_JRA_NORMALIZER,M=context.CHASS_JRA_MODEL,A=context.CHASS_JRA_ADAPTER;
 
