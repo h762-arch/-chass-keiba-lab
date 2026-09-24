@@ -231,7 +231,7 @@ async function fetchActionPage(fetchImpl,cname,signal){
   return readText(response);
 }
 
-async function fetchDirectCard(fetchImpl,sourceUrl,signal){
+export async function fetchDirectCard(fetchImpl,sourceUrl,signal){
   const response=await fetchImpl(sourceUrl,{
     method:'GET',
     headers:officialHeaders(),
