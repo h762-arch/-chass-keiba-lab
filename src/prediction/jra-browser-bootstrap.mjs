@@ -1,6 +1,8 @@
 import * as abilityCore from './jra-ability-core.mjs';
+import * as abilityResultProjector from './jra-ability-result-projector.mjs';
 
 window.CHASS_JRA_ABILITY_CORE=abilityCore;
+window.CHASS_JRA_ABILITY_RESULT_PROJECTOR=abilityResultProjector;
 const scripts=[
  '/jra-model.js',
  '/jra-adapter.js',
