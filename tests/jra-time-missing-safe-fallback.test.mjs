@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as abilityCore from '../src/prediction/jra-ability-core.mjs';
+import * as abilityProjector from '../src/prediction/jra-ability-result-projector.mjs';
 
 function loadModel() {
-  const context = { console,CHASS_JRA_ABILITY_CORE:abilityCore };
+  const context = { console,CHASS_JRA_ABILITY_CORE:abilityCore,CHASS_JRA_ABILITY_RESULT_PROJECTOR:abilityProjector };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync('jra-model.js', 'utf8'), context);
   return context.CHASS_JRA_MODEL;
