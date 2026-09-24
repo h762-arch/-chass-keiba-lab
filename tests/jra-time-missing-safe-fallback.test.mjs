@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import * as abilityCore from '../src/prediction/jra-ability-core.mjs';
 
 function loadModel() {
-  const context = { console };
+  const context = { console,CHASS_JRA_ABILITY_CORE:abilityCore };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync('jra-model.js', 'utf8'), context);
   return context.CHASS_JRA_MODEL;
