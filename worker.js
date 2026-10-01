@@ -850,5 +850,5 @@ export default{
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
   return new Response("Not Found",{status:404});
  },
- async scheduled(controller,env,ctx){const scheduledNow=new Date(controller?.scheduledTime||Date.now()),task=runScheduledTasks(env?.DB,{now:scheduledNow,env,precomputeRunner:createJraPrecomputeWorkerRunner(env,{now:()=>scheduledNow.getTime()})});if(ctx?.waitUntil)ctx.waitUntil(task);else await task}
+ async scheduled(controller,env,ctx){const scheduledNow=new Date(controller?.scheduledTime||Date.now()),task=runScheduledTasks(env?.DB,{now:scheduledNow,env,precomputeRunner:createJraPrecomputeWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()})});if(ctx?.waitUntil)ctx.waitUntil(task);else await task}
 };
