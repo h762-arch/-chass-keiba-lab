@@ -1,0 +1,53 @@
+name: CHASS JRA Production READ-ONLY Preflight v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'JST race date, YYYY-MM-DD. No SOURCE fetch or cache repair.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-jra-production-read-only-preflight
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Inspect Production D1 without writes
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      D1_DATABASE_NAME: chass-keiba-research-db
+      TARGET_DATE: ${{ inputs.target_date }}
+    steps:
+      - name: Checkout read-only
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Verify preflight contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/jra-production-preflight.mjs
+          node --test tests/jra-production-preflight.test.mjs
+
+      - name: Inspect Production D1 with SELECT and PRAGMA only
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node scripts/jra-production-preflight.mjs
