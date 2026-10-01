@@ -9,7 +9,6 @@ const date='2026-09-27',now=Date.parse('2026-09-27T04:00:00.000Z');
 const names='organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at'.split(',');
 const optional=new Set(['source_acquired_at','data_calculated_at','calculated_at','cluster_version','signal_rule_version','data_json','market_json','final_json','result_json']);
 const indexColumns={idx_precomputed_input_lookup:['organization','race_id','input_hash','model_version','calculation_version'],idx_precomputed_revision_idempotent:['organization','race_id','snapshot_hash'],idx_precomputed_latest:['organization','race_id','revision']};
-
 function fixture(){
  const fetchedAt='2026-09-27T03:00:00.000Z',expiresAt='2026-09-27T06:00:00.000Z';
  const sourceUrl='https://www.jra.go.jp/JRADB/accessD.html';
