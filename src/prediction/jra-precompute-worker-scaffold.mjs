@@ -1,6 +1,7 @@
 import {backgroundPrecomputeEnabled} from './background-precompute.mjs';
 import {jraPrecomputeSchedule,jraPrecomputeWallNow} from './jra-precompute-scheduling-contract.mjs';
 import {createJraPrecomputePlanningIntegration} from './jra-precompute-planning-integration.mjs';
+import {parseJraPrecomputeSoakGuard,inspectJraPrecomputeSoakGuard} from './jra-precompute-soak-guard.mjs';
 
 const SNAPSHOT_SCHEMA_COLUMNS='organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at';
 
@@ -41,8 +42,22 @@ export function createJraPrecomputeWorkerRunner(env={}, {
   const planningWindowMs=positiveSetting(env.JRA_PRECOMPUTE_PLANNING_WINDOW_MS,'jra_precompute_planning_window_invalid');
   const totalWindowMs=positiveSetting(env.JRA_PRECOMPUTE_TOTAL_WINDOW_MS,'jra_precompute_total_window_invalid');
   if(totalWindowMs<=planningWindowMs)throw contractError('jra_precompute_total_window_invalid');
-  try{jraPrecomputeSchedule(scheduledTime)}
-  catch(error){throw contractError('invalid_jra_precompute_scheduled_time',error)}
+  let schedule;
+try{schedule=jraPrecomputeSchedule(scheduledTime)}
+catch(error){throw contractError('invalid_jra_precompute_scheduled_time',error)}
+
+let soakGuard;
+try{soakGuard=parseJraPrecomputeSoakGuard(env)}
+catch(error){throw contractError(error?.code||'jra_precompute_canary_guard_invalid',error)}
+
+if(soakGuard&&schedule.targetDate!==soakGuard.targetDate){
+ return Object.freeze({
+  status:'CANARY_DATE_MISMATCH',
+  targetDate:schedule.targetDate,
+  canaryTargetDate:soakGuard.targetDate,
+  ran:false
+ });
+}
   if(typeof wallNow!=='function')throw contractError('invalid_jra_precompute_clock');
   if(!env.DB||typeof env.DB.prepare!=='function')throw contractError('invalid_jra_precompute_db');
   let startedAt;
@@ -67,7 +82,30 @@ export function createJraPrecomputeWorkerRunner(env={}, {
   }catch(error){
    throw contractError('jra_precompute_snapshot_schema_unavailable',error);
   }
+if(soakGuard){
+ let guardState;
+ try{
+  guardState=await inspectJraPrecomputeSoakGuard({
+   DB:env.DB,
+   guard:soakGuard,
+   scheduledTargetDate:schedule.targetDate,
+   calculationVersion,
+   modelVersion
+  });
+ }catch(error){
+  throw contractError(error?.code||'jra_precompute_canary_guard_unavailable',error);
+ }
 
+ if(guardState.status==='CAP_REACHED'){
+  return Object.freeze({
+   status:'CANARY_CAP_REACHED',
+   targetDate:guardState.targetDate,
+   distinctRaces:guardState.distinctRaces,
+   maxDistinctRaces:guardState.maxDistinctRaces,
+   ran:false
+  });
+ }
+}
   const runner=compose({
    DB:env.DB,sourceMode:'official-cache',
    now:liveNow,versions:{calculationVersion,modelVersion},
