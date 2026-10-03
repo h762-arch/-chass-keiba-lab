@@ -214,7 +214,7 @@ test('adapter pipeline failure is isolated without retry',async()=>{
  assert.deepEqual(result.precompute,{status:'FAILED',enabled:true,ran:true,error:'pipeline_failure'});
 });
 
-test('production scheduled wiring remains control-plane only with flags off',async()=>{
+test('production scheduled wiring allows only the guarded background canary',async()=>{
  const [worker,entry,wrangler]=await Promise.all([
   readFile(new URL('../worker.js',import.meta.url),'utf8'),
   readFile(new URL('../worker-entry.mjs',import.meta.url),'utf8'),
@@ -226,6 +226,11 @@ test('production scheduled wiring remains control-plane only with flags off',asy
  assert.match(entry,/controller\?\.cron==='0 11 \* \* \*'/);
  assert.match(entry,/controller\?\.cron==='30 11 \* \* \*'/);
  assert.match(entry,/baseWorker\.scheduled/);
- assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"false"/);
+ assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
  assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"false"/);
+ assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
+ assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
+ assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);
+ assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:\s*"2026-10-03"/);
+ assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:\s*"24"/);
 });
