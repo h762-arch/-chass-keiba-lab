@@ -30,6 +30,7 @@ function fixture(){
    payload_json,source_url:sourceUrl,fetched_at:fetchedAt,expires_at:expiresAt,
    parser_version:JRA_RACE_PARSER_VERSION,content_hash:createHash('sha256').update(payload_json).digest('hex')}],
   snapshotAudit:[{target_rows:0,target_distinct_races:0,canary_rows:0,canary_distinct_races:0,guard_distinct_races:0,
+   canary_data_race_ids:'',
    canary_missing_data_rows:0,canary_invalid_data_rows:0,canary_invalid_source_rows:0,
    canary_market_rows:0,canary_final_rows:0,canary_result_rows:0,canary_revised_races:0,canary_max_revision:0}]
  };
@@ -49,6 +50,7 @@ test('only fixed SELECT/PRAGMA queries are produced; untrusted dates are rejecte
  assert.match(workflow,/persist-credentials: false/);
  const audit=preflightQueries(date).snapshotAudit;
  assert.match(audit,/COUNT\(DISTINCT/);
+ assert.match(audit,/GROUP_CONCAT\(DISTINCT/);
  assert.doesNotMatch(audit,/SELECT\s+\*/i);
 });
 
@@ -57,18 +59,23 @@ test('complete matching metadata and fresh official payload pass without SOURCE 
  assert.deepEqual([report.migration,report.schema,report.indexes,report.meeting,report.race],Array(5).fill('PASS'));
  assert.deepEqual(report.counts,{fresh:1,missing:0,expired:0,invalid:0,corrupt:0});
  assert.equal(report.snapshotAudit,'EMPTY');
+ assert.deepEqual(report.snapshotMissingDataRaceIds,['20260927-JRA-中山-01']);
+ assert.deepEqual(report.snapshotUnexpectedDataRaceIds,[]);
  assert.equal(report.productionActivationReady,false);
 });
 
 test('snapshot soak audit is aggregate-only, capped and fail-closed on canary integrity',async()=>{
  const rows=fixture();
  rows.snapshotAudit=[{target_rows:3,target_distinct_races:2,canary_rows:2,canary_distinct_races:2,guard_distinct_races:2,
+  canary_data_race_ids:'20260927-JRA-中山-01,20260927-JRA-中山-02',
   canary_missing_data_rows:0,canary_invalid_data_rows:0,canary_invalid_source_rows:0,
   canary_market_rows:1,canary_final_rows:0,canary_result_rows:0,canary_revised_races:1,canary_max_revision:2}];
  let report=await evaluatePreflight({date,now,rows});
  assert.equal(report.snapshotAudit,'PASS');
  assert.deepEqual(report.snapshotAuditIntegrity,{cap:'PASS',source:'PASS',data:'PASS'});
  assert.equal(report.snapshotAuditCounts.canary_market_rows,1);
+ assert.deepEqual(report.snapshotMissingDataRaceIds,[]);
+ assert.deepEqual(report.snapshotUnexpectedDataRaceIds,['20260927-JRA-中山-02']);
  rows.snapshotAudit[0].canary_distinct_races=25;
  rows.snapshotAudit[0].guard_distinct_races=25;
  rows.snapshotAudit[0].canary_rows=25;

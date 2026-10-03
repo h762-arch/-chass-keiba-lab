@@ -35,7 +35,7 @@ export function preflightQueries(date){
   ...Object.fromEntries(Object.keys(INDEXES).map(name=>[name,`PRAGMA index_info('${name}')`])),
   meeting:`SELECT date,status,meetings_json,checked_at,next_refresh_at,source,parser_version,error_code FROM jra_meeting_calendar WHERE date='${date}'`,
   race:`SELECT kind,cache_key,organization,race_date,track,race_no,payload_json,source_url,fetched_at,expires_at,parser_version,content_hash FROM jra_official_cache WHERE kind='race' AND race_date='${date}'`,
-  snapshotAudit:`SELECT COUNT(*) AS target_rows,COUNT(DISTINCT race_id) AS target_distinct_races,COALESCE(SUM(is_canary),0) AS canary_rows,COUNT(DISTINCT CASE WHEN is_canary=1 THEN race_id END) AS canary_distinct_races,COUNT(DISTINCT CASE WHEN is_canary=1 AND data_json IS NOT NULL THEN race_id END) AS guard_distinct_races,COALESCE(SUM(CASE WHEN is_canary=1 AND data_json IS NULL THEN 1 ELSE 0 END),0) AS canary_missing_data_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND data_json IS NOT NULL THEN CASE WHEN json_valid(data_json)=0 THEN 1 WHEN json_type(data_json)<>'object' THEN 1 ELSE 0 END ELSE 0 END),0) AS canary_invalid_data_rows,COALESCE(SUM(CASE WHEN is_canary=1 THEN CASE WHEN json_valid(source_json)=0 THEN 1 WHEN json_type(source_json)<>'object' THEN 1 WHEN COALESCE(json_extract(source_json,'$.organization'),'')<>'JRA' THEN 1 WHEN COALESCE(json_extract(source_json,'$.raceId'),'')<>race_id THEN 1 WHEN COALESCE(json_extract(source_json,'$.source'),'')<>'JRA_OFFICIAL' THEN 1 ELSE 0 END ELSE 0 END),0) AS canary_invalid_source_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND market_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_market_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND final_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_final_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND result_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_result_rows,COUNT(DISTINCT CASE WHEN is_canary=1 AND revision>1 THEN race_id END) AS canary_revised_races,COALESCE(MAX(CASE WHEN is_canary=1 THEN revision END),0) AS canary_max_revision FROM (SELECT race_id,revision,source_json,data_json,market_json,final_json,result_json,CASE WHEN calculation_version='${CANARY_CALCULATION_VERSION}' AND model_version='${CANARY_MODEL_VERSION}' THEN 1 ELSE 0 END AS is_canary FROM ${TABLE} WHERE organization='JRA' AND race_id LIKE '${racePrefix}')`
+  snapshotAudit:`SELECT COUNT(*) AS target_rows,COUNT(DISTINCT race_id) AS target_distinct_races,COALESCE(SUM(is_canary),0) AS canary_rows,COUNT(DISTINCT CASE WHEN is_canary=1 THEN race_id END) AS canary_distinct_races,COUNT(DISTINCT CASE WHEN is_canary=1 AND data_json IS NOT NULL THEN race_id END) AS guard_distinct_races,COALESCE(GROUP_CONCAT(DISTINCT CASE WHEN is_canary=1 AND data_json IS NOT NULL THEN race_id END),'') AS canary_data_race_ids,COALESCE(SUM(CASE WHEN is_canary=1 AND data_json IS NULL THEN 1 ELSE 0 END),0) AS canary_missing_data_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND data_json IS NOT NULL THEN CASE WHEN json_valid(data_json)=0 THEN 1 WHEN json_type(data_json)<>'object' THEN 1 ELSE 0 END ELSE 0 END),0) AS canary_invalid_data_rows,COALESCE(SUM(CASE WHEN is_canary=1 THEN CASE WHEN json_valid(source_json)=0 THEN 1 WHEN json_type(source_json)<>'object' THEN 1 WHEN COALESCE(json_extract(source_json,'$.organization'),'')<>'JRA' THEN 1 WHEN COALESCE(json_extract(source_json,'$.raceId'),'')<>race_id THEN 1 WHEN COALESCE(json_extract(source_json,'$.source'),'')<>'JRA_OFFICIAL' THEN 1 ELSE 0 END ELSE 0 END),0) AS canary_invalid_source_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND market_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_market_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND final_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_final_rows,COALESCE(SUM(CASE WHEN is_canary=1 AND result_json IS NOT NULL THEN 1 ELSE 0 END),0) AS canary_result_rows,COUNT(DISTINCT CASE WHEN is_canary=1 AND revision>1 THEN race_id END) AS canary_revised_races,COALESCE(MAX(CASE WHEN is_canary=1 THEN revision END),0) AS canary_max_revision FROM (SELECT race_id,revision,source_json,data_json,market_json,final_json,result_json,CASE WHEN calculation_version='${CANARY_CALCULATION_VERSION}' AND model_version='${CANARY_MODEL_VERSION}' THEN 1 ELSE 0 END AS is_canary FROM ${TABLE} WHERE organization='JRA' AND race_id LIKE '${racePrefix}')`
  });
 }
 
@@ -52,18 +52,23 @@ function snapshotAudit(rows){
  const row=Array.isArray(rows)&&rows.length===1?rows[0]:null;
  const keys=['target_rows','target_distinct_races','canary_rows','canary_distinct_races','guard_distinct_races','canary_missing_data_rows','canary_invalid_data_rows','canary_invalid_source_rows','canary_market_rows','canary_final_rows','canary_result_rows','canary_revised_races','canary_max_revision'];
  const counts=Object.fromEntries(keys.map(key=>[key,Number(row?.[key])]));
+ const dataRaceIds=typeof row?.canary_data_race_ids==='string'&&row.canary_data_race_ids
+  ?[...new Set(row.canary_data_race_ids.split(',').filter(Boolean))].sort()
+  :[];
  const valid=Boolean(row)&&keys.every(key=>Number.isSafeInteger(counts[key])&&counts[key]>=0)&&
   counts.target_distinct_races<=counts.target_rows&&counts.canary_rows<=counts.target_rows&&
   counts.canary_distinct_races<=counts.canary_rows&&counts.guard_distinct_races<=counts.canary_distinct_races&&counts.canary_revised_races<=counts.canary_distinct_races&&
+  dataRaceIds.length===counts.guard_distinct_races&&
+  dataRaceIds.every(id=>/^\d{8}-JRA-[^-]+-\d{2}$/.test(id))&&
   (counts.canary_rows===0?counts.canary_max_revision===0:counts.canary_max_revision>=1);
- if(!valid)return {status:'FAIL',counts,integrity:{cap:'FAIL',source:'FAIL',data:'FAIL'}};
+ if(!valid)return {status:'FAIL',counts,integrity:{cap:'FAIL',source:'FAIL',data:'FAIL'},dataRaceIds};
  const integrity={
   cap:counts.guard_distinct_races<=CANARY_MAX_DISTINCT_RACES?'PASS':'FAIL',
   source:counts.canary_invalid_source_rows===0?'PASS':'FAIL',
   data:counts.canary_missing_data_rows===0&&counts.canary_invalid_data_rows===0?'PASS':'FAIL'
  };
  const status=counts.canary_rows===0?'EMPTY':Object.values(integrity).includes('FAIL')?'FAIL':'PASS';
- return {status,counts,integrity};
+ return {status,counts,integrity,dataRaceIds};
 }
 
 export async function evaluatePreflight({date,now,rows}){
@@ -96,7 +101,7 @@ export async function evaluatePreflight({date,now,rows}){
  const indexes=Object.values(indexResults).every(x=>x==='PASS')?'PASS':'FAIL';
  if(indexes==='FAIL')issues.push('snapshot_indexes_mismatch');
 
- let meeting='FAIL',race='NOT_YET_PROVEN',expectedRaceCount=null;
+ let meeting='FAIL',race='NOT_YET_PROVEN',expectedRaceCount=null,expectedRaceIds=[];
  const counts={fresh:null,missing:null,expired:null,invalid:null,corrupt:null};
  const DB=readOnlyDb(rows.meeting??[],rows.race??[]);
  try{
@@ -105,6 +110,7 @@ export async function evaluatePreflight({date,now,rows}){
   const jobs=discoverPrecomputeRaceJobs(meetings);
   if(jobs.length===0)throw new Error('jra_precompute_no_race_jobs');
   expectedRaceCount=jobs.length;
+  expectedRaceIds=jobs.map(job=>job.raceId).sort();
   meeting='PASS';
   Object.keys(counts).forEach(k=>{counts[k]=0});
   const readSource=createJraPrecomputeOfficialCacheSource({DB,now:()=>now});
@@ -124,10 +130,14 @@ export async function evaluatePreflight({date,now,rows}){
  if(race!=='PASS')issues.push('race_supply_not_proven');
  const audit=snapshotAudit(rows.snapshotAudit);
  if(audit.status==='FAIL')issues.push('snapshot_canary_audit_failed');
+ const missingDataRaceIds=meeting==='PASS'?expectedRaceIds.filter(id=>!audit.dataRaceIds.includes(id)):[];
+ const unexpectedDataRaceIds=meeting==='PASS'?audit.dataRaceIds.filter(id=>!expectedRaceIds.includes(id)):[];
  return {targetDate:date,checkedAt:new Date(now).toISOString(),migration,schema,missingColumns,mismatchedColumns,
   indexes,indexResults,meeting,race,expectedRaceCount,counts,snapshotAudit:audit.status,
   snapshotAuditCounts:audit.counts,snapshotAuditIntegrity:audit.integrity,
-  snapshotAuditMaxDistinctRaces:CANARY_MAX_DISTINCT_RACES,issues:[...new Set(issues)],
+  snapshotAuditMaxDistinctRaces:CANARY_MAX_DISTINCT_RACES,
+  snapshotMissingDataRaceIds:missingDataRaceIds,snapshotUnexpectedDataRaceIds:unexpectedDataRaceIds,
+  issues:[...new Set(issues)],
   productionActivationReady:false};
 }
 
@@ -171,6 +181,8 @@ function summary(report){
   `- Snapshot canary MARKET / FINAL / RESULT rows (observed only): ${report.snapshotAuditCounts.canary_market_rows} / ${report.snapshotAuditCounts.canary_final_rows} / ${report.snapshotAuditCounts.canary_result_rows}`,
   `- Snapshot canary revised races / max revision: ${report.snapshotAuditCounts.canary_revised_races} / ${report.snapshotAuditCounts.canary_max_revision}`,
   `- Snapshot other-version rows (observed only): ${report.snapshotAuditCounts.target_rows-report.snapshotAuditCounts.canary_rows}`,
+  `- Snapshot missing DATA race IDs: ${report.snapshotMissingDataRaceIds.join(', ')||'none'}`,
+  `- Snapshot unexpected DATA race IDs (observed only): ${report.snapshotUnexpectedDataRaceIds.join(', ')||'none'}`,
   '- Snapshot SOURCE integrity checks JRA_OFFICIAL projection identity; cache-only runtime provenance is not proven here.',
   '- Snapshot layer/revision counts are observational; this workflow does not attribute which runner caused them.',
   '- Production Activation Ready: NO',
