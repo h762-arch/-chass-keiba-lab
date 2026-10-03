@@ -102,7 +102,7 @@ test('production precompute may be OFF or guarded canary while Viewer stays OFF'
   assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);
-  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:\s*"2026-10-03"/);
+  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:\s*"2026-10-04"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:\s*"24"/);
   assert.doesNotMatch(`${worker}\n${app}`,/runRacePrecomputeJob|readLatestPrecomputedSnapshot/);
 });
