@@ -8,6 +8,7 @@ import {
   buildViewerRecentUrl,
   formatViewerNumber,
   formatViewerPercent,
+  viewerAllowsMarketOverlay,
   normalizeViewerOrganization,
   normalizeViewerTrack,
   sanitizeViewerDayPayload,
@@ -1294,7 +1295,7 @@ async function loadViewerDay() {
 
     const [summaries, marketDay] = await Promise.all([
       fetchRaceSummaries(context, signal).catch(() => null),
-      fetchMarketDay(context, signal).catch(() => null),
+      viewerAllowsMarketOverlay(day) ? fetchMarketDay(context, signal).catch(() => null) : Promise.resolve(null),
     ]);
     if (summaries) mergeRaceSummaries(day, summaries);
     if (marketDay) mergeMarket(day, marketDay);

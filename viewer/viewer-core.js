@@ -52,6 +52,13 @@ export function validViewerDate(value) {
     && date.getUTCDate() === Number(match[3]);
 }
 
+export const PRECOMPUTED_EARLY_VIEWER_MODE = 'precomputed-early-data-only';
+
+export function viewerAllowsMarketOverlay(day = {}) {
+  return day?.viewerMode !== PRECOMPUTED_EARLY_VIEWER_MODE
+    && day?.marketEvaluation !== 'disabled';
+}
+
 function viewerBase(origin = '') {
   return String(origin || '').replace(/\/$/, '');
 }
@@ -204,6 +211,8 @@ export function sanitizeViewerDayPayload(payload = {}) {
     track: textOrNull(payload.track),
     organization: normalizeViewerOrganization(payload.organization) || textOrNull(payload.organization),
     generatedAt: textOrNull(payload.generatedAt),
+    viewerMode: textOrNull(payload.viewerMode),
+    marketEvaluation: textOrNull(payload.marketEvaluation),
     races: Object.freeze(races),
   });
 }
