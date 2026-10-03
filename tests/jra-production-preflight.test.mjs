@@ -28,13 +28,16 @@ function fixture(){
   ])}],
   race:[{kind:'race',cache_key:`race|${date}|中山|1`,organization:'JRA',race_date:date,track:'中山',race_no:1,
    payload_json,source_url:sourceUrl,fetched_at:fetchedAt,expires_at:expiresAt,
-   parser_version:JRA_RACE_PARSER_VERSION,content_hash:createHash('sha256').update(payload_json).digest('hex')}]
+   parser_version:JRA_RACE_PARSER_VERSION,content_hash:createHash('sha256').update(payload_json).digest('hex')}],
+  snapshotAudit:[{target_rows:0,target_distinct_races:0,canary_rows:0,canary_distinct_races:0,guard_distinct_races:0,
+   canary_missing_data_rows:0,canary_invalid_data_rows:0,canary_invalid_source_rows:0,
+   canary_market_rows:0,canary_final_rows:0,canary_result_rows:0,canary_revised_races:0,canary_max_revision:0}]
  };
 }
 
 test('only fixed SELECT/PRAGMA queries are produced; untrusted dates are rejected',()=>{
  const queries=Object.values(preflightQueries(date));
- assert.equal(queries.length,9);
+ assert.equal(queries.length,10);
  assert.ok(queries.every(sql=>/^(SELECT|PRAGMA)\b/.test(sql)));
  assert.ok(queries.every(sql=>!/(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|ATTACH|VACUUM)\b/i.test(sql)));
  for(const bad of [undefined,'2026-02-30',"2026-09-27';DELETE FROM x;--",'2026-9-27']){
@@ -44,13 +47,46 @@ test('only fixed SELECT/PRAGMA queries are produced; untrusted dates are rejecte
  assert.match(workflow,/workflow_dispatch:/);
  assert.doesNotMatch(workflow,/\bschedule:/);
  assert.match(workflow,/persist-credentials: false/);
+ const audit=preflightQueries(date).snapshotAudit;
+ assert.match(audit,/COUNT\(DISTINCT/);
+ assert.doesNotMatch(audit,/SELECT\s+\*/i);
 });
 
 test('complete matching metadata and fresh official payload pass without SOURCE fetch or writes',async()=>{
  const report=await evaluatePreflight({date,now,rows:fixture()});
  assert.deepEqual([report.migration,report.schema,report.indexes,report.meeting,report.race],Array(5).fill('PASS'));
  assert.deepEqual(report.counts,{fresh:1,missing:0,expired:0,invalid:0,corrupt:0});
+ assert.equal(report.snapshotAudit,'EMPTY');
  assert.equal(report.productionActivationReady,false);
+});
+
+test('snapshot soak audit is aggregate-only, capped and fail-closed on canary integrity',async()=>{
+ const rows=fixture();
+ rows.snapshotAudit=[{target_rows:3,target_distinct_races:2,canary_rows:2,canary_distinct_races:2,guard_distinct_races:2,
+  canary_missing_data_rows:0,canary_invalid_data_rows:0,canary_invalid_source_rows:0,
+  canary_market_rows:1,canary_final_rows:0,canary_result_rows:0,canary_revised_races:1,canary_max_revision:2}];
+ let report=await evaluatePreflight({date,now,rows});
+ assert.equal(report.snapshotAudit,'PASS');
+ assert.deepEqual(report.snapshotAuditIntegrity,{cap:'PASS',source:'PASS',data:'PASS'});
+ assert.equal(report.snapshotAuditCounts.canary_market_rows,1);
+ rows.snapshotAudit[0].canary_distinct_races=25;
+ rows.snapshotAudit[0].guard_distinct_races=25;
+ rows.snapshotAudit[0].canary_rows=25;
+ rows.snapshotAudit[0].target_rows=25;
+ rows.snapshotAudit[0].target_distinct_races=25;
+ report=await evaluatePreflight({date,now,rows});
+ assert.equal(report.snapshotAudit,'FAIL');
+ assert.equal(report.snapshotAuditIntegrity.cap,'FAIL');
+ assert.ok(report.issues.includes('snapshot_canary_audit_failed'));
+ rows.snapshotAudit[0].canary_distinct_races=2;
+ rows.snapshotAudit[0].guard_distinct_races=2;
+ rows.snapshotAudit[0].canary_rows=2;
+ rows.snapshotAudit[0].target_rows=3;
+ rows.snapshotAudit[0].target_distinct_races=2;
+ rows.snapshotAudit[0].canary_invalid_source_rows=1;
+ report=await evaluatePreflight({date,now,rows});
+ assert.equal(report.snapshotAudit,'FAIL');
+ assert.equal(report.snapshotAuditIntegrity.source,'FAIL');
 });
 
 test('missing migration, schema drift and loss of UNIQUE contract fail',async()=>{
