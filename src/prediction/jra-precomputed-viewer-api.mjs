@@ -38,9 +38,9 @@ function rowRejectReason(row,{now,maxAgeMs}){
   if(row.calculation_version!==JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION||row.model_version!==JRA_PRECOMPUTED_VIEWER_MODEL_VERSION)return 'VERSION_MISMATCH';
   if(!READABLE_STATUSES.has(row.status))return 'SNAPSHOT_NOT_READABLE';
   const validatedAt=Date.parse(row.source_validated_at||'');
-  if(!Number.isFinite(validatedAt))return 'INVALID_FRESHNESS';
-  const age=now-validatedAt;
-  if(age<0||age>maxAgeMs)return 'STALE';
+  const calculatedAt=Date.parse(row.data_calculated_at||row.calculated_at||'');
+  if(!Number.isFinite(validatedAt)||!Number.isFinite(calculatedAt))return 'INVALID_FRESHNESS';
+  if(validatedAt>now||calculatedAt>now)return 'FUTURE_TIMESTAMP';
   return null;
 }
 
@@ -66,7 +66,8 @@ export async function readJraPrecomputedViewerRaces({
 
   const compactDate=date.replaceAll('-','');
   const prefix=`${compactDate}-JRA-`;
-  const sql=`SELECT ${SAFE_COLUMNS}\n    FROM precomputed_race_snapshots\n    WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=?\n    ORDER BY race_id ASC,revision DESC`;
+  const sql=`SELECT ${SAFE_COLUMNS}\n    FROM precomputed_race_snapshots\n    WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=?\n      AND data_json IS NOT NULL AND data_json<>''
+    ORDER BY race_id ASC,revision ASC`;
   let rows;
   try{
     const result=await DB.prepare(sql).bind(
@@ -79,7 +80,8 @@ export async function readJraPrecomputedViewerRaces({
 
   const latest=[];
   const seen=new Set();
-  for(const row of rows){
+  const ordered=[...rows].sort((a,b)=>String(a?.race_id||'').localeCompare(String(b?.race_id||''),'ja')||(Number(a?.revision)||0)-(Number(b?.revision)||0));
+  for(const row of ordered){
     if(seen.has(row?.race_id))continue;
     seen.add(row?.race_id);
     const identity=raceIdentity(row?.race_id);

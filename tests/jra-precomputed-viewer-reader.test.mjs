@@ -64,6 +64,8 @@ test('flag ON reads exact JRA calculation/model version and projects DATA only',
   try{
     const result=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,raceId,now});
     assert.equal(result.status,'READY');
+    assert.match(DB.calls[0].sql,/data_json IS NOT NULL AND data_json<>''/);
+    assert.match(DB.calls[0].sql,/ORDER BY revision ASC LIMIT 1/);
     assert.deepEqual(DB.calls[0].args,['JRA',raceId,JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);
     assert.equal(result.race.viewerMode,'precomputed-early-data-only');
     assert.equal(result.race.marketEvaluation,'disabled');
@@ -111,11 +113,27 @@ test('wrong organization or race identity fails closed',async()=>{
   }
 });
 
-test('stale or future source validation fails closed',async()=>{
-  const stale=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T05:40:00Z'})),raceId,now});
-  assert.equal(stale.reason,'STALE');
-  const future=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T06:06:00Z'})),raceId,now});
-  assert.equal(future.reason,'STALE');
+test('historical frozen EARLY remains readable while future timestamps fail closed',async()=>{
+  const historical=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T05:40:00Z',data_calculated_at:'2026-10-03T05:39:30Z'})),raceId,now});
+  assert.equal(historical.status,'READY');
+  const futureSource=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T06:06:00Z'})),raceId,now});
+  assert.equal(futureSource.status,'REJECTED');
+  assert.equal(futureSource.reason,'FUTURE_TIMESTAMP');
+  const futureCalculation=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({data_calculated_at:'2026-10-03T06:06:00Z'})),raceId,now});
+  assert.equal(futureCalculation.status,'REJECTED');
+  assert.equal(futureCalculation.reason,'FUTURE_TIMESTAMP');
+});
+
+test('malformed frozen EARLY candidate fails closed without falling forward',async()=>{
+  let reads=0;
+  const malformed=row({revision:1,data_json:'{bad'});
+  const laterValid=row({revision:2,data_json:JSON.stringify(data())});
+  const DB=db(()=>++reads===1?malformed:laterValid);
+  const result=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,raceId,now});
+  assert.equal(result.status,'REJECTED');
+  assert.equal(result.reason,'MALFORMED_DATA');
+  assert.equal(reads,1);
+  assert.equal(DB.calls.length,1);
 });
 
 test('invalid probability scale and duplicate runners fail closed',async()=>{
