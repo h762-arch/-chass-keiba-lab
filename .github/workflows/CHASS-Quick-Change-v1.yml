@@ -485,7 +485,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          git diff --name-only | sort -u > /tmp/actual
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort -u > /tmp/actual
           cat > /tmp/expected <<'EOF_PATHS'
           scripts/jra-production-preflight.mjs
           src/prediction/jra-ability-result-projector.mjs
@@ -526,7 +526,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff > /tmp/chass-quick-change.patch
+          # Stage locally so new files are included in the reviewed patch artifact.
+          git add -- 'scripts/jra-production-preflight.mjs' 'src/prediction/jra-ability-result-projector.mjs' 'src/prediction/jra-data-calculator.mjs' 'src/prediction/jra-precomputed-viewer-reader.mjs' 'tests/fixtures/jra/jra-early-enrichment-baseline.json' 'tests/jra-early-input-enrichment.test.mjs' 'tests/jra-precompute-cache-only-composition.test.mjs' 'tests/jra-precompute-cache-only-source.test.mjs' 'tests/jra-precompute-planning-budget.test.mjs' 'tests/jra-precompute-planning-integration.test.mjs' 'tests/jra-precompute-soak-guard.test.mjs' 'wrangler.jsonc'
+          git diff --cached --check
+          git diff --cached --binary > /tmp/chass-quick-change.patch
           test -s /tmp/chass-quick-change.patch
           cp /tmp/npm-check.log /tmp/npm-check-e1.log
 
@@ -573,7 +576,7 @@ jobs:
           git apply --check /tmp/e1-artifact/chass-quick-change.patch
           git apply /tmp/e1-artifact/chass-quick-change.patch
           git diff --check
-          git diff --name-only | sort -u > /tmp/actual
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort -u > /tmp/actual
           cat > /tmp/expected <<'EOF_PATHS'
           scripts/jra-production-preflight.mjs
           src/prediction/jra-ability-result-projector.mjs
