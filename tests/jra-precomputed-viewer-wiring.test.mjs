@@ -96,27 +96,40 @@ test('NAR is never intercepted even when viewer flag is ON',async()=>{
   assert.equal(DB.calls.length,0);
 });
 
-test('stale or malformed precomputed DATA fails closed',async()=>{
-  for(const bad of [
-    row('東京',1,{source_validated_at:'2026-10-03T23:00:00Z'}),
-    row('東京',1,{data_json:'{bad json'})
-  ]){
-    const DB=new D1([bad]);
-    const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
-    assert.equal(response.status,503);
-    const body=await response.json();
-    assert.equal(body.error.code,'PRECOMPUTED_VIEWER_UNAVAILABLE');
-  }
+test('historical frozen EARLY remains readable after the old freshness window',async()=>{
+  const DB=new D1([row('東京',1,{source_validated_at:'2026-10-03T23:00:00Z',data_calculated_at:'2026-10-03T22:59:30Z'})]);
+  const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.races.length,1);
 });
 
-test('list reader keeps latest revision per race and SELECTs exact versions only',async()=>{
-  const older=row('東京',1,{revision:1,data_json:JSON.stringify(data('東京',1))});
+test('malformed frozen EARLY fails closed without falling forward',async()=>{
+  const DB=new D1([row('東京',1,{revision:2}),row('東京',1,{revision:1,data_json:'{bad json'})]);
+  const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+  assert.equal(response.status,503);
+  const body=await response.json();
+  assert.equal(body.error.code,'PRECOMPUTED_VIEWER_UNAVAILABLE');
+});
+
+test('future frozen EARLY timestamp fails closed',async()=>{
+  const DB=new D1([row('東京',1,{source_validated_at:'2026-10-04T00:06:00Z'})]);
+  const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+  assert.equal(response.status,503);
+  const body=await response.json();
+  assert.equal(body.error.message,'FUTURE_TIMESTAMP');
+});
+
+test('list reader freezes earliest nonempty DATA revision per race independent of DB row order',async()=>{
+  const older=row('東京',1,{revision:1,data_json:JSON.stringify({...data('東京',1),race:{...data('東京',1).race,raceName:'EARLY'}})});
   const newer=row('東京',1,{revision:3,data_json:JSON.stringify({...data('東京',1),race:{...data('東京',1).race,raceName:'NEW'}})});
   const DB=new D1([newer,older]);
   const read=await readJraPrecomputedViewerRaces({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,date,track:'東京',now});
   assert.equal(read.status,'READY');
   assert.equal(read.races.length,1);
-  assert.equal(read.races[0].race.raceName,'NEW');
+  assert.equal(read.races[0].race.raceName,'EARLY');
+  assert.match(DB.calls[0].sql,/data_json IS NOT NULL AND data_json<>''/);
+  assert.match(DB.calls[0].sql,/ORDER BY race_id ASC,revision ASC/);
   assert.deepEqual(DB.calls[0].args,['JRA','20261004-JRA-','20261004-JRA-\uffff',JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);
 });
 

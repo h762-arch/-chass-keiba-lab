@@ -124,7 +124,8 @@ export async function readJraPrecomputedViewerRace({
   const sql=`SELECT organization,race_id,revision,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,status,data_json
     FROM precomputed_race_snapshots
     WHERE organization=? AND race_id=? AND calculation_version=? AND model_version=?
-    ORDER BY revision DESC LIMIT 1`;
+      AND data_json IS NOT NULL AND data_json<>''
+    ORDER BY revision ASC LIMIT 1`;
   let row;
   try{
     row=await DB.prepare(sql).bind(
@@ -138,9 +139,9 @@ export async function readJraPrecomputedViewerRace({
   if(row.calculation_version!==JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION||row.model_version!==JRA_PRECOMPUTED_VIEWER_MODEL_VERSION)return rejected('VERSION_MISMATCH');
   if(!ALLOWED_ROW_STATUSES.has(row.status))return rejected('SNAPSHOT_NOT_READABLE');
   const validatedAt=Date.parse(row.source_validated_at||'');
-  if(!Number.isFinite(validatedAt))return rejected('INVALID_FRESHNESS');
-  const age=now-validatedAt;
-  if(age<0||age>maxAgeMs)return rejected('STALE');
+  const calculatedAt=Date.parse(row.data_calculated_at||row.calculated_at||'');
+  if(!Number.isFinite(validatedAt)||!Number.isFinite(calculatedAt))return rejected('INVALID_FRESHNESS');
+  if(validatedAt>now||calculatedAt>now)return rejected('FUTURE_TIMESTAMP');
   try{
     return Object.freeze({status:'READY',reason:null,race:projectJraPrecomputedViewerRace(row,{raceId})});
   }catch(error){
