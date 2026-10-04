@@ -20,13 +20,13 @@ const corners=value=>{
  return raw.map(v=>typeof v==='string'?v.trim():v).filter(v=>v!==''&&v!=null).map(Number).filter(n=>Number.isInteger(n)&&n>0);
 };
 
-// Explicitly select ability fields: arbitrary SOURCE metadata never enters Core.
+// Explicitly select ability and official explanation fields; arbitrary SOURCE metadata is excluded.
 export function projectJraAbilityInput(source){
  if(!source?.race||!Array.isArray(source.horses))throw new TypeError('invalid_jra_source');
  const race=source.race;
  const projectedRace={
   date:text(race.date??race.raceDate).replaceAll('/','-'),racecourse:text(race.racecourse??race.track),
-  raceNo:numberOrNull(race.raceNo??race.race_no),raceName:text(race.raceName),
+  raceNo:numberOrNull(race.raceNo??race.race_no),raceName:text(race.raceName),postTime:text(race.postTime),
   surface:surface(race.surface),distance:numberOrNull(race.distance),
   courseType:text(race.courseType),trackCondition:condition(race.trackCondition??race.condition),
   weather:text(race.weather),pace:text(race.pace)||'標準',direction:text(race.direction),
@@ -41,6 +41,8 @@ export function projectJraAbilityInput(source){
   return {
    horseNo,horseName:text(horse.horseName??horse.name),runningStatus:horse.runningStatus,
    sexAge:text(horse.sexAge),weightCarried:numberOrNull(horse.weightCarried),
+   frameNo:horse.frameNo??null,jockey:text(horse.jockey),trainer:text(horse.trainer),
+   bodyWeight:horse.bodyWeight??null,bodyWeightChange:horse.bodyWeightChange??null,
    driveIndexSignal:numberOrNull(horse.driveIndexSignal),
    driveIndexEvidenceCount:numberOrNull(horse.driveIndexEvidenceCount),
    driveClusterStrength:numberOrNull(horse.driveClusterStrength),
@@ -51,7 +53,8 @@ export function projectJraAbilityInput(source){
     finish:numberOrNull(run.finish??run.position),fieldSize:numberOrNull(run.fieldSize),
     timeSeconds:numberOrNull(run.timeSeconds??run.time_seconds)??seconds(run.time??run.raceTime),
     margin:numberOrNull(run.margin),cornerPositions:corners(run.cornerPositions??run.corners),
-    last3F:numberOrNull(run.last3F??run.last3f),weightCarried:numberOrNull(run.weightCarried??run.weight)
+    last3F:numberOrNull(run.last3F??run.last3f),weightCarried:numberOrNull(run.weightCarried??run.weight),
+    jockey:text(run.jockey),bodyWeight:run.bodyWeight??null
    }))
   };
  }).sort((a,b)=>a.horseNo-b.horseNo);

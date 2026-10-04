@@ -14,7 +14,7 @@ const scheduledTime=Date.parse('2026-09-24T15:30:00Z');
 
 const baseEnv={
  ENABLE_BACKGROUND_PRECOMPUTE:'true',
- JRA_PRECOMPUTE_CALCULATION_VERSION:'jra-ability-data-v1',
+ JRA_PRECOMPUTE_CALCULATION_VERSION:'jra-ability-data-v2',
  JRA_PRECOMPUTE_MODEL_VERSION:'10.0.1-jra-drive1-ability',
  JRA_PRECOMPUTE_SOURCE_MODE:'official-cache',
  JRA_PRECOMPUTE_MAX_PLANNING_JOBS:'4',
@@ -93,7 +93,7 @@ test('guard reports OPEN below cap with exact version-scoped D1 count',async()=>
   DB,
   guard,
   scheduledTargetDate:'2026-09-25',
-  calculationVersion:'jra-ability-data-v1',
+  calculationVersion:'jra-ability-data-v2',
   modelVersion:'10.0.1-jra-drive1-ability'
  });
 
@@ -106,7 +106,7 @@ test('guard reports OPEN below cap with exact version-scoped D1 count',async()=>
 
  assert.deepEqual(binds,[[
   '20260925-JRA-%',
-  'jra-ability-data-v1',
+  'jra-ability-data-v2',
   '10.0.1-jra-drive1-ability'
  ]]);
 });
@@ -131,7 +131,7 @@ test('guard reports CAP_REACHED at configured distinct-race limit',async()=>{
    DB,
    guard,
    scheduledTargetDate:'2026-09-25',
-   calculationVersion:'jra-ability-data-v1',
+   calculationVersion:'jra-ability-data-v2',
    modelVersion:'10.0.1-jra-drive1-ability'
   }),
   {

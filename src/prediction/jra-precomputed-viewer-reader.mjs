@@ -1,4 +1,4 @@
-export const JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION='jra-ability-data-v1';
+export const JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION='jra-ability-data-v2';
 export const JRA_PRECOMPUTED_VIEWER_MODEL_VERSION='10.0.1-jra-drive1-ability';
 export const JRA_PRECOMPUTED_VIEWER_MAX_AGE_MS=15*60_000;
 
