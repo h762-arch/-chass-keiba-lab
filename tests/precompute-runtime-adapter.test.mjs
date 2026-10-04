@@ -138,15 +138,15 @@ test('production adapter is thin, direct-IO-free, and runtime-disconnected',()=>
   }
 });
 
-test('background canary may be enabled only with guard while NAR special cron stays isolated',()=>{
+test('background precompute auto-dates without soak guard while NAR special cron stays isolated',()=>{
   const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
   assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
   assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"true"/);
   assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);
-  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:\s*"2026-10-04"/);
-  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:\s*"24"/);
+  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:/);
+  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:/);
   const entry=fs.readFileSync(new URL('../worker-entry.mjs',import.meta.url),'utf8');
   assert.match(entry,/controller\?\.cron==='0 11 \* \* \*'\|\|controller\?\.cron==='30 11 \* \* \*'/);
   assert.match(entry,/ctx\.waitUntil\(runNarTomorrowPrefetch\(env\)\)/);
