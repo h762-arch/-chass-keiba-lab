@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         options:
-          - jra-precompute-auto-date-v1
+          - jra-early-signal-freeze-v1
 
 permissions: {}
 
@@ -40,9 +40,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$PRESET" in
-            jra-precompute-auto-date-v1)
-              echo "branch_name=chass/jra-precompute-auto-date-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
-              echo "pr_title=chore: graduate JRA precompute canary to auto-date" >> "$GITHUB_OUTPUT"
+            jra-early-signal-freeze-v1)
+              echo "branch_name=chass/jra-early-signal-freeze-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+              echo "pr_title=feat: freeze JRA EARLY prediction revision" >> "$GITHUB_OUTPUT"
               ;;
             *) echo "::error::unsupported preset: $PRESET"; exit 1 ;;
           esac
@@ -56,44 +56,173 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
           import os
 
-          if os.environ['PRESET'] != 'jra-precompute-auto-date-v1':
+          if os.environ['PRESET'] != 'jra-early-signal-freeze-v1':
               raise SystemExit('unsupported preset')
 
           def replace_once(path, old, new):
-              p=Path(path); s=p.read_text()
-              if s.count(old)!=1: raise SystemExit(f'{path}: expected exactly one target')
-              p.write_text(s.replace(old,new,1))
+              p=Path(path)
+              s=p.read_text(encoding='utf-8')
+              if s.count(old)!=1:
+                  raise SystemExit(f'{path}: expected exactly one target, found {s.count(old)}')
+              p.write_text(s.replace(old,new,1),encoding='utf-8')
 
-          p=Path('wrangler.jsonc'); s=p.read_text()
-          for line in [
-              '"JRA_PRECOMPUTE_CANARY_TARGET_DATE": "2026-10-04",\n',
-              '"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES": "24",\n']:
-              if s.count(line)!=1: raise SystemExit('wrangler canary setting mismatch')
-              s=s.replace(line,'',1)
-          p.write_text(s)
+          # First non-empty DATA revision becomes the immutable EARLY reference.
+          replace_once(
+              'src/prediction/jra-precomputed-viewer-reader.mjs',
+              "    ORDER BY revision DESC LIMIT 1`;",
+              "      AND data_json IS NOT NULL AND data_json<>''\n    ORDER BY revision ASC LIMIT 1`;"
+          )
+          replace_once(
+              'src/prediction/jra-precomputed-viewer-reader.mjs',
+              "  const validatedAt=Date.parse(row.source_validated_at||'');\n  if(!Number.isFinite(validatedAt))return rejected('INVALID_FRESHNESS');\n  const age=now-validatedAt;\n  if(age<0||age>maxAgeMs)return rejected('STALE');",
+              "  const validatedAt=Date.parse(row.source_validated_at||'');\n  const calculatedAt=Date.parse(row.data_calculated_at||row.calculated_at||'');\n  if(!Number.isFinite(validatedAt)||!Number.isFinite(calculatedAt))return rejected('INVALID_FRESHNESS');\n  if(validatedAt>now||calculatedAt>now)return rejected('FUTURE_TIMESTAMP');"
+          )
 
-          replace_once('tests/background-precompute.test.mjs',
-            "test('production precompute remains guarded while Viewer canary is explicitly ON',async()=>{",
-            "test('production precompute auto-dates while Viewer stays ON and direct fetch stays blocked',async()=>{")
-          replace_once('tests/background-precompute.test.mjs',
-            '  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
-            '  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+          # Day/list selection uses the earliest non-empty DATA row and is deterministic.
+          replace_once(
+              'src/prediction/jra-precomputed-viewer-api.mjs',
+              "    ORDER BY race_id ASC,revision DESC`;",
+              "      AND data_json IS NOT NULL AND data_json<>''\n    ORDER BY race_id ASC,revision ASC`;"
+          )
+          replace_once(
+              'src/prediction/jra-precomputed-viewer-api.mjs',
+              "  const validatedAt=Date.parse(row.source_validated_at||'');\n  if(!Number.isFinite(validatedAt))return 'INVALID_FRESHNESS';\n  const age=now-validatedAt;\n  if(age<0||age>maxAgeMs)return 'STALE';",
+              "  const validatedAt=Date.parse(row.source_validated_at||'');\n  const calculatedAt=Date.parse(row.data_calculated_at||row.calculated_at||'');\n  if(!Number.isFinite(validatedAt)||!Number.isFinite(calculatedAt))return 'INVALID_FRESHNESS';\n  if(validatedAt>now||calculatedAt>now)return 'FUTURE_TIMESTAMP';"
+          )
+          replace_once(
+              'src/prediction/jra-precomputed-viewer-api.mjs',
+              "  const latest=[];\n  const seen=new Set();\n  for(const row of rows){",
+              "  const latest=[];\n  const seen=new Set();\n  const ordered=[...rows].sort((a,b)=>String(a?.race_id||'').localeCompare(String(b?.race_id||''),'ja')||(Number(a?.revision)||0)-(Number(b?.revision)||0));\n  for(const row of ordered){"
+          )
 
-          replace_once('tests/precompute-runtime-adapter.test.mjs',
-            "test('background canary may be enabled only with guard while NAR special cron stays isolated',()=>{",
-            "test('background precompute auto-dates without soak guard while NAR special cron stays isolated',()=>{")
-          replace_once('tests/precompute-runtime-adapter.test.mjs',
-            '  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
-            '  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+          # Reader tests: frozen EARLY persists, future timestamps fail, no fallback.
+          replace_once(
+              'tests/jra-precomputed-viewer-reader.test.mjs',
+              "    assert.equal(result.status,'READY');\n    assert.deepEqual(DB.calls[0].args,['JRA',raceId,JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);",
+              "    assert.equal(result.status,'READY');\n    assert.match(DB.calls[0].sql,/data_json IS NOT NULL AND data_json<>''/);\n    assert.match(DB.calls[0].sql,/ORDER BY revision ASC LIMIT 1/);\n    assert.deepEqual(DB.calls[0].args,['JRA',raceId,JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);"
+          )
+          replace_once(
+              'tests/jra-precomputed-viewer-reader.test.mjs',
+              dedent("""\
+              test('stale or future source validation fails closed',async()=>{
+                const stale=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T05:40:00Z'})),raceId,now});
+                assert.equal(stale.reason,'STALE');
+                const future=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T06:06:00Z'})),raceId,now});
+                assert.equal(future.reason,'STALE');
+              });
+              """),
+              dedent("""\
+              test('historical frozen EARLY remains readable while future timestamps fail closed',async()=>{
+                const historical=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T05:40:00Z',data_calculated_at:'2026-10-03T05:39:30Z'})),raceId,now});
+                assert.equal(historical.status,'READY');
+                const futureSource=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({source_validated_at:'2026-10-03T06:06:00Z'})),raceId,now});
+                assert.equal(futureSource.status,'REJECTED');
+                assert.equal(futureSource.reason,'FUTURE_TIMESTAMP');
+                const futureCalculation=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB:db(row({data_calculated_at:'2026-10-03T06:06:00Z'})),raceId,now});
+                assert.equal(futureCalculation.status,'REJECTED');
+                assert.equal(futureCalculation.reason,'FUTURE_TIMESTAMP');
+              });
 
-          replace_once('tests/precompute-runtime-gate.test.mjs',
-            "test('production scheduled wiring allows only the guarded background canary',async()=>{",
-            "test('production scheduled wiring keeps background precompute cache-only with auto-date scheduling',async()=>{")
-          replace_once('tests/precompute-runtime-gate.test.mjs',
-            ' assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
-            ' assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+              test('malformed frozen EARLY candidate fails closed without falling forward',async()=>{
+                let reads=0;
+                const malformed=row({revision:1,data_json:'{bad'});
+                const laterValid=row({revision:2,data_json:JSON.stringify(data())});
+                const DB=db(()=>++reads===1?malformed:laterValid);
+                const result=await readJraPrecomputedViewerRace({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,raceId,now});
+                assert.equal(result.status,'REJECTED');
+                assert.equal(result.reason,'MALFORMED_DATA');
+                assert.equal(reads,1);
+                assert.equal(DB.calls.length,1);
+              });
+              """)
+          )
+
+          # Wiring tests: old age is allowed, malformed earliest never falls forward, list freezes earliest.
+          replace_once(
+              'tests/jra-precomputed-viewer-wiring.test.mjs',
+              dedent("""\
+              test('stale or malformed precomputed DATA fails closed',async()=>{
+                for(const bad of [
+                  row('東京',1,{source_validated_at:'2026-10-03T23:00:00Z'}),
+                  row('東京',1,{data_json:'{bad json'})
+                ]){
+                  const DB=new D1([bad]);
+                  const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+                  assert.equal(response.status,503);
+                  const body=await response.json();
+                  assert.equal(body.error.code,'PRECOMPUTED_VIEWER_UNAVAILABLE');
+                }
+              });
+              """),
+              dedent("""\
+              test('historical frozen EARLY remains readable after the old freshness window',async()=>{
+                const DB=new D1([row('東京',1,{source_validated_at:'2026-10-03T23:00:00Z',data_calculated_at:'2026-10-03T22:59:30Z'})]);
+                const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+                assert.equal(response.status,200);
+                const body=await response.json();
+                assert.equal(body.races.length,1);
+              });
+
+              test('malformed frozen EARLY fails closed without falling forward',async()=>{
+                const DB=new D1([row('東京',1,{revision:2}),row('東京',1,{revision:1,data_json:'{bad json'})]);
+                const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+                assert.equal(response.status,503);
+                const body=await response.json();
+                assert.equal(body.error.code,'PRECOMPUTED_VIEWER_UNAVAILABLE');
+              });
+
+              test('future frozen EARLY timestamp fails closed',async()=>{
+                const DB=new D1([row('東京',1,{source_validated_at:'2026-10-04T00:06:00Z'})]);
+                const response=await handleJraPrecomputedViewerPublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,{now});
+                assert.equal(response.status,503);
+                const body=await response.json();
+                assert.equal(body.error.message,'FUTURE_TIMESTAMP');
+              });
+              """)
+          )
+          replace_once(
+              'tests/jra-precomputed-viewer-wiring.test.mjs',
+              dedent("""\
+              test('list reader keeps latest revision per race and SELECTs exact versions only',async()=>{
+                const older=row('東京',1,{revision:1,data_json:JSON.stringify(data('東京',1))});
+                const newer=row('東京',1,{revision:3,data_json:JSON.stringify({...data('東京',1),race:{...data('東京',1).race,raceName:'NEW'}})});
+                const DB=new D1([newer,older]);
+                const read=await readJraPrecomputedViewerRaces({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,date,track:'東京',now});
+                assert.equal(read.status,'READY');
+                assert.equal(read.races.length,1);
+                assert.equal(read.races[0].race.raceName,'NEW');
+                assert.deepEqual(DB.calls[0].args,['JRA','20261004-JRA-','20261004-JRA-\\uffff',JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);
+              });
+              """),
+              dedent("""\
+              test('list reader freezes earliest nonempty DATA revision per race independent of DB row order',async()=>{
+                const older=row('東京',1,{revision:1,data_json:JSON.stringify({...data('東京',1),race:{...data('東京',1).race,raceName:'EARLY'}})});
+                const newer=row('東京',1,{revision:3,data_json:JSON.stringify({...data('東京',1),race:{...data('東京',1).race,raceName:'NEW'}})});
+                const DB=new D1([newer,older]);
+                const read=await readJraPrecomputedViewerRaces({env:{ENABLE_PRECOMPUTED_VIEWER:'true'},DB,date,track:'東京',now});
+                assert.equal(read.status,'READY');
+                assert.equal(read.races.length,1);
+                assert.equal(read.races[0].race.raceName,'EARLY');
+                assert.match(DB.calls[0].sql,/data_json IS NOT NULL AND data_json<>''/);
+                assert.match(DB.calls[0].sql,/ORDER BY race_id ASC,revision ASC/);
+                assert.deepEqual(DB.calls[0].args,['JRA','20261004-JRA-','20261004-JRA-\\uffff',JRA_PRECOMPUTED_VIEWER_CALCULATION_VERSION,JRA_PRECOMPUTED_VIEWER_MODEL_VERSION]);
+              });
+              """)
+          )
+
+          # Static safety guard.
+          reader=Path('src/prediction/jra-precomputed-viewer-reader.mjs').read_text(encoding='utf-8')
+          api=Path('src/prediction/jra-precomputed-viewer-api.mjs').read_text(encoding='utf-8')
+          if 'ORDER BY revision ASC LIMIT 1' not in reader:
+              raise SystemExit('EARLY single-reader ordering guard missing')
+          if 'ORDER BY race_id ASC,revision ASC' not in api:
+              raise SystemExit('EARLY list ordering guard missing')
+          for forbidden in ('market_json','final_json','result_json'):
+              if forbidden in reader:
+                  raise SystemExit(f'reader selected forbidden layer: {forbidden}')
           PY
 
       - name: Enforce exact paths
@@ -103,10 +232,10 @@ jobs:
           git diff --check
           git diff --name-only | sort -u > /tmp/actual
           cat > /tmp/expected <<'EOF_PATHS'
-          tests/background-precompute.test.mjs
-          tests/precompute-runtime-adapter.test.mjs
-          tests/precompute-runtime-gate.test.mjs
-          wrangler.jsonc
+          src/prediction/jra-precomputed-viewer-api.mjs
+          src/prediction/jra-precomputed-viewer-reader.mjs
+          tests/jra-precomputed-viewer-reader.test.mjs
+          tests/jra-precomputed-viewer-wiring.test.mjs
           EOF_PATHS
           sort -u -o /tmp/expected /tmp/expected
           diff -u /tmp/expected /tmp/actual
@@ -172,4 +301,18 @@ jobs:
           PR_TITLE: ${{ needs.validate.outputs.pr_title }}
         run: |
           set -euo pipefail
-          gh pr create --repo "${{ github.repository }}" --base main --head "$BRANCH_NAME" --title "$PR_TITLE" --body "Created by CHASS Quick Change v1. Full repository check PASS. Production deploy/D1 operation not performed."
+          cat > /tmp/pr-body.md <<'EOF_BODY'
+          Freeze JRA EARLY on the first nonempty DATA revision for the approved calculation/model version pair.
+
+          - Later SOURCE/DATA revisions do not replace EARLY.
+          - The frozen EARLY remains readable after the former 15-minute window.
+          - Malformed, identity-invalid, probability-invalid, invalid-timestamp, or future-timestamp EARLY fails closed without falling forward.
+          - MARKET/FINAL/RESULT stay outside the EARLY SELECT/projection.
+          - Read path remains zero-write and zero-network.
+          - JRA direct fetch settings are unchanged and stay OFF.
+          - NAR is unchanged.
+          - No D1 migration, production deploy, production D1 write, or runtime flag change is performed by this workflow.
+
+          Legacy note: pre-E0 historical rows are not retroactively certified as formal EARLY KPI until separately audited. E0 formal KPI begins with post-deploy snapshots.
+          EOF_BODY
+          gh pr create --repo "${{ github.repository }}" --base main --head "$BRANCH_NAME" --title "$PR_TITLE" --body-file /tmp/pr-body.md
