@@ -1,0 +1,175 @@
+name: CHASS Quick Change v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: Select an approved CHASS change
+        required: true
+        type: choice
+        options:
+          - jra-precompute-auto-date-v1
+
+permissions: {}
+
+concurrency:
+  group: chass-quick-change-${{ inputs.preset }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.meta.outputs.base_sha }}
+      branch_name: ${{ steps.meta.outputs.branch_name }}
+      pr_title: ${{ steps.meta.outputs.pr_title }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: meta
+        shell: bash
+        env:
+          PRESET: ${{ inputs.preset }}
+        run: |
+          set -euo pipefail
+          case "$PRESET" in
+            jra-precompute-auto-date-v1)
+              echo "branch_name=chass/jra-precompute-auto-date-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+              echo "pr_title=chore: graduate JRA precompute canary to auto-date" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::unsupported preset: $PRESET"; exit 1 ;;
+          esac
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Apply preset safely
+        shell: bash
+        env:
+          PRESET: ${{ inputs.preset }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          if os.environ['PRESET'] != 'jra-precompute-auto-date-v1':
+              raise SystemExit('unsupported preset')
+
+          def replace_once(path, old, new):
+              p=Path(path); s=p.read_text()
+              if s.count(old)!=1: raise SystemExit(f'{path}: expected exactly one target')
+              p.write_text(s.replace(old,new,1))
+
+          p=Path('wrangler.jsonc'); s=p.read_text()
+          for line in [
+              '"JRA_PRECOMPUTE_CANARY_TARGET_DATE": "2026-10-04",\n',
+              '"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES": "24",\n']:
+              if s.count(line)!=1: raise SystemExit('wrangler canary setting mismatch')
+              s=s.replace(line,'',1)
+          p.write_text(s)
+
+          replace_once('tests/background-precompute.test.mjs',
+            "test('production precompute remains guarded while Viewer canary is explicitly ON',async()=>{",
+            "test('production precompute auto-dates while Viewer stays ON and direct fetch stays blocked',async()=>{")
+          replace_once('tests/background-precompute.test.mjs',
+            '  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
+            '  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+
+          replace_once('tests/precompute-runtime-adapter.test.mjs',
+            "test('background canary may be enabled only with guard while NAR special cron stays isolated',()=>{",
+            "test('background precompute auto-dates without soak guard while NAR special cron stays isolated',()=>{")
+          replace_once('tests/precompute-runtime-adapter.test.mjs',
+            '  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
+            '  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+
+          replace_once('tests/precompute-runtime-gate.test.mjs',
+            "test('production scheduled wiring allows only the guarded background canary',async()=>{",
+            "test('production scheduled wiring keeps background precompute cache-only with auto-date scheduling',async()=>{")
+          replace_once('tests/precompute-runtime-gate.test.mjs',
+            ' assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:\\s*"2026-10-04"/);\n assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:\\s*"24"/);',
+            ' assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\\s*:/);\n assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\\s*:/);')
+          PY
+
+      - name: Enforce exact paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --name-only | sort -u > /tmp/actual
+          cat > /tmp/expected <<'EOF_PATHS'
+          tests/background-precompute.test.mjs
+          tests/precompute-runtime-adapter.test.mjs
+          tests/precompute-runtime-gate.test.mjs
+          wrangler.jsonc
+          EOF_PATHS
+          sort -u -o /tmp/expected /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+
+      - run: npm ci --ignore-scripts
+      - run: npm ci --prefix mcp --ignore-scripts
+      - run: npm run check
+
+      - name: Save validated patch
+        run: |
+          set -euo pipefail
+          git diff > /tmp/chass-quick-change.patch
+          test -s /tmp/chass-quick-change.patch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-chass-quick-change-${{ github.run_id }}
+          path: /tmp/chass-quick-change.patch
+          retention-days: 1
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-chass-quick-change-${{ github.run_id }}
+          path: /tmp/validated
+
+      - name: Create branch and commit
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ needs.validate.outputs.base_sha }}
+          BRANCH_NAME: ${{ needs.validate.outputs.branch_name }}
+          PR_TITLE: ${{ needs.validate.outputs.pr_title }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_BASE_SHA"
+          git switch --detach "$EXPECTED_BASE_SHA"
+          git switch -c "$BRANCH_NAME"
+          git apply --index /tmp/validated/chass-quick-change.patch
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "$PR_TITLE"
+          git push origin "HEAD:refs/heads/$BRANCH_NAME"
+
+      - name: Create PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ needs.validate.outputs.branch_name }}
+          PR_TITLE: ${{ needs.validate.outputs.pr_title }}
+        run: |
+          set -euo pipefail
+          gh pr create --repo "${{ github.repository }}" --base main --head "$BRANCH_NAME" --title "$PR_TITLE" --body "Created by CHASS Quick Change v1. Full repository check PASS. Production deploy/D1 operation not performed."
