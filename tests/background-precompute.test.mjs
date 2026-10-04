@@ -95,15 +95,15 @@ test('JRA and NAR race identities remain physically separated',()=>{
   assert.match(nar,/-NAR-/);
 });
 
-test('production precompute remains guarded while Viewer canary is explicitly ON',async()=>{
+test('production precompute auto-dates while Viewer stays ON and direct fetch stays blocked',async()=>{
   const [wrangler,worker,app]=await Promise.all(['../wrangler.jsonc','../worker.js','../app.js'].map(path=>readFile(new URL(path,import.meta.url),'utf8')));
   assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
   assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"true"/);
   assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);
-  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:\s*"2026-10-04"/);
-  assert.match(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:\s*"24"/);
+  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_TARGET_DATE"\s*:/);
+  assert.doesNotMatch(wrangler,/"JRA_PRECOMPUTE_CANARY_MAX_DISTINCT_RACES"\s*:/);
   assert.doesNotMatch(`${worker}\n${app}`,/runRacePrecomputeJob|readLatestPrecomputedSnapshot/);
 });
 
