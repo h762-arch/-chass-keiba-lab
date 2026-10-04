@@ -7,7 +7,7 @@ import {selectJraPrecomputeCacheJobs} from '../src/prediction/jra-precompute-cac
 const date='2026-09-05';
 const job=no=>Object.freeze({organization:'JRA',date,track:'中山',raceNo:no,
  raceId:`20260905-JRA-中山-${String(no).padStart(2,'0')}`});
-const versions={calculationVersion:'jra-ability-data-v1',modelVersion:'10.0.1-jra-drive1-ability'};
+const versions={calculationVersion:'jra-ability-data-v2',modelVersion:'10.0.1-jra-drive1-ability'};
 function fixture(overrides={}){
  const jobs=[job(1),job(2),job(3)],calls={cache:[],latest:[]};
  let clock=0;

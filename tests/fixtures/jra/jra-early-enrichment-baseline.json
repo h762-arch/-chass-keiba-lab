@@ -1,0 +1,390 @@
+{
+  "baseSha": "ef9a7569e083f8fed4d88d78719bf92b2773ffc8",
+  "source": {
+    "race": {
+      "date": "2026-09-05",
+      "racecourse": "中山",
+      "raceNo": 5,
+      "raceName": "メイクデビュー中山",
+      "postTime": "12:30",
+      "surface": "芝",
+      "distance": 2000,
+      "direction": "右",
+      "courseType": "",
+      "raceClass": "新馬",
+      "trackCondition": "不明",
+      "weather": "",
+      "pace": "標準"
+    },
+    "horses": [
+      {
+        "horseNo": 1,
+        "frameNo": 1,
+        "horseName": "マイネルシードル",
+        "sexAge": "牡2/黒鹿",
+        "weightCarried": 53,
+        "jockey": "石神 深道",
+        "trainer": "和田 正一郎",
+        "bodyWeight": 434,
+        "bodyWeightChange": -6,
+        "runningStatus": "active",
+        "pastRuns": [
+          {
+            "date": "2026-08-01",
+            "racecourse": "中山",
+            "surface": "芝",
+            "distance": 2000,
+            "trackCondition": "良",
+            "raceClass": "新馬",
+            "finish": 1,
+            "fieldSize": 10,
+            "time": "2:00.3",
+            "margin": 0.2,
+            "cornerPositions": [
+              3,
+              3
+            ],
+            "last3F": 35.2,
+            "weightCarried": 55,
+            "jockey": "公式走歴騎手",
+            "bodyWeight": 440
+          }
+        ],
+        "odds": null,
+        "popularity": null,
+        "driveIndexSignal": 60,
+        "driveIndexEvidenceCount": 4,
+        "driveClusterStrength": 2
+      },
+      {
+        "horseNo": 2,
+        "frameNo": 2,
+        "horseName": "グランエール",
+        "sexAge": "牝2/鹿",
+        "weightCarried": 55,
+        "jockey": "武 豊",
+        "trainer": "高柳 大輔",
+        "bodyWeight": 452,
+        "bodyWeightChange": 0,
+        "runningStatus": "active",
+        "pastRuns": [
+          {
+            "date": "2026-08-01",
+            "racecourse": "中山",
+            "surface": "芝",
+            "distance": 2000,
+            "trackCondition": "良",
+            "raceClass": "新馬",
+            "finish": 2,
+            "fieldSize": 10,
+            "time": "2:01.3",
+            "margin": 0.30000000000000004,
+            "cornerPositions": [
+              4,
+              4
+            ],
+            "last3F": 35.5,
+            "weightCarried": 55,
+            "jockey": "公式走歴騎手",
+            "bodyWeight": 452
+          }
+        ],
+        "odds": null,
+        "popularity": null,
+        "driveIndexSignal": 64,
+        "driveIndexEvidenceCount": 4,
+        "driveClusterStrength": 2
+      },
+      {
+        "horseNo": 9,
+        "frameNo": 3,
+        "horseName": "エーアイラピド",
+        "sexAge": "牡2/鹿",
+        "weightCarried": 55,
+        "jockey": "丸山 元気",
+        "trainer": "手塚 貴徳",
+        "bodyWeight": 436,
+        "bodyWeightChange": 8,
+        "runningStatus": "active",
+        "pastRuns": [
+          {
+            "date": "2026-08-01",
+            "racecourse": "中山",
+            "surface": "芝",
+            "distance": 2000,
+            "trackCondition": "良",
+            "raceClass": "新馬",
+            "finish": 3,
+            "fieldSize": 10,
+            "time": "2:02.3",
+            "margin": 0.4,
+            "cornerPositions": [
+              5,
+              5
+            ],
+            "last3F": 35.800000000000004,
+            "weightCarried": 55,
+            "jockey": "公式走歴騎手",
+            "bodyWeight": 464
+          },
+          {
+            "date": "2026-08-22",
+            "racecourse": "新潟",
+            "raceName": "新馬",
+            "raceClass": "",
+            "finish": null,
+            "fieldSize": 12,
+            "jockey": "石川 裕紀人",
+            "weightCarried": 55,
+            "distance": 1600,
+            "surface": "芝",
+            "time": "",
+            "trackCondition": "良",
+            "bodyWeight": 440,
+            "cornerPositions": [],
+            "last3F": null,
+            "historicalStatus": "excluded"
+          }
+        ],
+        "odds": null,
+        "popularity": null,
+        "driveIndexSignal": 68,
+        "driveIndexEvidenceCount": 4,
+        "driveClusterStrength": 2
+      }
+    ],
+    "quality": {
+      "raceParsed": true,
+      "horseCount": 3,
+      "activeHorseCount": 3,
+      "horseNameRate": 1,
+      "weightRate": 1,
+      "jockeyRate": 1,
+      "pastRunRate": 0.3333333333333333
+    },
+    "source": "JRA_OFFICIAL",
+    "parserVersion": "jra-official-card-v1",
+    "dataConfidence": "high"
+  },
+  "data": {
+    "schemaVersion": "JRA-ABILITY-DATA-1",
+    "raceType": "JRA",
+    "race": {
+      "date": "2026-09-05",
+      "racecourse": "中山",
+      "raceNo": 5,
+      "raceName": "メイクデビュー中山",
+      "surface": "芝",
+      "distance": 2000,
+      "courseType": "",
+      "trackCondition": "不明",
+      "weather": "",
+      "pace": "標準",
+      "direction": "右",
+      "straightLength": null,
+      "hasSlope": null,
+      "turnSize": "",
+      "cornerCount": null,
+      "raceClass": "新馬"
+    },
+    "horses": [
+      {
+        "horseNo": 1,
+        "horseName": "マイネルシードル",
+        "runningStyle": "先行",
+        "win": 99.01,
+        "second": 0.99,
+        "place": 100,
+        "overall": 85.5,
+        "abilityRank": 1,
+        "abilityMark": "◎",
+        "predictedTime": "2:00.8",
+        "predictedTimeType": "レース基準補正",
+        "predictedTimeConfidence": 93,
+        "predictedTimeMissingReason": null,
+        "predictedTimeScenarios": {
+          "standard": "2:00.8",
+          "paceFavored": null,
+          "paceAdverse": null,
+          "positionFailure": null
+        },
+        "probabilityUncertainty": 0.18,
+        "jraIndices": {
+          "speed": 95,
+          "recent": 95,
+          "distance": 95,
+          "course": 95,
+          "finish": 95,
+          "pace": 55,
+          "total": 85.5
+        },
+        "features": {
+          "distanceFit": 95,
+          "courseFit": 95,
+          "recentFormScore": 95,
+          "last3fAbility": 95,
+          "paceFit": 55,
+          "frontRealizationRate": 1,
+          "remainingRate": 0.9,
+          "closingRate": 0.8,
+          "distanceUncertainty": 0.18,
+          "weightChangeFromPrevious": -2,
+          "timeRank": 1,
+          "abilityRank": 1,
+          "timeAbilityConflict": false
+        },
+        "raw": {
+          "highest": 16.6251,
+          "avg5": 88.7,
+          "distance": 88.7,
+          "course": 88.7,
+          "recent": [
+            88.7
+          ],
+          "kg": 53
+        },
+        "scores": {
+          "timeIndex": 85.5,
+          "distanceFit": 95,
+          "courseFit": 95,
+          "weight": null
+        },
+        "dataConfidence": 93,
+        "reason": "CHASS SPEED 95 / RECENT 95 / DISTANCE 95 / COURSE 95 / FINISH 95 / PACE 55"
+      },
+      {
+        "horseNo": 2,
+        "horseName": "グランエール",
+        "runningStyle": "先行",
+        "win": 0.99,
+        "second": 97.97,
+        "place": 100,
+        "overall": 57.7,
+        "abilityRank": 2,
+        "abilityMark": "○",
+        "predictedTime": "2:01.3",
+        "predictedTimeType": "レース基準補正",
+        "predictedTimeConfidence": 93,
+        "predictedTimeMissingReason": null,
+        "predictedTimeScenarios": {
+          "standard": "2:01.3",
+          "paceFavored": null,
+          "paceAdverse": null,
+          "positionFailure": null
+        },
+        "probabilityUncertainty": 0.18,
+        "jraIndices": {
+          "speed": 55,
+          "recent": 55,
+          "distance": 55,
+          "course": 55,
+          "finish": 55,
+          "pace": 55,
+          "total": 57.7
+        },
+        "features": {
+          "distanceFit": 55,
+          "courseFit": 55,
+          "recentFormScore": 55,
+          "last3fAbility": 55,
+          "paceFit": 55,
+          "frontRealizationRate": 1,
+          "remainingRate": 0.9,
+          "closingRate": 0.8,
+          "distanceUncertainty": 0.18,
+          "weightChangeFromPrevious": 0,
+          "timeRank": 2,
+          "abilityRank": 2,
+          "timeAbilityConflict": false
+        },
+        "raw": {
+          "highest": 16.488,
+          "avg5": 80.7,
+          "distance": 80.7,
+          "course": 80.7,
+          "recent": [
+            80.7
+          ],
+          "kg": 55
+        },
+        "scores": {
+          "timeIndex": 57.7,
+          "distanceFit": 55,
+          "courseFit": 55,
+          "weight": null
+        },
+        "dataConfidence": 93,
+        "reason": "CHASS SPEED 55 / RECENT 55 / DISTANCE 55 / COURSE 55 / FINISH 55 / PACE 55"
+      },
+      {
+        "horseNo": 9,
+        "horseName": "エーアイラピド",
+        "runningStyle": "好位",
+        "win": 0,
+        "second": 1.03,
+        "place": 100,
+        "overall": 31.2,
+        "abilityRank": 3,
+        "abilityMark": "▲",
+        "predictedTime": "2:01.7",
+        "predictedTimeType": "レース基準補正",
+        "predictedTimeConfidence": 93,
+        "predictedTimeMissingReason": null,
+        "predictedTimeScenarios": {
+          "standard": "2:01.7",
+          "paceFavored": null,
+          "paceAdverse": null,
+          "positionFailure": null
+        },
+        "probabilityUncertainty": 0.18,
+        "jraIndices": {
+          "speed": 15,
+          "recent": 15,
+          "distance": 15,
+          "course": 15,
+          "finish": 15,
+          "pace": 55,
+          "total": 31.2
+        },
+        "features": {
+          "distanceFit": 15,
+          "courseFit": 15,
+          "recentFormScore": 15,
+          "last3fAbility": 15,
+          "paceFit": 55,
+          "frontRealizationRate": 1,
+          "remainingRate": 0.9,
+          "closingRate": 0.8,
+          "distanceUncertainty": 0.18,
+          "weightChangeFromPrevious": 0,
+          "timeRank": 3,
+          "abilityRank": 3,
+          "timeAbilityConflict": false
+        },
+        "raw": {
+          "highest": 16.3532,
+          "avg5": 72.7,
+          "distance": 72.7,
+          "course": 72.7,
+          "recent": [
+            72.7
+          ],
+          "kg": 55
+        },
+        "scores": {
+          "timeIndex": 31.2,
+          "distanceFit": 15,
+          "courseFit": 15,
+          "weight": null
+        },
+        "dataConfidence": 93,
+        "reason": "CHASS SPEED 15 / RECENT 15 / DISTANCE 15 / COURSE 15 / FINISH 15 / PACE 55"
+      }
+    ],
+    "quality": {
+      "horseCount": 3,
+      "simulationIterations": 12000,
+      "withTime": 3
+    }
+  }
+}

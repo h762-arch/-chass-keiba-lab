@@ -13,7 +13,7 @@ const INDEXES={
  idx_precomputed_revision_idempotent:{unique:true,columns:['organization','race_id','snapshot_hash']},
  idx_precomputed_latest:{unique:false,columns:['organization','race_id','revision']}
 };
-const CANARY_CALCULATION_VERSION='jra-ability-data-v1';
+const CANARY_CALCULATION_VERSION='jra-ability-data-v2';
 const CANARY_MODEL_VERSION='10.0.1-jra-drive1-ability';
 const CANARY_MAX_DISTINCT_RACES=24;
 

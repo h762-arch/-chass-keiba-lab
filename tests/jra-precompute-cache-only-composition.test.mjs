@@ -8,7 +8,7 @@ import {createJraPrecomputeCacheOnlyComposition} from '../src/prediction/jra-pre
 
 const date='2026-09-05',current=Date.parse('2026-09-05T00:00:00.000Z');
 const fetchedAt='2026-09-04T23:45:00.000Z',expiresAt='2026-09-05T01:00:00.000Z';
-const versions={calculationVersion:'jra-ability-data-v1',modelVersion:'10.0.1-jra-drive1-ability'};
+const versions={calculationVersion:'jra-ability-data-v2',modelVersion:'10.0.1-jra-drive1-ability'};
 const card=await readFile(new URL('./fixtures/jra/jra-race-card-fixture.html',import.meta.url),'utf8');
 const parsed=parseJraRaceCard(card,{date,track:'中山',race:5});
 const raceId=no=>`20260905-JRA-中山-${String(no).padStart(2,'0')}`;

@@ -2,6 +2,11 @@
 const clamp=(v,min=0,max=100)=>Math.max(min,Math.min(max,v));
 const round=(v,d=1)=>v==null?null:Number(v.toFixed(d));
 const marks=['◎','○','▲','△'];
+// Copy only supplied explanation fields, preserving legacy/manual output shapes.
+const explanationFields=horse=>Object.fromEntries(
+ ['frameNo','jockey','trainer','bodyWeight','bodyWeightChange']
+  .filter(key=>Object.hasOwn(horse,key)).map(key=>[key,horse[key]??null])
+);
 
 export function projectJraAbilityResult(core){
  const {rows,speedRaw,recentRaw,distanceRaw,courseRaw,speed,recent,distance,course,finish,pace,totals,distanceUncertainty,wins,places,seconds,abilityRank,individualTimes,timeTiers,raceBaseline}=core;
@@ -16,6 +21,7 @@ export function projectJraAbilityResult(core){
   const closing=front==null?null:clamp((places[i]/100)*(/差し|追込/.test(row.style.style)?1.15:.8),0,.9);
   return {
    horseNo:h.horseNo,horseName:h.horseName,runningStyle:row.style.style,
+   ...explanationFields(h),
    win:round(wins[i],2),second:round(seconds[i],2),place:round(Math.max(wins[i],places[i]),2),overall:totals[i],
    abilityRank:abilityRank.get(i),abilityMark:marks[abilityRank.get(i)-1]||'',
    predictedTime,predictedTimeType:predTime==null?'':timeTier==='fallback'?'距離補正・低信頼':'レース基準補正',

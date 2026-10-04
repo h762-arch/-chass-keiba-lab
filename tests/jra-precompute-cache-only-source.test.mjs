@@ -34,7 +34,7 @@ const rejects=async(row,code,clock)=>{
  await assert.rejects(read(job(5)),error=>error.code===code);
  assert.deepStrictEqual(calls,{reads:1,writes:0,fetches:0});
 };
-const productionVersions={calculationVersion:'jra-ability-data-v1',modelVersion:'10.0.1-jra-drive1-ability'};
+const productionVersions={calculationVersion:'jra-ability-data-v2',modelVersion:'10.0.1-jra-drive1-ability'};
 const selectorSource=candidate=>({organization:'JRA',raceId:candidate.raceId,acquiredAt:fetchedAt});
 const selectorInputHash=async candidate=>(await createPrecomputedIdentity({
  organization:'JRA',source:selectorSource(candidate),versions:productionVersions
