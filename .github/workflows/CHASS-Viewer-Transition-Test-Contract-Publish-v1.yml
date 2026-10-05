@@ -1,0 +1,355 @@
+name: CHASS Viewer Transition Test Contract Publish v1
+
+"on":
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: chass-viewer-transition-test-contract-publish-v1
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Revalidate exact Viewer transition patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
+
+    steps:
+      - name: Checkout current main read-only
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Permit only this publisher as main drift
+        id: base
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: "260f592e3f7506732cc51af3eec20213c6b4c3c5"
+          PUBLISHER_PATH: ".github/workflows/CHASS-Viewer-Transition-Test-Contract-Publish-v1.yml"
+        run: |
+          set -euo pipefail
+
+          git merge-base --is-ancestor "$EXPECTED_BASE_SHA" HEAD || {
+            echo "::error::validated base is not an ancestor of current main"
+            exit 1
+          }
+
+          git diff --name-only "$EXPECTED_BASE_SHA..HEAD" | sort -u > /tmp/main-drift.txt
+          test "$(wc -l < /tmp/main-drift.txt | tr -d ' ')" -eq 1 || {
+            echo "::error::main contains changes beyond this publisher workflow"
+            cat /tmp/main-drift.txt
+            exit 1
+          }
+          test "$(cat /tmp/main-drift.txt)" = "$PUBLISHER_PATH" || {
+            echo "::error::unexpected main drift"
+            cat /tmp/main-drift.txt
+            exit 1
+          }
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse if target branch already exists
+        shell: bash
+        env:
+          BRANCH_NAME: "chass/viewer-transition-test-contract-v1"
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "::error::branch already exists: $BRANCH_NAME"
+            exit 1
+          fi
+
+      - name: Materialize and verify fixed patch
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: "0fd7f2c918f3cb5daeb9bc16224cc471de05591c6935829d17fd37d93018efed"
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/viewer-transition.patch.gz.b64 <<'CHASS_PATCH_B64'
+          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
+          CHASS_PATCH_B64
+
+          base64 --decode /tmp/viewer-transition.patch.gz.b64 | gzip -dc > /tmp/viewer-transition.patch
+          test -s /tmp/viewer-transition.patch
+
+          ACTUAL="$(sha256sum /tmp/viewer-transition.patch | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_PATCH_SHA256" || {
+            echo "::error::patch SHA mismatch. expected=$EXPECTED_PATCH_SHA256 actual=$ACTUAL"
+            exit 1
+          }
+
+      - name: Enforce exact six-file test allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/allowed-paths.txt <<'EOF'
+          tests/background-precompute.test.mjs
+          tests/helpers/production-runtime-contract.mjs
+          tests/jra-early-input-enrichment.test.mjs
+          tests/precompute-runtime-adapter.test.mjs
+          tests/precompute-runtime-gate.test.mjs
+          tests/viewer-transition-contract.test.mjs
+          EOF
+
+          sort -u /tmp/allowed-paths.txt -o /tmp/allowed-paths.txt
+          git apply --check /tmp/viewer-transition.patch
+          git apply --numstat /tmp/viewer-transition.patch \
+            | cut -f3- \
+            | sed '/^[[:space:]]*$/d' \
+            | sort -u > /tmp/changed-paths.txt
+
+          diff -u /tmp/allowed-paths.txt /tmp/changed-paths.txt
+
+          while IFS= read -r path; do
+            case "$path" in
+              tests/*) ;;
+              *)
+                echo "::error::non-test path detected: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/changed-paths.txt
+
+      - name: Apply tests-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/viewer-transition.patch
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -eq 6
+          diff -u /tmp/allowed-paths.txt <(git diff --cached --name-only | sort -u)
+          test -z "$(git diff --name-only)"
+
+      - name: Confirm repository Viewer stays ON
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const config = JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8'));
+          if (config?.vars?.ENABLE_PRECOMPUTED_VIEWER !== 'true') {
+            throw new Error('repository Viewer must remain ON in this PR');
+          }
+          NODE
+
+      - name: Install dependencies without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm ci --prefix mcp --ignore-scripts
+
+      - name: Full check with Viewer ON
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check 2>&1 | tee /tmp/check-viewer-on.log
+          grep -E 'tests 904$' /tmp/check-viewer-on.log
+          grep -E 'pass 904$' /tmp/check-viewer-on.log
+          grep -E 'fail 0$' /tmp/check-viewer-on.log
+          grep -E 'skipped 0$' /tmp/check-viewer-on.log
+
+      - name: Full check with isolated Viewer OFF candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp wrangler.jsonc /tmp/wrangler-viewer-on.jsonc
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'wrangler.jsonc';
+          const before = fs.readFileSync(path, 'utf8');
+          const from = '"ENABLE_PRECOMPUTED_VIEWER": "true"';
+          const to = '"ENABLE_PRECOMPUTED_VIEWER": "false"';
+          const count = before.split(from).length - 1;
+          if (count !== 1) throw new Error(`expected exactly one Viewer ON token, found ${count}`);
+          fs.writeFileSync(path, before.replace(from, to));
+          NODE
+
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = "wrangler.jsonc"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const before = fs.readFileSync('/tmp/wrangler-viewer-on.jsonc', 'utf8');
+          const after = fs.readFileSync('wrangler.jsonc', 'utf8');
+          const expected = before.replace(
+            '"ENABLE_PRECOMPUTED_VIEWER": "true"',
+            '"ENABLE_PRECOMPUTED_VIEWER": "false"'
+          );
+          if (after !== expected) throw new Error('Viewer was not the only byte-level config replacement');
+          NODE
+
+          npm run check 2>&1 | tee /tmp/check-viewer-off.log
+          grep -E 'tests 904$' /tmp/check-viewer-off.log
+          grep -E 'pass 904$' /tmp/check-viewer-off.log
+          grep -E 'fail 0$' /tmp/check-viewer-off.log
+          grep -E 'skipped 0$' /tmp/check-viewer-off.log
+
+          cp /tmp/wrangler-viewer-on.jsonc wrangler.jsonc
+          test -z "$(git diff --name-only)"
+          diff -u /tmp/allowed-paths.txt <(git diff --cached --name-only | sort -u)
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-transition-test-contract-publish-validation-${{ github.run_id }}
+          path: |
+            /tmp/check-viewer-on.log
+            /tmp/check-viewer-off.log
+            /tmp/viewer-transition.patch
+            /tmp/changed-paths.txt
+          retention-days: 1
+
+  publish:
+    name: Create tests-only Draft PR
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_SHA: ${{ needs.validate.outputs.base_sha }}
+      BRANCH_NAME: "chass/viewer-transition-test-contract-v1"
+
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Reconfirm validated base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA" || {
+            echo "::error::main moved after validation; refusing to publish"
+            exit 1
+          }
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "::error::branch appeared after validation; refusing to overwrite"
+            exit 1
+          fi
+
+      - name: Download validated patch evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: viewer-transition-test-contract-publish-validation-${{ github.run_id }}
+          path: /tmp/validated
+
+      - name: Reverify patch and create branch
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: "0fd7f2c918f3cb5daeb9bc16224cc471de05591c6935829d17fd37d93018efed"
+        run: |
+          set -euo pipefail
+
+          ACTUAL="$(sha256sum /tmp/validated/viewer-transition.patch | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_PATCH_SHA256"
+
+          git switch -c "$BRANCH_NAME"
+          git apply --check /tmp/validated/viewer-transition.patch
+          git apply /tmp/validated/viewer-transition.patch
+          git diff --check
+
+          cat > /tmp/allowed-paths.txt <<'EOF'
+          tests/background-precompute.test.mjs
+          tests/helpers/production-runtime-contract.mjs
+          tests/jra-early-input-enrichment.test.mjs
+          tests/precompute-runtime-adapter.test.mjs
+          tests/precompute-runtime-gate.test.mjs
+          tests/viewer-transition-contract.test.mjs
+          EOF
+          sort -u /tmp/allowed-paths.txt -o /tmp/allowed-paths.txt
+
+          test "$(git diff --name-only | wc -l)" -eq 6
+          diff -u /tmp/allowed-paths.txt <(git diff --name-only | sort -u)
+          test -z "$(git diff --name-only | grep -v '^tests/' || true)"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const config = JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8'));
+          if (config?.vars?.ENABLE_PRECOMPUTED_VIEWER !== 'true') {
+            throw new Error('Viewer must remain ON in published test-contract PR');
+          }
+          NODE
+
+      - name: Commit and push tests only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- tests/background-precompute.test.mjs \
+                    tests/helpers/production-runtime-contract.mjs \
+                    tests/jra-early-input-enrichment.test.mjs \
+                    tests/precompute-runtime-adapter.test.mjs \
+                    tests/precompute-runtime-gate.test.mjs \
+                    tests/viewer-transition-contract.test.mjs
+
+          diff -u /tmp/allowed-paths.txt <(git diff --cached --name-only | sort -u)
+          test -z "$(git diff --name-only)"
+
+          git commit -m "test: separate Viewer transition state from safety invariants"
+
+          test "$(git diff HEAD^ HEAD --name-only | wc -l)" -eq 6
+          diff -u /tmp/allowed-paths.txt <(git diff HEAD^ HEAD --name-only | sort -u)
+
+          git push origin "$BRANCH_NAME"
+
+      - name: Open Draft PR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/pr-body.md <<'EOF'
+          ## Purpose
+          Separate the transitionable `ENABLE_PRECOMPUTED_VIEWER` state from invariant production safety checks.
+
+          ## Validation
+          - Browser-capable GitHub CI validated Viewer ON: 904/904 PASS, skip 0.
+          - Browser-capable GitHub CI validated isolated Viewer OFF candidate: 904/904 PASS, skip 0.
+          - Exact patch SHA-256: `0fd7f2c918f3cb5daeb9bc16224cc471de05591c6935829d17fd37d93018efed`
+          - Changed files: exactly six test files.
+
+          ## Safety
+          - `wrangler.jsonc` is not changed by this PR.
+          - Viewer remains ON in repository configuration.
+          - No application/runtime logic change.
+          - No workflow change in this PR.
+          - No deploy.
+          - No D1 write or migration.
+          - This workflow does not merge the PR.
+          EOF
+
+          gh pr create \
+            --draft \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --title "test: separate Viewer transition state from production safety invariants" \
+            --body-file /tmp/pr-body.md
+
+          {
+            echo "## Draft PR created"
+            echo
+            echo "- Branch: `$BRANCH_NAME`"
+            echo "- Viewer repository setting: **ON**"
+            echo "- Merge: **NOT performed**"
+            echo "- Deploy: **NOT performed**"
+            echo "- D1: **NOT touched**"
+          } >> "$GITHUB_STEP_SUMMARY"
