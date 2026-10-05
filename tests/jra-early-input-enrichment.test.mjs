@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {assertProductionRuntimeContract} from './helpers/production-runtime-contract.mjs';
 import {parseJraRaceCard} from '../jra-race-fetch.mjs';
 import {calculateJraData,projectJraAbilityInput} from '../src/prediction/jra-data-calculator.mjs';
 import {assertMarketIndependentData,createPrecomputedSnapshot} from '../src/prediction/precomputed-snapshot.mjs';
@@ -99,7 +100,7 @@ test('runtime config, Viewer and READ-ONLY preflight agree on v2 with unchanged 
  assert.equal(calculationVersion,'jra-ability-data-v2');assert.equal(modelVersion,'10.0.1-jra-drive1-ability');
  assert.equal(config.JRA_PRECOMPUTE_CALCULATION_VERSION,calculationVersion);
  assert.equal(config.JRA_PRECOMPUTE_MODEL_VERSION,modelVersion);
- for(const [key,value] of Object.entries({ENABLE_BACKGROUND_PRECOMPUTE:'true',ENABLE_PRECOMPUTED_VIEWER:'true',ENABLE_JRA_DIRECT_FETCH:'false',ENABLE_JRA_ODDS_DIRECT_FETCH:'false',JRA_PRECOMPUTE_SOURCE_MODE:'official-cache',JRA_PRECOMPUTE_MAX_JOBS:'1'}))assert.equal(config[key],value);
+ assertProductionRuntimeContract(config);
  const sql=preflightQueries(job.date).snapshotAudit;
  assert.ok(sql.includes(`calculation_version='${calculationVersion}'`));
  assert.ok(sql.includes(`model_version='${modelVersion}'`));

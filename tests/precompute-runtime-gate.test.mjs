@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {assertProductionRuntimeContract} from './helpers/production-runtime-contract.mjs';
 import {runScheduledPrecomputeGate,runScheduledTasks} from '../worker.js';
 import {createPrecomputeRuntimeRunner} from '../src/prediction/precompute-runtime-adapter.mjs';
 
@@ -227,7 +228,7 @@ test('production scheduled wiring keeps background precompute cache-only with au
  assert.match(entry,/controller\?\.cron==='30 11 \* \* \*'/);
  assert.match(entry,/baseWorker\.scheduled/);
  assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
- assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"true"/);
+ assertProductionRuntimeContract(JSON.parse(wrangler).vars);
  assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
  assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
  assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);

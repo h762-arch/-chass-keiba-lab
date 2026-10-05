@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {assertProductionRuntimeContract} from './helpers/production-runtime-contract.mjs';
 import {PRECOMPUTE_RUNNER_CONTRACTS,backgroundPrecomputeEnabled,raceJobKey,runFinalizationRevision,runMarketRevision,runRaceJobs,runRacePrecomputeJob,runResultRevision} from '../src/prediction/background-precompute.mjs';
 import {createPrecomputedSnapshot,viewerState} from '../src/prediction/precomputed-snapshot.mjs';
 
@@ -95,10 +96,10 @@ test('JRA and NAR race identities remain physically separated',()=>{
   assert.match(nar,/-NAR-/);
 });
 
-test('production precompute auto-dates while Viewer stays ON and direct fetch stays blocked',async()=>{
+test('production precompute auto-dates with explicit Viewer transition state and blocked direct fetch',async()=>{
   const [wrangler,worker,app]=await Promise.all(['../wrangler.jsonc','../worker.js','../app.js'].map(path=>readFile(new URL(path,import.meta.url),'utf8')));
   assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
-  assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"true"/);
+  assertProductionRuntimeContract(JSON.parse(wrangler).vars);
   assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);

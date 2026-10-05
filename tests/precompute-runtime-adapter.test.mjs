@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {assertProductionRuntimeContract} from './helpers/production-runtime-contract.mjs';
 import {createPrecomputeRuntimeRunner} from '../src/prediction/precompute-runtime-adapter.mjs';
 
 const meeting=(organization,track,raceNumbers=[])=>Object.freeze({
@@ -141,7 +142,7 @@ test('production adapter is thin, direct-IO-free, and runtime-disconnected',()=>
 test('background precompute auto-dates without soak guard while NAR special cron stays isolated',()=>{
   const wrangler=fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8');
   assert.match(wrangler,/"ENABLE_BACKGROUND_PRECOMPUTE"\s*:\s*"(?:false|true)"/);
-  assert.match(wrangler,/"ENABLE_PRECOMPUTED_VIEWER"\s*:\s*"true"/);
+  assertProductionRuntimeContract(JSON.parse(wrangler).vars);
   assert.match(wrangler,/"ENABLE_JRA_DIRECT_FETCH"\s*:\s*"false"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_SOURCE_MODE"\s*:\s*"official-cache"/);
   assert.match(wrangler,/"JRA_PRECOMPUTE_MAX_JOBS"\s*:\s*"1"/);
