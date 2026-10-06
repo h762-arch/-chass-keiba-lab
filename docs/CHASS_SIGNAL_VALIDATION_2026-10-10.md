@@ -137,6 +137,22 @@ JSONのキー順・空白だけの変更は許容するが、入力ファイル�
 入力と出力を一緒に作り直した場合の真正性や、対象の選び方・検証時刻の妥当性を保証する機能ではない。
 verification.json も検証記録に残す。VERIFIED によって正式KPI採用やNO-GO解除は行わない。
 
+読みやすいMarkdownレポートを作る場合は次を実行する。内部で同じ再検証を行い、照合済みの再計算結果だけを使う。
+
+```bash
+node scripts/report-frozen-signals.mjs \
+  --backup backup.json \
+  --cache cache.json \
+  --comparison comparison.json > report.md
+report_exit=$?
+printf 'report exit: %s\n' "$report_exit"
+```
+
+終了0は観測あり・除外なし、2は再現可能だが未取得・除外ありまたは観測なし。
+終了1は拒否で、レポート本文は出力しない（シェルが作る report.md は空）。stderr のJSON理由を確認する。
+レポートは観測数と的中数を併記し、未観測を0%と表示しない。割合は小数点以下2桁に丸める。
+report.md も原本・比較JSON・検証JSONと一緒に保存する。少数標本からProductionへの有効性を断定しない。
+
 保存するもの：発走前バックアップ原本、元SELECT出力、cache.json、実行コマンドと終了コード、comparison.json。
 出力の `backupSha256` / `cacheSha256` は入力バイトの同一性確認用。取得元の真正性の証明ではない。
 `inputProvenance: LOCAL_FILES_NOT_AUTHENTICATED` を保持する。
