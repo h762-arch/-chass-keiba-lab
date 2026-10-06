@@ -23,6 +23,30 @@ Production Activation は NO-GO。結果が良くても、この手順によっ�
 
 ## 2. 保存済みキャッシュを読み出す
 
+対象IDの転記を減らす場合は、先に読取計画をオフライン生成する。
+`--race-ids` はバックアップに保存されている対象IDを明示する。自動選択・開催確認は行わない。
+
+```bash
+node scripts/plan-frozen-signal-export.mjs \
+  --backup backup.json \
+  --race-ids '20261010-JRA-東京-01' > export-plan.json
+plan_exit=$?
+printf 'export plan exit: %s\n' "$plan_exit"
+```
+
+終了0はSELECT文の生成成功のみ。D1接続・SELECT実行・結果取得・正式KPI承認を意味しない。
+終了1は拒否で `queries: null`。対象ID・バックアップ・診断理由を確認する。
+計画には原本のSHA-256、明示した全対象ID、結果キャッシュキー、既存ルール監査を記録する。
+Signal欠落・provisional・ルール違反は診断に残し、対象を勝手に除かない。
+レース同一性不一致、NAR、13R以上、曖昧な区切り文字・制御文字は拒否する。
+ルール監査はシナリオ品質・発走前時刻・取得元の真正性を証明しない。
+
+`queries.snapshots` / `queries.results` のSELECT文を既存の許可済み閲覧手段で使う。
+ラベル内の引用符はSQL文字列としてエスケープする。実行前に対象・取得権限・行数を確認する。
+最古の非空DATAを失わないよう、計画のスナップショットSELECTにはLIMITを付けない。
+取得後は後述の上限・重複制約を満たすか確認し、超過行を推測で捨てない。
+`export-plan.json` も原本と元SELECT出力と一緒に保存する。結果がまだない日は未取得のまま記録する。
+
 既存の許可済みD1閲覧手段で、対象IDの行を SELECT のみで取得する。
 以下のプレースホルダーはバックアップで確認した実在の対象ID・競馬場に置き換える。
 この手順のための INSERT / UPDATE / DELETE、migration、deploy、フラグ変更は行わない。
