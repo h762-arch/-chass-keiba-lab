@@ -1,0 +1,132 @@
+# 2026-10-10 Original Signal 実データ検証手順
+
+対象は JRA の保存済み Original Signal と保存済み公式結果の研究比較。
+実データ検証日は 2026-10-10（日本時間）。実行例のレースIDは形式説明であり、開催・保存データの存在を示さない。
+Production Activation は NO-GO。結果が良くても、この手順によって解除しない。
+
+## 1. 発走前に保存する
+
+アプリの研究バックアップを書き出し、元ファイルを `backup.json` として保管する。
+形式は `CHASS_KEIBA_RESEARCH_BACKUP`、`schemaVersion: 1`。
+対象レースの `races[レースID].marketSnapshot.signalSnapshot` が Original Signal の入力になる。
+日付が `20261010` の保存済み JRA レースから対象IDを明示的に選ぶ（1〜100件、重複なし、01〜12R）。
+レースIDの競馬場表記はバックアップとD1で一致させる。推測で修正しない。
+
+- ⚠️は事前オッズありなら1〜3番人気、4着以下の具体的シナリオが必要。
+- 💎は6番人気以下、2〜3着シナリオ・能力裏付け・市場評価が必要。
+- 💎💎は6番人気以下、1着シナリオが必要。
+- 💎💎💎は9番人気以下、1着シナリオと複数の強い裏付けが必要。
+- ⚠️と◎○▲△☆・💎系は排他。後のオッズ・馬場・結果で保存済み印を変更しない。
+
+この手順は印を生成しない。欠落した Freeze 情報を結果から補完しない。
+バックアップはこのCLIでは32MiB以下。超える場合は実行を止め、原本を残して別途入力方法を検討する。
+
+## 2. 保存済みキャッシュを読み出す
+
+既存の許可済みD1閲覧手段で、対象IDの行を SELECT のみで取得する。
+以下のプレースホルダーはバックアップで確認した実在の対象ID・競馬場に置き換える。
+この手順のための INSERT / UPDATE / DELETE、migration、deploy、フラグ変更は行わない。
+EARLY DATA が未保存でも、新規計算・後付け保存で穴埋めせず、欠落として記録する。
+
+```sql
+SELECT organization,race_id,revision,source_validated_at,
+       data_calculated_at,calculated_at,calculation_version,
+       model_version,status,data_json
+FROM precomputed_race_snapshots
+WHERE organization='JRA'
+  AND race_id IN ('<対象レースID>')
+  AND calculation_version='jra-ability-data-v2'
+  AND model_version='10.0.1-jra-drive1-ability'
+  AND data_json IS NOT NULL AND data_json<>''
+ORDER BY race_id,revision ASC;
+```
+
+```sql
+SELECT organization,race_date,track,race_no,payload_json,fetched_at
+FROM jra_official_cache
+WHERE kind='result'
+  AND cache_key IN ('result|2026-10-10|<競馬場>|<整数レース番号>');
+```
+
+複数レースでは IN に全対象を列挙する。最古の非空DATA行を必ず残す。
+最古行が不正でも、後の正常行に置き換えない。結果が未保存ならその行は存在しないままでよい。
+元のSELECT出力も保存し、行の取得元・取得日時・対象IDを別記録に残す。
+`data_json` と `payload_json` はJSON文字列のまま、時刻は元の値のまま保持する。
+公式由来でないデータの `source` を `JRA_OFFICIAL` に変えない。
+
+取得した行配列を以下の形式で `cache.json` にまとめる。
+これは空の構造例であり、実データではない。
+D1ツールの外側の `results` 等ではなく、行オブジェクトの配列を入れる。
+
+```json
+{
+  "schemaVersion": "CHASS-JRA-SIGNAL-CACHE-1",
+  "snapshotRows": [],
+  "resultRows": []
+}
+```
+
+上限はファイル32MiB、snapshotRows 1000行、resultRows 100行。
+スナップショットの同一 race_id / revision / calculation_version / model_version は重複禁止。
+結果の同一 race_date / track / race_no も重複禁止。異なる内容の重複は採用行を推測せず調査する。
+
+## 3. オフライン実行する
+
+リポジトリのルートで実行する。依存ライブラリの追加インストールは不要。
+`--race-ids` と `--now` は実際の対象ID・検証時刻に置き換える。
+`--now` はタイムゾーンを含むISO日時で、入力行の最新時刻以降の検証時刻を記録する。
+以下の時刻は例であり、全レースの結果が揃う時刻を意味しない。
+
+```bash
+node scripts/compare-frozen-signals.mjs \
+  --backup backup.json \
+  --cache cache.json \
+  --race-ids '20261010-JRA-東京-01' \
+  --now '2026-10-10T18:00:00+09:00' > comparison.json
+comparison_exit=$?
+printf 'comparison exit: %s\n' "$comparison_exit"
+```
+
+入力ファイルは読み取り専用。`comparison.json` はシェルの出力リダイレクトで新規保存する。
+再実行時は別ファイル名にして、前回の出力・入力を保持する。
+
+| 終了コード | 意味 | 次の行動 |
+| --- | --- | --- |
+| 0 | 観測馬があり、レース・馬の除外がない研究比較 | 集計と入力の由来を確認する。正式KPIやActivationの許可ではない |
+| 1 | 入力拒否または読み取り不能 | status / reason を確認し、原本を残して入力・読取経路を調査する |
+| 2 | 除外がある、または観測馬が0 | 除外理由・未取得件数を記録する。未取得を不的中にしない |
+
+## 4. 結果を読む
+
+`status: READY` でも観測が完全とは限らない。終了コードと summary を併せて見る。
+`readerExclusions`、`summary.excludedRaces`、`summary.excludedHorses` に理由を記録する。
+EARLY DATA がない場合は `EARLY_DATA_NOT_FOUND`。結果がない場合は `OFFICIAL_RESULT_NOT_FOUND`。
+最古DATA不正は `EARLY_MALFORMED_DATA` 等となり、後のDATAには進まない。
+発走時刻・Freeze時刻・公式結果の取得時刻を検証できないレースは除外される。
+
+| 印 | scenarioHits の条件 | 率の分母 |
+| --- | --- | --- |
+| 💎 | 2着または3着（1着は別の winHits に計上） | その印の observedHorseCount |
+| 💎💎 / 💎💎💎 | 1着 | 各印の observedHorseCount |
+| ⚠️（強度を統合） | 3着以内に入らない | ⚠️群の observedHorseCount |
+
+`scenarioHitRate`、`winHitRate`、`top3HitRate` は馬単位。レース数を分母にしない。
+分母0の率は null。除外・未取得は分母に含めない。
+この実装の判定は着順比較であり、シナリオの質・回収率・ROIを評価しない。
+⚠️の観測も対応する結果行が確認できた馬だけを対象とする。
+
+## 5. 検証記録と保留判断
+
+保存するもの：発走前バックアップ原本、元SELECT出力、cache.json、実行コマンドと終了コード、comparison.json。
+出力の `backupSha256` / `cacheSha256` は入力バイトの同一性確認用。取得元の真正性の証明ではない。
+`inputProvenance: LOCAL_FILES_NOT_AUTHENTICATED` を保持する。
+`predictionStage: SIGNAL_FREEZE` は Original Signal の研究比較であり、正式EARLY印との同一性を証明しない。
+`formalKpiEligible: false`、`productionActivationReady: false`、`scenarioQuality: NOT_EVALUATED` を報告に残す。
+保存されたEARLY・Freeze・公式結果が不足していれば「検証未完了」として理由と件数を報告する。
+Production実測、正式KPI採用、シナリオ品質評価、Activation承認は、この手順とは別に確認が必要。
+
+実装参照：
+[CLI](../scripts/compare-frozen-signals.mjs)、
+[EARLY読取](../src/prediction/jra-early-research-reader.mjs)、
+[研究比較](../src/research/jra-signal-outcomes.mjs)、
+[集計](../src/research/jra-signal-outcome-summary.mjs)。
