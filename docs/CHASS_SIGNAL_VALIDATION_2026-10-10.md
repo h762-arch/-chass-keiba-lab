@@ -94,6 +94,28 @@ D1ツールの外側の `results` 等ではなく、行オブジェクトの配�
 スナップショットの同一 race_id / revision / calculation_version / model_version は重複禁止。
 結果の同一 race_date / track / race_no も重複禁止。異なる内容の重複は採用行を推測せず調査する。
 
+元SELECT出力がJSONの場合は、オフライン変換CLIを使える。
+スナップショットSELECTを `snapshots-select.json`、結果SELECTを `results-select.json` に別々に保存する。
+`--format rows` は行配列、`--format d1-json` は単一の `{success:true,results:[...]}` を包む配列を受け付ける。
+取得手段の出力形式を確認し、形式を明示する。形式の自動推測、複数文からの任意選択は行わない。
+
+```bash
+node scripts/import-frozen-signal-cache.mjs \
+  --snapshots snapshots-select.json \
+  --results results-select.json \
+  --format rows > cache.json
+cache_exit=$?
+printf 'cache import exit: %s\n' "$cache_exit"
+```
+
+終了0は梱包成功のみ。入力の真正性・データ内容・発走前時刻・比較可能性を証明しない。
+失敗出力、不明な形式、重複、上限超過は終了1で拒否し、stdout は空、stderr にJSON理由を出す。
+シェルのリダイレクトは既存ファイルを上書きするので、原本と異なる新しい出力名を使う。
+行順、最古の不正DATA、JSON文字列、時刻、取得元を補正・削除しない。未取得結果は空配列のまま残す。
+入力は各32MiB以下、生成するcache.jsonも32MiB以下。
+`exportProvenance` は両入力ファイルのSHA-256と形式を記録するが、取得元の真正性を証明しない。
+元SELECT出力と入力の取得記録は別途保管する。CLIはD1接続・SQL実行・ネットワーク取得・入力書込みを行わない。
+
 ## 3. オフライン実行する
 
 リポジトリのルートで実行する。依存ライブラリの追加インストールは不要。
