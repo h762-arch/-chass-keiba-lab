@@ -6,7 +6,7 @@ const rejected=reason=>({status:'REJECTED',reason,productionActivationReady:fals
 
 // Reproduce a READY research output, including pending/excluded observations, from local inputs.
 // VERIFIED means reproducible only; neither file provenance nor Production readiness is authenticated.
-export async function verifyFrozenSignalComparisonCli(args){
+export async function loadVerifiedFrozenSignalComparison(args){
  const keys=new Set(['--backup','--cache','--comparison']),options={};
  for(let i=0;i<args.length;i+=2){
   if(!keys.has(args[i])||Object.hasOwn(options,args[i])||!args[i+1]||args[i+1].startsWith('--'))
@@ -32,7 +32,11 @@ export async function verifyFrozenSignalComparisonCli(args){
  return {status:'VERIFIED',reason:null,verificationScope:'LOCAL_INPUT_REPRODUCIBILITY',
   inputProvenance:'LOCAL_FILES_NOT_AUTHENTICATED',formalKpiEligible:false,productionActivationReady:false,
   comparisonExitCode:frozenSignalComparisonExitCode(replay),backupSha256:replay.backupSha256,
-  cacheSha256:replay.cacheSha256,evaluationNow:replay.evaluationNow,requestedRaceIds:replay.requestedRaceIds};
+  cacheSha256:replay.cacheSha256,evaluationNow:replay.evaluationNow,requestedRaceIds:replay.requestedRaceIds,comparison:replay};
+}
+export async function verifyFrozenSignalComparisonCli(args){
+ const {comparison,...verification}=await loadVerifiedFrozenSignalComparison(args);
+ return verification;
 }
 // node scripts/verify-frozen-signal-comparison.mjs --backup backup.json --cache cache.json --comparison comparison.json
 // stdout JSON only; exit 0 reproducible research output, 1 rejected. No network or input writes.
