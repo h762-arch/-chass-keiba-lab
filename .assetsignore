@@ -21,6 +21,10 @@ scripts/**
 worker.js
 server.mjs
 *.mjs
+# Exact browser module exceptions; keep all other server/research modules excluded.
+!/src/prediction/jra-browser-bootstrap.mjs
+!/src/prediction/jra-ability-core.mjs
+!/src/prediction/jra-ability-result-projector.mjs
 wrangler.jsonc
 wrangler.*.jsonc
 package.json
