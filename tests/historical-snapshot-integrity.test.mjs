@@ -9,5 +9,7 @@ test('historical research preserves original prediction timestamps',()=>{
  const body=app.slice(start,end);
  assert.match(body,/const originalPredictionSnapshot=state\.predictionSnapshot\?structuredClone\(state\.predictionSnapshot\):null/);
  assert.match(body,/originalPredictionSnapshot\?\.generatedAt\|\|originalPredictionSnapshot\?\.createdAt/);
+ assert.match(body,/originalMarketSnapshot=state\.marketSnapshot\?structuredClone\(state\.marketSnapshot\):null/);
+ assert.match(body,/originalMarketCreatedAt=originalMarketSnapshot\?\.createdAt\|\|originalMarketSnapshot\?\.acquiredAt/);
  assert.doesNotMatch(body,/state\.predictionSnapshot\.generatedAt=now;state\.predictionSnapshot\.createdAt=now/);
 });
