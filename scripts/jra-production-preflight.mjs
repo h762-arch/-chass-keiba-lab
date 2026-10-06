@@ -3,6 +3,7 @@ import {writeFileSync} from 'node:fs';
 import {createJraPrecomputeMeetingProvider} from '../src/prediction/jra-precompute-meeting-provider.mjs';
 import {createJraPrecomputeOfficialCacheSource} from '../src/prediction/jra-precompute-official-cache-source.mjs';
 import {discoverPrecomputeRaceJobs} from '../src/prediction/precompute-job-discovery.mjs';
+import {auditProductionJraEarlyKpi,productionKpiSummaryLines} from './jra-production-kpi-reader.mjs';
 
 const TABLE='precomputed_race_snapshots';
 const COLUMNS='organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at'.split(',');
@@ -136,6 +137,7 @@ export async function evaluatePreflight({date,now,rows}){
   indexes,indexResults,meeting,race,expectedRaceCount,counts,snapshotAudit:audit.status,
   snapshotAuditCounts:audit.counts,snapshotAuditIntegrity:audit.integrity,
   snapshotAuditMaxDistinctRaces:CANARY_MAX_DISTINCT_RACES,
+  snapshotDataRaceIds:audit.dataRaceIds,
   snapshotMissingDataRaceIds:missingDataRaceIds,snapshotUnexpectedDataRaceIds:unexpectedDataRaceIds,
   issues:[...new Set(issues)],
   productionActivationReady:false};
@@ -202,10 +204,12 @@ if(process.argv[1]&&new URL(`file://${process.argv[1]}`).href===import.meta.url)
  ],{encoding:'utf8',maxBuffer:20*1024*1024,stdio:['ignore','pipe','pipe']}));
  try{
   const report=await runPreflight(date,{execute});
-  const body=summary(report);
+  const kpi=await auditProductionJraEarlyKpi(report,{execute});
+  const body=summary(report)+'\n'+productionKpiSummaryLines(kpi);
   console.log(body);
   if(process.env.GITHUB_STEP_SUMMARY)writeFileSync(process.env.GITHUB_STEP_SUMMARY,body,{flag:'a'});
-  if([report.migration,report.schema,report.indexes,report.snapshotAudit].includes('FAIL'))process.exitCode=1;
+  if([report.migration,report.schema,report.indexes,report.snapshotAudit].includes('FAIL')||
+    kpi.status==='BLOCKED')process.exitCode=1;
  }catch(error){
   // Never emit raw D1/CLI errors: they may include data or credentials.
   const query=String(error?.message||'').match(/^preflight_query_blocked:([A-Za-z_]+)$/)?.[1]??'unknown';
