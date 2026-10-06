@@ -207,6 +207,20 @@ report.md も原本・比較JSON・検証JSONと一緒に保存する。少数�
 保存されたEARLY・Freeze・公式結果が不足していれば「検証未完了」として理由と件数を報告する。
 Production実測、正式KPI採用、シナリオ品質評価、Activation承認は、この手順とは別に確認が必要。
 
+## 6. 合成データによる結合テスト
+
+```bash
+node --test tests/signal-offline-workflow.test.mjs
+```
+
+読取計画 → SELECT出力変換 → 比較 → 再検証 → Markdownレポートを、各CLIの実プロセスで通す。
+対象は行配列・単一成功D1 JSON、公式結果未取得、最古DATA不正、比較JSON・バックアップ改変の5ケース。
+未取得は未観測、不正な最古DATAは除外、改変後のレポートは出力拒否であることを確認する。
+原本と元SELECT出力の不変、入力SHA-256の連携、終了コード0/1/2、NO-GOの表示も確認する。
+このテストはローカルの一時ファイルと合成データだけを使い、D1・本番APIへ接続しない。
+テスト内の開催日・競馬場・馬・公式由来表記は構造検証用で、実在の開催・公式取得を示さない。
+PASSはCLI連携の確認のみ。実データ検証、正式EARLY KPI、シナリオ品質、Production Activationの承認ではない。
+
 実装参照：
 [CLI](../scripts/compare-frozen-signals.mjs)、
 [EARLY読取](../src/prediction/jra-early-research-reader.mjs)、
