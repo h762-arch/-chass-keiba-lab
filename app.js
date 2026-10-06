@@ -689,9 +689,15 @@ function sealSnapshotIntegrity(record=state,force=false){
 function verifySnapshotIntegrity(record){
  const expected=record?.snapshotIntegrity?.hashes,predictionAt=Date.parse(record?.predictionCreatedAt||record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt||''),resultAt=Date.parse(record?.resultAcquiredAt||record?.resultSnapshot?.fetchedAt||record?.resultFetchedAt||'');
  const temporalInvalid=Number.isFinite(predictionAt)&&Number.isFinite(resultAt)&&resultAt<predictionAt;
- if(!expected)return {status:temporalInvalid?'invalid':'legacy',label:temporalInvalid?'時系列異常':'未検証（旧データ）',verified:0,total:0,mismatches:[],temporalInvalid};
+ const referenceOnly=record?.predictionSnapshot?.predictionKind==='backtest_prediction'||record?.race?.predictionKind==='backtest_prediction'||record?.historicalResearch?.predictionKind==='backtest_prediction';
+ const chronology=temporalInvalid?(referenceOnly?'historical_post_result':'result_before_prediction'):Number.isFinite(predictionAt)&&Number.isFinite(resultAt)?'ordered':'unknown';
+ const context={referenceOnly,chronology};
+ if(!expected)return {status:temporalInvalid?'invalid':'legacy',label:referenceOnly?'過去研究（参考・ハッシュ未検証）':temporalInvalid?'時系列異常':'未検証（旧データ）',verified:0,total:0,mismatches:[],temporalInvalid,...context};
  const mismatches=[],keys=Object.keys(expected);for(const key of keys)if(record?.[key]&&snapshotFingerprint(record[key])!==expected[key])mismatches.push(key);
- const status=temporalInvalid||mismatches.length?'invalid':'verified';return {status,label:status==='verified'?'固定確認済':'改変・時系列要確認',verified:keys.length-mismatches.length,total:keys.length,mismatches,temporalInvalid};
+ // Chronology classification is descriptive only; do not relax the existing gate.
+ const status=temporalInvalid||mismatches.length?'invalid':'verified';
+ const label=referenceOnly?(mismatches.length?'過去研究：Snapshot改変要確認':temporalInvalid?'過去研究：結果取得後の予測（参考）':'固定確認済（過去研究・参考）'):status==='verified'?'固定確認済':'改変・時系列要確認';
+ return {status,label,verified:keys.length-mismatches.length,total:keys.length,mismatches,temporalInvalid,...context};
 }
 function render(){
  setVersion();const context=activeRaceContext(),jraDraft=context.organization==='JRA'&&!context.hasPrediction?jraRaceInput():null,r=context.hasPrediction?state.race:{...state.race,raceDate:jraDraft?.date||'',track:jraDraft?.racecourse||'',raceNo:jraDraft?.raceNo||'',raceName:jraDraft?.raceName||'',surface:jraDraft?.surface||'',distance:jraDraft?.distance||'',trackCondition:jraDraft?.trackCondition||'',weather:jraDraft?.weather||'',pace:jraDraft?.pace||'標準'},h=displayHorses(),rid=context.hasPrediction?context.raceId:'';
@@ -1773,7 +1779,12 @@ function renderGroupTable(title,obj,key){
 function validationQuality(r){
  const horses=frozenHorses(r),times=resultTimes(r),prob=horses.filter(h=>h.win!=null&&h.place!=null).length,market=horses.filter(h=>h.odds!=null&&h.popularity!=null).length,time=horses.filter(h=>times[String(h.horseNo)]).length,detail=(r.resultSnapshot?.horses||[]).filter(h=>h.last3f!=null||h.cornerPositions||h.bodyWeight!=null).length,total=horses.length;
  const integrity=verifySnapshotIntegrity(r),issues=[];if(prob<total)issues.push({code:'PROB_MISSING',label:'AI確率不足',detail:`${prob}/${total}頭`});if(!market)issues.push({code:'MARKET_MISSING',label:'実オッズ不足',detail:'予想時点の市場Snapshotなし'});if(time<Math.max(1,Math.ceil(total*.7)))issues.push({code:'TIME_MISSING',label:'実TIME不足',detail:`${time}/${total}頭`});if(detail<Math.max(1,Math.ceil(total*.5)))issues.push({code:'RESULT_DETAIL_MISSING',label:'結果詳細不足',detail:`${detail}/${total}頭`});if(integrity.status==='legacy')issues.push({code:'SNAPSHOT_UNVERIFIED',label:'Snapshot未検証',detail:'旧データのため改変検知情報なし'});if(integrity.mismatches.length)issues.push({code:'SNAPSHOT_CHANGED',label:'Snapshot改変検知',detail:integrity.mismatches.join(' / ')});if(integrity.temporalInvalid)issues.push({code:'TEMPORAL_INVALID',label:'時系列異常',detail:'結果取得日時が予想生成日時より前です'});
- const score=[prob===total,market===total,time>=total*.7,detail>=total*.5].filter(Boolean).length;let grade=score===4?'A':score>=2?'B':'C';if(integrity.status==='legacy'&&grade==='A')grade='B';if(integrity.status==='invalid')grade='C';
+ if(integrity.referenceOnly){
+  const temporalIssue=issues.find(x=>x.code==='TEMPORAL_INVALID');
+  if(temporalIssue)Object.assign(temporalIssue,{code:'HISTORICAL_POST_RESULT',label:'過去研究・事後生成',detail:'結果取得後に生成したバックテスト予測。レース前予測の証明には使用しません'});
+  issues.push({code:'BACKTEST_REFERENCE_ONLY',label:'過去研究・参考限定',detail:'EARLYの正式KPIとは分離。取得時刻と固定Snapshotは書き換えません'});
+ }
+ const score=[prob===total,market===total,time>=total*.7,detail>=total*.5].filter(Boolean).length;let grade=score===4?'A':score>=2?'B':'C';if(integrity.status==='legacy'&&grade==='A')grade='B';if(integrity.status==='invalid'||integrity.referenceOnly)grade='C';
  return {grade,score,total,probabilityCount:prob,marketCount:market,timeCount:time,detailCount:detail,integrity,issues};
 }
 function diagnosticsForRace(r){
