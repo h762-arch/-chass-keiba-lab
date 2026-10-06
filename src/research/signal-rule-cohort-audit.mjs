@@ -1,6 +1,6 @@
 import {auditFrozenSignalRules} from './signal-rule-audit.mjs';
 const rejected=reason=>Object.freeze({status:'REJECTED',reason,summary:null,productionActivationReady:false});
-function validId(id){
+export function isFrozenSignalRaceId(id){
  if(typeof id!=='string'||id.length>160)return false;
  const m=/^(\d{4})(\d{2})(\d{2})-(JRA|NAR)-([^\r\n]+)-(\d{2})$/.exec(id);
  if(!m||Number(m[6])<1||Number(m[6])>99)return false;
@@ -10,7 +10,7 @@ function validId(id){
 
 // Explicit local cohort only. No discovery, market/result substitution, persistence or KPI adoption.
 export function auditFrozenSignalCohort(entries){
- if(!Array.isArray(entries)||entries.length<1||entries.length>100||entries.some(e=>!validId(e?.raceId)))
+ if(!Array.isArray(entries)||entries.length<1||entries.length>100||entries.some(e=>!isFrozenSignalRaceId(e?.raceId)))
   return rejected('INVALID_COHORT');
  if(new Set(entries.map(e=>e.raceId)).size!==entries.length)return rejected('DUPLICATE_RACE_ID');
  const observations=[],excluded=[];
