@@ -1434,8 +1434,13 @@ function historicalRecord(root,resultData){
  const previous=state,now=new Date().toISOString();
  try{
   state=transform(root);state.race={...state.race,historicalResearch:true,researchMode:'historical_research',predictionKind:'backtest_prediction',dataMode:`${state.race.dataMode||'NAR自動'}・過去研究`};
+  const originalPredictionSnapshot=state.predictionSnapshot?structuredClone(state.predictionSnapshot):null;
   makeSnapshot();
-  if(state.predictionSnapshot){state.predictionSnapshot.historicalResearch=true;state.predictionSnapshot.predictionKind='backtest_prediction';state.predictionSnapshot.generatedAt=now;state.predictionSnapshot.createdAt=now;state.predictionSnapshot.race={...state.predictionSnapshot.race,historicalResearch:true,researchMode:'historical_research'}}
+  if(state.predictionSnapshot){
+   const originalGeneratedAt=originalPredictionSnapshot?.generatedAt||originalPredictionSnapshot?.createdAt||state.predictionSnapshot.generatedAt||now;
+   const originalCreatedAt=originalPredictionSnapshot?.createdAt||originalGeneratedAt;
+   state.predictionSnapshot.historicalResearch=true;state.predictionSnapshot.predictionKind='backtest_prediction';state.predictionSnapshot.generatedAt=originalGeneratedAt;state.predictionSnapshot.createdAt=originalCreatedAt;state.predictionSnapshot.race={...state.predictionSnapshot.race,historicalResearch:true,researchMode:'historical_research'}
+  }
   if(state.marketSnapshot){state.marketSnapshot.historicalResearch=true;state.marketSnapshot.oddsSnapshotType='historical_official';state.marketSnapshot.createdAt=now;state.marketSnapshot.acquiredAt=now}
   const record=cloneData(state);record.modelVersion=APP_VERSION;record.predictionCreatedAt=now;record.historicalResearch={schemaVersion:1,mode:'historical_research',predictionKind:'backtest_prediction',collectedAt:now,resultLeakageGuard:true,notes:'過去レース研究用。現在モデルによるバックテスト予測であり、当時のリアルタイム予想とは区別する。'};
   if(resultData?.finishOrder?.length>=3){
