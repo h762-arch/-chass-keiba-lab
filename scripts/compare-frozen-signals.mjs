@@ -64,7 +64,9 @@ export async function runFrozenSignalComparisonCli(args){
  if(extracted.status!=='READY')return extracted;
  let DB;try{DB=createOfflineSignalOutcomeDb(cache.data);}catch{return fail('CACHE_INPUT_INVALID');}
  const result=await readJraSignalOutcomeCohort({DB,entries:extracted.entries,now:Date.parse(options['--now'])});
- return {...result,inputProvenance:'LOCAL_FILES_NOT_AUTHENTICATED',backupSha256:backup.sha256,cacheSha256:cache.sha256};
+ return {...result,inputProvenance:'LOCAL_FILES_NOT_AUTHENTICATED',backupSha256:backup.sha256,cacheSha256:cache.sha256,
+  evidenceSchemaVersion:'CHASS-SIGNAL-COMPARISON-1',evaluationNow:new Date(Date.parse(options['--now'])).toISOString(),
+  requestedRaceIds:extracted.entries.map(e=>e.raceId)};
 }
 export function frozenSignalComparisonExitCode(result){
  if(result.status!=='READY')return 1;

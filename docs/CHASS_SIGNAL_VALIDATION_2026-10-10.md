@@ -117,6 +117,26 @@ EARLY DATA がない場合は `EARLY_DATA_NOT_FOUND`。結果がない場合は 
 
 ## 5. 検証記録と保留判断
 
+比較JSONの保存後、元の入力ファイルと照合して再検証する。
+
+```bash
+node scripts/verify-frozen-signal-comparison.mjs \
+  --backup backup.json \
+  --cache cache.json \
+  --comparison comparison.json > verification.json
+verification_exit=$?
+printf 'verification exit: %s\n' "$verification_exit"
+```
+
+比較CLIは `CHASS-SIGNAL-COMPARISON-1`、検証時刻 `evaluationNow`、対象ID `requestedRaceIds` を記録する。
+検証CLIは同じ時刻・IDで再計算し、SHA-256と全比較出力を照合する。
+終了0 / VERIFIED はローカル入力からの再現性のみ。未取得を含む比較でも再現できれば VERIFIED になる。
+`comparisonExitCode` が元の比較の完全性（0または2）を示す。終了1なら reason を記録して調査する。
+旧形式でメタデータのない比較JSONは拒否する。原本を保管し、新形式で別ファイルに比較を再実行する。
+JSONのキー順・空白だけの変更は許容するが、入力ファイルのバイト変更は検出する。
+入力と出力を一緒に作り直した場合の真正性や、対象の選び方・検証時刻の妥当性を保証する機能ではない。
+verification.json も検証記録に残す。VERIFIED によって正式KPI採用やNO-GO解除は行わない。
+
 保存するもの：発走前バックアップ原本、元SELECT出力、cache.json、実行コマンドと終了コード、comparison.json。
 出力の `backupSha256` / `cacheSha256` は入力バイトの同一性確認用。取得元の真正性の証明ではない。
 `inputProvenance: LOCAL_FILES_NOT_AUTHENTICATED` を保持する。
