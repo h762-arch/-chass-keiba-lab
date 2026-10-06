@@ -1435,13 +1435,18 @@ function historicalRecord(root,resultData){
  try{
   state=transform(root);state.race={...state.race,historicalResearch:true,researchMode:'historical_research',predictionKind:'backtest_prediction',dataMode:`${state.race.dataMode||'NAR自動'}・過去研究`};
   const originalPredictionSnapshot=state.predictionSnapshot?structuredClone(state.predictionSnapshot):null;
+  const originalMarketSnapshot=state.marketSnapshot?structuredClone(state.marketSnapshot):null;
   makeSnapshot();
   if(state.predictionSnapshot){
    const originalGeneratedAt=originalPredictionSnapshot?.generatedAt||originalPredictionSnapshot?.createdAt||state.predictionSnapshot.generatedAt||now;
    const originalCreatedAt=originalPredictionSnapshot?.createdAt||originalGeneratedAt;
    state.predictionSnapshot.historicalResearch=true;state.predictionSnapshot.predictionKind='backtest_prediction';state.predictionSnapshot.generatedAt=originalGeneratedAt;state.predictionSnapshot.createdAt=originalCreatedAt;state.predictionSnapshot.race={...state.predictionSnapshot.race,historicalResearch:true,researchMode:'historical_research'}
   }
-  if(state.marketSnapshot){state.marketSnapshot.historicalResearch=true;state.marketSnapshot.oddsSnapshotType='historical_official';state.marketSnapshot.createdAt=now;state.marketSnapshot.acquiredAt=now}
+  if(state.marketSnapshot){
+   const originalMarketCreatedAt=originalMarketSnapshot?.createdAt||originalMarketSnapshot?.acquiredAt||state.marketSnapshot.createdAt||now;
+   const originalMarketAcquiredAt=originalMarketSnapshot?.acquiredAt||originalMarketCreatedAt;
+   state.marketSnapshot.historicalResearch=true;state.marketSnapshot.oddsSnapshotType='historical_official';state.marketSnapshot.createdAt=originalMarketCreatedAt;state.marketSnapshot.acquiredAt=originalMarketAcquiredAt
+  }
   const record=cloneData(state);record.modelVersion=APP_VERSION;record.predictionCreatedAt=now;record.historicalResearch={schemaVersion:1,mode:'historical_research',predictionKind:'backtest_prediction',collectedAt:now,resultLeakageGuard:true,notes:'過去レース研究用。現在モデルによるバックテスト予測であり、当時のリアルタイム予想とは区別する。'};
   if(resultData?.finishOrder?.length>=3){
    record.actualTimes={...(resultData.actualTimes||{})};record.result={finishOrder:resultData.finishOrder.map(Number),actualTimes:{...record.actualTimes},source:'NAR公式 過去研究取得',at:now,autoSaved:true};
