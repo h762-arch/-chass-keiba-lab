@@ -5,6 +5,7 @@ import {createJraPrecomputeOfficialCacheSource} from '../src/prediction/jra-prec
 import {discoverPrecomputeRaceJobs} from '../src/prediction/precompute-job-discovery.mjs';
 import {auditProductionJraEarlyKpi,productionKpiSummaryLines} from './jra-production-kpi-reader.mjs';
 import {auditProductionJraStarShadow,productionStarShadowSummaryLines} from './jra-production-star-shadow-reader.mjs';
+import {buildProductionJraAuditEvidence,productionAuditEvidenceLines} from './jra-production-audit-evidence.mjs';
 
 const TABLE='precomputed_race_snapshots';
 const COLUMNS='organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at'.split(',');
@@ -204,14 +205,16 @@ if(process.argv[1]&&new URL(`file://${process.argv[1]}`).href===import.meta.url)
   '-y','wrangler@4','d1','execute',database,'--remote','--json','--command',sql
  ],{encoding:'utf8',maxBuffer:20*1024*1024,stdio:['ignore','pipe','pipe']}));
  try{
-  const report=await runPreflight(date,{execute});
-  const kpi=await auditProductionJraEarlyKpi(report,{execute});
-  const shadow=await auditProductionJraStarShadow(report,{execute});
-  const body=summary(report)+'\n'+productionKpiSummaryLines(kpi)+'\n'+productionStarShadowSummaryLines(shadow);
+  const now=Date.now();
+  const report=await runPreflight(date,{execute,now:()=>now});
+  const kpi=await auditProductionJraEarlyKpi(report,{execute,now});
+  const shadow=await auditProductionJraStarShadow(report,{execute,now});
+  const evidence=buildProductionJraAuditEvidence({report,kpi,shadow,commitSha:process.env.GITHUB_SHA||null});
+  const body=summary(report)+'\n'+productionKpiSummaryLines(kpi)+'\n'+productionStarShadowSummaryLines(shadow)+'\n'+productionAuditEvidenceLines(evidence);
   console.log(body);
   if(process.env.GITHUB_STEP_SUMMARY)writeFileSync(process.env.GITHUB_STEP_SUMMARY,body,{flag:'a'});
   if([report.migration,report.schema,report.indexes,report.snapshotAudit].includes('FAIL')||
-    kpi.status==='BLOCKED'||shadow.status==='BLOCKED')process.exitCode=1;
+    kpi.status==='BLOCKED'||shadow.status==='BLOCKED'||evidence.status!=='READY')process.exitCode=1;
  }catch(error){
   // Never emit raw D1/CLI errors: they may include data or credentials.
   const query=String(error?.message||'').match(/^preflight_query_blocked:([A-Za-z_]+)$/)?.[1]??'unknown';
