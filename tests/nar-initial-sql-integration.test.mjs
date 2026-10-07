@@ -8,6 +8,7 @@ import {createInterface} from 'node:readline';
 import {captureNarInitialResearchBundle as capture,readNarInitialResearchBundle as read} from '../src/research/nar-initial-research-bundle.mjs';
 import {freezeNarEarlySnapshot} from '../src/research/nar-early-freeze.mjs';
 import {createNarInitialSqlStore,NAR_INITIAL_RESEARCH_SCHEMA_SQL} from '../src/research/nar-initial-sql-store.mjs';
+import {observeNarSqlCommitResearch,saveNarCommitObservationResearch as saveObservation,readNarInitialAdmissionResearch as admission,verifyNarCommitObservationResearch} from '../src/research/nar-commit-admission.mjs';
 import {NAR_EARLY_RESEARCH_SCHEMA_SQL} from '../src/research/nar-early-sql-store.mjs';
 const now=Date.parse('2026-10-07T03:00:00Z'),at=new Date(now).toISOString(),raceId='2026-10-07|園田|7',oldKey='nar-early:v1:'+raceId,bundleKey='nar-initial-research:v1:'+raceId;
 function canonical(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(canonical).join(',')+']';return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}'}
@@ -109,4 +110,97 @@ test('deadline audit: invalid or reversed clock introduced during COMMIT is not 
   const x=await capture({...args(probe.db),store:store(probe.db,'research-write',()=>tick),clock:()=>tick});
   assert.equal(x.status,'CREATED');assert.equal(probe.commits[0].acknowledged,true);assert.ok(await storedText(f.db));
  }
+});
+
+// Separate append-only audit namespace in the local research fixture only.
+async function journal(db){await db.exec('CREATE TABLE IF NOT EXISTS research_nar_commit_observations (storage_key TEXT PRIMARY KEY NOT NULL,snapshot_json TEXT NOT NULL)');return journalReader(db)}
+function journalReader(db){return {async get(key){return (await db.first('SELECT snapshot_json FROM research_nar_commit_observations WHERE storage_key=?',[key]))?.snapshot_json??null},async insertIfAbsent(key,json){return (await db.run('INSERT OR IGNORE INTO research_nar_commit_observations VALUES (?,?)',[key,json])).changes===1}}}
+async function rehashReceipt(receipt){const {contentSha256,...body}=receipt,h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(body)));return {...body,contentSha256:[...new Uint8Array(h)].map(n=>n.toString(16).padStart(2,'0')).join('')}}
+const observed={outcome:'RESOLVED',startedAt:now,returnedAt:now};
+async function gate(db,j){return admission({store:store(db,'read-only'),receiptStore:j,raceId})}
+
+test('admission: observed in-window receipt persists across reconnect but never certifies formal EARLY',async t=>{
+ const f=await fixture(t),j=await journal(f.db),observer=observeNarSqlCommitResearch({db:f.db,clock:()=>now});
+ const x=await capture(args(observer.db)),raw=await storedText(f.db);assert.equal(x.status,'CREATED');
+ const events=observer.observations();assert.deepEqual(events,[observed]);assert.ok(Object.isFrozen(events[0]));
+ const saved=await saveObservation({enabled:true,snapshot:x.snapshot,observation:events[0],receiptStore:j});assert.equal(saved.status,'CREATED');
+ await f.db.close();const db=f.connection(),start=db.calls.length,y=await gate(db,journalReader(db));
+ assert.equal(y.status,'HOLD');assert.equal(y.timing,'OBSERVED_WITHIN_WINDOW');assert.equal(y.reason,'DURABLE_TIME_AND_FORMAL_POLICY_UNVERIFIED');
+ assert.equal(y.formalKpiEligible,false);assert.equal(y.adopted,false);assert.equal(y.receipt.trustedDurableTime,false);assert.equal(await storedText(db),raw);
+ assert.ok(db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('admission: late real COMMIT row is retained with late HOLD after journal reconnect',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let tick=now;
+ const probe=commitProbe(f.db,async commit=>{tick=now+60001;return commit()}),observer=observeNarSqlCommitResearch({db:probe.db,clock:()=>tick});
+ const x=await capture({...args(observer.db),store:store(observer.db,'research-write',()=>tick),clock:()=>tick});assert.equal(x.status,'CREATED');
+ const raw=await storedText(f.db);assert.equal((await saveObservation({enabled:true,snapshot:x.snapshot,observation:observer.observations()[0],receiptStore:j})).timing,'OBSERVED_OUTSIDE_WINDOW');
+ await f.db.close();const db=f.connection(),y=await gate(db,journalReader(db));assert.equal(y.reason,'COMMIT_OBSERVED_LATE');assert.equal(y.status,'HOLD');assert.equal(await storedText(db),raw);
+});
+test('admission: exact post time is late even when observed freshness is exactly sixty seconds',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture({...args(f.db),acquire:async()=>receipt('12:01')});
+ const a=await saveObservation({enabled:true,snapshot:x.snapshot,observation:{...observed,returnedAt:now+60000},receiptStore:j});assert.equal(a.timing,'OBSERVED_OUTSIDE_WINDOW');assert.equal((await gate(f.db,j)).reason,'COMMIT_OBSERVED_LATE');
+});
+test('admission: missing or unreadable journal stays HOLD without source writes or new acquisition',async t=>{
+ const f=await fixture(t),j=await journal(f.db);await capture(args(f.db));const raw=await storedText(f.db),start=f.db.calls.length;
+ const x=await gate(f.db,j);assert.equal(x.reason,'COMMIT_EVIDENCE_MISSING');assert.equal(x.status,'HOLD');
+ assert.equal((await gate(f.db,{get(){throw Error('unavailable')}})).reason,'COMMIT_EVIDENCE_UNAVAILABLE');
+ assert.equal((await gate(f.db,null)).reason,'COMMIT_EVIDENCE_UNAVAILABLE');assert.equal(await storedText(f.db),raw);assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('admission: lost acknowledgement is persisted as unknown and stays HOLD across restart',async t=>{
+ const f=await fixture(t),j=await journal(f.db),probe=commitProbe(f.db,async commit=>{await commit();throw Error('lost ack')}),observer=observeNarSqlCommitResearch({db:probe.db,clock:()=>now});
+ assert.equal((await capture(args(observer.db))).status,'REJECTED');const x=await read({store:store(f.db,'read-only'),raceId});assert.equal(x.status,'PRESERVED');
+ const raw=await storedText(f.db);assert.equal(observer.observations()[0].outcome,'REJECTED');
+ assert.equal((await saveObservation({enabled:true,snapshot:x.snapshot,observation:observer.observations()[0],receiptStore:j})).timing,'UNKNOWN');
+ await f.db.close();const db=f.connection(),y=await gate(db,journalReader(db));assert.equal(y.reason,'COMMIT_TIMING_UNCONFIRMED');assert.equal(await storedText(db),raw);
+});
+test('admission: journal write failure cannot delete or repair first content',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db)),raw=await storedText(f.db);
+ const saved=await saveObservation({enabled:true,snapshot:x.snapshot,observation:observed,receiptStore:{...j,insertIfAbsent(){throw Error('audit write failed')}}});assert.equal(saved.status,'REJECTED');
+ assert.equal((await gate(f.db,j)).reason,'COMMIT_EVIDENCE_MISSING');assert.equal(await storedText(f.db),raw);
+});
+test('admission: first unknown receipt is immutable; later favourable claim cannot replace it',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db));
+ const a=await saveObservation({enabled:true,snapshot:x.snapshot,observation:{outcome:'UNOBSERVED',startedAt:null,returnedAt:null},receiptStore:j});
+ const b=await saveObservation({enabled:true,snapshot:x.snapshot,observation:observed,receiptStore:j});assert.equal(a.status,'CREATED');assert.equal(b.status,'PRESERVED');assert.equal(b.timing,'UNKNOWN');assert.deepEqual(b.receipt,a.receipt);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,1);
+});
+test('admission: changed evidence, rehashed trust claims and foreign bundle hash are rejected without repair',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db)),a=await saveObservation({enabled:true,snapshot:x.snapshot,observation:observed,receiptStore:j});
+ for(const change of [r=>{r.observation.returnedAt++},r=>{r.trustedDurableTime=true},r=>{r.sourceBundleSha256='0'.repeat(64)}]){
+  const bad=structuredClone(a.receipt);change(bad);const input=bad.trustedDurableTime||bad.sourceBundleSha256!==a.receipt.sourceBundleSha256?await rehashReceipt(bad):bad;
+  assert.equal((await verifyNarCommitObservationResearch({snapshot:x.snapshot,receipt:input})).status,'REJECTED');
+ }
+ const bad=JSON.stringify({...a.receipt,trustedDurableTime:true});await f.db.run('UPDATE research_nar_commit_observations SET snapshot_json=?',[bad]);const start=f.db.calls.length;
+ assert.equal((await gate(f.db,j)).status,'REJECTED');assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));assert.equal((await f.db.first('SELECT snapshot_json FROM research_nar_commit_observations')).snapshot_json,bad);
+});
+test('admission: invalid source and disabled saving never touch journal storage',async t=>{
+ const forbidden={get(){assert.fail()},insertIfAbsent(){assert.fail()}};
+ assert.equal((await saveObservation({receiptStore:forbidden})).status,'DISABLED');
+ assert.equal((await saveObservation({enabled:true,snapshot:{},observation:observed,receiptStore:forbidden})).status,'REJECTED');
+ const f=await fixture(t);assert.equal((await gate(f.db,forbidden)).status,'MISSING');
+});
+test('admission: null, reversed and pre-seal observations cannot be certified from saved seal time',async t=>{
+ for(const observation of [{...observed,returnedAt:null},{...observed,returnedAt:now-1},{...observed,startedAt:now-1}]){
+  const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db)),a=await saveObservation({enabled:true,snapshot:x.snapshot,observation,receiptStore:j});assert.equal(a.timing,'UNKNOWN');assert.equal((await gate(f.db,j)).reason,'COMMIT_TIMING_UNCONFIRMED');
+ }
+});
+test('admission: observer records rejected commit without leaking driver errors and invalid clock as null',async t=>{
+ const f=await fixture(t),probe=commitProbe(f.db,async()=>{throw Error('private driver detail')}),observer=observeNarSqlCommitResearch({db:probe.db,clock(){throw Error('clock unavailable')}});
+ assert.equal((await capture(args(observer.db))).status,'REJECTED');assert.deepEqual(observer.observations(),[{outcome:'REJECTED',startedAt:null,returnedAt:null}]);assert.equal(await storedText(f.db),undefined);
+});
+
+test('admission: sixty-second freshness is inclusive before post time but remains research HOLD',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db)),a=await saveObservation({enabled:true,snapshot:x.snapshot,observation:{...observed,returnedAt:now+60000},receiptStore:j});
+ assert.equal(a.timing,'OBSERVED_WITHIN_WINDOW');assert.equal((await gate(f.db,j)).status,'HOLD');assert.equal((await gate(f.db,j)).formalKpiEligible,false);
+});
+test('admission: legacy EARLY is preserved with unconfirmed timing and no receipt namespace access',async t=>{
+ const f=await fixture(t),legacy=await freezeNarEarlySnapshot({raceId,record:receipt().record,now,freshAcquisition:true}),raw=JSON.stringify(legacy.snapshot);
+ await f.db.run('INSERT INTO research_nar_early_snapshots VALUES (?,?)',[oldKey,raw]);const start=f.db.calls.length;
+ const x=await gate(f.db,{get(){assert.fail('legacy timing must not be invented')}});assert.equal(x.status,'HOLD');assert.equal(x.reason,'LEGACY_TIMING_UNCONFIRMED');assert.deepEqual(x.snapshot,legacy.snapshot);
+ assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));assert.equal((await f.db.first('SELECT snapshot_json FROM research_nar_early_snapshots WHERE storage_key=?',[oldKey])).snapshot_json,raw);
+});
+test('admission: concurrent independent journal connections preserve one first observation',async t=>{
+ const f=await fixture(t),j=await journal(f.db),db2=f.connection(),j2=journalReader(db2),x=await capture(args(f.db)),raw=await storedText(f.db);
+ const [a,b]=await Promise.all([saveObservation({enabled:true,snapshot:x.snapshot,observation:observed,receiptStore:j}),saveObservation({enabled:true,snapshot:x.snapshot,observation:{outcome:'UNOBSERVED',startedAt:null,returnedAt:null},receiptStore:j2})]);
+ assert.deepEqual([a.status,b.status].sort(),['CREATED','PRESERVED']);assert.equal(a.receipt.contentSha256,b.receipt.contentSha256);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,1);assert.equal(await storedText(f.db),raw);
+ await f.db.run('UPDATE research_nar_commit_observations SET snapshot_json=?',['invalid json']);const start=f.db.calls.length;assert.equal((await gate(f.db,j)).reason,'OBSERVATION_UNREADABLE');assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
 });
