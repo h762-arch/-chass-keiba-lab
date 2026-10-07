@@ -194,7 +194,12 @@ export function parseRaceMeta(html){
  const distance=dists.length?dists[0]:null;
  const weather=text.match(/天候[:：]?\s*(晴|曇|雨|雪)/)?.[1]||'';
  const trackCondition=text.match(/(?:馬場|馬場状態)[:：]?\s*(良|稍重|重|不良)/)?.[1]||'不明';
- const candidates=[...[...String(html).matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)].map(m=>cleanText(m[1])),...[...String(html).matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)].map(m=>cleanText(m[1]))].filter(Boolean);
+ // DebaTableSmall puts the current race name in span.midium, before
+ // the runner table. Never search that selector inside past-run rows.
+ const source=String(html),runnerStart=source.search(/<(?:tr\b[^>]*class=["'][^"']*\bdbitem\b|font\b[^>]*class=["'][^"']*\bbamei\b)/i);
+ const header=runnerStart>=0?source.slice(0,runnerStart):'';
+ const officialNames=[...header.matchAll(/<span\b[^>]*class=["'][^"']*\bmidium\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)].map(m=>cleanText(m[1]));
+ const candidates=[...officialNames,...[...source.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)].map(m=>cleanText(m[1])),...[...source.matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi)].map(m=>cleanText(m[1]))].filter(Boolean);
  const raceName=candidates.map(normalizeOfficialRaceName).find(Boolean)||'';
  const post=text.match(/(?:発走(?:予定)?(?:時刻)?\s*[:：]?\s*)(\d{1,2})[:：](\d{2})/)||text.match(/(\d{1,2})[:：](\d{2})\s*発走/);
  const postTime=post?`${String(Number(post[1])).padStart(2,'0')}:${post[2]}`:'';
