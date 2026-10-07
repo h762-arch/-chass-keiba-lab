@@ -227,6 +227,17 @@ export function parseRaceCard(html){
    if(texts.length>1)trainer=String(texts[texts.length-1]||'').trim();
    if(nameIndex>=0&&c[nameIndex+1])trainer=String(c[nameIndex+1]).trim();
    if(nameIndex>=0&&c[nameIndex+2])jockey=String(c[nameIndex+2]).trim();
+   // DebaTableSmall embeds sex/age with pedigree and combines carried weight,
+   // rider and ride record. Restrict extraction to those current-runner cells.
+   if(nameIndex>=0){
+     const sa=String(c[nameIndex]||'').match(/(?:^|\s)([牡牝セ騙])\s*(\d{1,2})(?=\s|$)/);
+     if(sa)sexAge=sa[1]+sa[2];
+     const combined=jockey.match(/^[★☆▲△◇◆※]?\s*(\d{2}(?:\.\d)?)\s+(.+)$/);
+     if(combined&&Number(combined[1])>=45&&Number(combined[1])<=65){
+       weight=Number(combined[1]);
+       jockey=combined[2].replace(/\s+\d+\s*-\s*\d+\s*-\s*\d+\s*-\s*\d+\s*$/,'').trim();
+     }
+   }
    const currentText=currentStatusText(row,statusIndex),horseStatus=horseStatusFromText(currentText),statusText=horseStatus==='active'?'':currentText;out.push({horseNo:no,horseName:cleanText(name),weight,sexAge,jockey,trainer,...classifyHorseOrigin(trainer),rowHtml:row.raw,horseStatus,statusText,eligible:horseStatus==='active'});
  }
  const byNo=new Map();for(const x of out)if(!byNo.has(x.horseNo))byNo.set(x.horseNo,x);

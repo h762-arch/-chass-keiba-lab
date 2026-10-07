@@ -1,11 +1,12 @@
 const JRA_VENUES=new Set(['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉']);
 const NAR_JURISDICTIONS=new Set(['帯広','門別','盛岡','水沢','浦和','船橋','大井','川崎','金沢','笠松','名古屋','愛知','園田','姫路','高知','佐賀']);
+const NAR_AFFILIATIONS=new Set([...NAR_JURISDICTIONS,'兵庫']);
 
 export function classifyHorseOrigin(trainerCell=''){
   const raw=String(trainerCell||'').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/\s+/g,' ').trim();
   const affiliation=(raw.normalize('NFKC').match(/[（(]\s*([^()（）]+?)\s*[）)]/)?.[1]||'').trim();
   if(affiliation.toUpperCase()==='JRA')return {originOrganization:'JRA',originJurisdiction:'JRA',originSource:'trainer_affiliation',originConfidence:'confirmed'};
-  const local=[...NAR_JURISDICTIONS].find(x=>affiliation===x);
+  const local=[...NAR_AFFILIATIONS].find(x=>affiliation===x);
   if(local)return {originOrganization:'NAR',originJurisdiction:local,originSource:'trainer_affiliation',originConfidence:'confirmed'};
   return {originOrganization:'UNKNOWN',originJurisdiction:'UNKNOWN',originSource:'unknown',originConfidence:'unknown'};
 }
