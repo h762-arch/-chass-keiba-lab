@@ -12,6 +12,7 @@ import {runNarAppInitialShadowResearch as appSession,createNarShadowAppAcquire,N
 import {runNarInitialShadowSession as session} from '../src/research/nar-initial-shadow-session.mjs';
 import {observeNarSqlCommitResearch,saveNarCommitObservationResearch as saveObservation,readNarInitialAdmissionResearch as admission,verifyNarCommitObservationResearch} from '../src/research/nar-commit-admission.mjs';
 import {NAR_EARLY_RESEARCH_SCHEMA_SQL} from '../src/research/nar-early-sql-store.mjs';
+import {inspectNarInitialReadinessResearch as readiness} from '../src/research/nar-initial-readiness-research.mjs';
 const now=Date.parse('2026-10-07T03:00:00Z'),at=new Date(now).toISOString(),raceId='2026-10-07|園田|7',oldKey='nar-early:v1:'+raceId,bundleKey='nar-initial-research:v1:'+raceId;
 function canonical(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(canonical).join(',')+']';return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}'}
 function fp(v){let h=2166136261;const s=canonical(v);for(let i=0;i<s.length;i++)h=Math.imul(h^s.charCodeAt(i),16777619);return 'fnv1a32:'+(h>>>0).toString(16).padStart(8,'0')}
@@ -313,4 +314,41 @@ test('market rejection: external errors cannot impersonate internal market reaso
   const x=await capture({...args(f.db),acquire(){throw Error(message)}});assert.equal(x.reason,'CAPTURE_FAILED');assert.equal(x.status,'REJECTED');assert.ok(!JSON.stringify(x).includes('private transport detail'));
  }
  assert.equal(await storedText(f.db),undefined);
+});
+
+test('readiness: verified in-window local evidence lists unresolved policies without promoting or changing bytes',async t=>{
+ const f=await fixture(t),j=await journal(f.db);
+ await session({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,acquire:async()=>receipt()});
+ const before=await storedText(f.db),start=f.db.calls.length;
+ const x=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(x.status,'HOLD');assert.equal(x.checks.bundleIntegrity,'VERIFIED_LOCAL');assert.equal(x.checks.commitTiming,'OBSERVED_WITHIN_WINDOW');assert.equal(x.checks.frozenMarketCoverage,'VERIFIED_LOCAL');assert.equal(x.checks.insufficientAssessmentCount,4);assert.equal(x.checks.candidateSignalStatus,'WITHHELD');
+ assert.deepEqual(x.blockers,['SOURCE_AUTHENTICATION_UNVERIFIED','TRUSTED_DURABLE_TIME_UNVERIFIED','TRUSTED_TRANSACTION_IDENTITY_UNVERIFIED','SCENARIO_POLICY_UNAPPROVED','MARKET_POLICY_UNAPPROVED','STRONG_SUPPORT_POLICY_UNAPPROVED']);
+ assert.equal(x.formalKpiEligible,false);assert.equal(x.adopted,false);assert.equal(x.productionActivationReady,false);assert.ok(Object.isFrozen(x.checks.assessedHorseNos));assert.ok(Object.isFrozen(x.blockers));assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));assert.equal(await storedText(f.db),before);
+});
+test('readiness: missing commit evidence cannot be inferred from seal time or regenerated',async t=>{
+ const f=await fixture(t),j=await journal(f.db);await capture(args(f.db));const start=f.db.calls.length;
+ const x=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(x.status,'HOLD');assert.equal(x.checks.commitEvidence,'UNAVAILABLE');assert.equal(x.checks.commitTiming,'UNKNOWN');assert.ok(x.blockers.includes('COMMIT_EVIDENCE_MISSING'));assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+test('readiness: late observed commit remains HOLD and explicitly blocks readiness',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db));
+ await saveObservation({enabled:true,snapshot:x.snapshot,receiptStore:j,observation:{outcome:'RESOLVED',startedAt:now,returnedAt:now+60001}});
+ const y=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(y.status,'HOLD');assert.equal(y.checks.commitTiming,'OBSERVED_OUTSIDE_WINDOW');assert.ok(y.blockers.includes('COMMIT_OBSERVED_LATE'));assert.equal(y.productionActivationReady,false);
+});
+test('readiness: absent source has no fabricated positive checks',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(x.status,'MISSING');assert.equal(x.checks,null);assert.deepEqual(x.blockers,['INITIAL_SOURCE_MISSING']);assert.equal(x.formalKpiEligible,false);
+});
+test('readiness: corrupt evidence rejects without reporting successful checks or exposing stored text',async t=>{
+ const f=await fixture(t),j=await journal(f.db),x=await capture(args(f.db));
+ await f.db.run('INSERT INTO research_nar_commit_observations VALUES (?,?)',['nar-commit-observation:v1:'+raceId+':'+x.snapshot.contentSha256,'private corrupt evidence']);
+ const start=f.db.calls.length,y=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(y.status,'REJECTED');assert.equal(y.checks,null);assert.ok(!JSON.stringify(y).includes('private corrupt evidence'));assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('readiness: legacy EARLY is not reported as a verified initial market bundle',async t=>{
+ const f=await fixture(t),j=await journal(f.db),legacy=await freezeNarEarlySnapshot({raceId,record:receipt().record,now,freshAcquisition:true});
+ await f.db.run('INSERT INTO research_nar_early_snapshots VALUES (?,?)',[oldKey,JSON.stringify(legacy.snapshot)]);
+ const x=await readiness({store:store(f.db,'read-only'),receiptStore:j,raceId});
+ assert.equal(x.status,'HOLD');assert.equal(x.checks.sourceKind,'LEGACY_EARLY');assert.equal(x.checks.bundleIntegrity,'NOT_EVALUATED');assert.ok(x.blockers.includes('LEGACY_INITIAL_BUNDLE_UNCONFIRMED'));assert.equal(x.adopted,false);
 });
