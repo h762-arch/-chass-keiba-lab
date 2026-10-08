@@ -2,6 +2,7 @@ import {stableHash, assertMarketIndependentData} from '../prediction/precomputed
 import {calculateJraData} from '../prediction/jra-data-calculator.mjs';
 
 export const BRIDGE_VERSION = 'CHASS_PREDICTION_EVIDENCE_BRIDGE_V1';
+export const RETROSPECTIVE_BRIDGE_VERSION = 'CHASS_NAR_RETROSPECTIVE_EVIDENCE_V1';
 const copy = value => structuredClone(value);
 const text = value => typeof value === 'string' ? value.trim() : '';
 const number = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -26,12 +27,28 @@ function historyRun(row) {
 }
 
 // Inputs are bounded, offline connector exports. This module performs no network or DB IO.
-export async function createPredictionEvidenceSnapshot({raceId,runId,modelVersion,cutoffAt,offAt,source,
-  races,runners,history,identityMap} = {}) {
+export async function createPredictionEvidenceSnapshot(input = {}) {
+  return buildSnapshot(input, false);
+}
+
+// Deliberately separate from EARLY: late metadata never becomes pre-off evidence.
+export async function createNarRetrospectiveEvidenceSnapshot(input = {}) {
+  return buildSnapshot(input, true);
+}
+
+async function buildSnapshot({raceId,runId,modelVersion,cutoffAt,offAt,source,
+  races,runners,history,identityMap,replayEvidence} = {}, retrospective) {
   if (![raceId,runId,modelVersion].every(value => text(value))) fail('EXPLICIT_IDENTITY_VERSION_REQUIRED');
   if (!iso(cutoffAt) || !iso(offAt) || Date.parse(cutoffAt) >= Date.parse(offAt)) fail('PRE_OFF_CUTOFF_REQUIRED');
   if (!text(source?.spreadsheetId) || !text(source?.revision) || !iso(source?.exportedAt)) fail('SOURCE_PROVENANCE_REQUIRED');
-  if (!iso(source?.availableAt) || Date.parse(source.availableAt) > Date.parse(cutoffAt) || Date.parse(source.availableAt) > Date.parse(source.exportedAt)) fail('SOURCE_NOT_AVAILABLE_AT_CUTOFF');
+  if (retrospective) {
+    if (!iso(source?.availableAt) || Date.parse(source.availableAt) < Date.parse(offAt)
+      || !iso(replayEvidence?.observedAt) || Date.parse(replayEvidence.observedAt) < Date.parse(source.availableAt)
+      || Date.parse(replayEvidence.observedAt) > Date.parse(source.exportedAt)
+      || replayEvidence?.basis !== 'POST_RACE_IDENTITY_ONLY'
+      || !Array.isArray(replayEvidence?.refs) || !replayEvidence.refs.length
+      || replayEvidence.refs.some(ref => typeof ref !== 'string' || !/^https:\/\//.test(ref))) fail('RETROSPECTIVE_PROVENANCE_REQUIRED');
+  } else if (!iso(source?.availableAt) || Date.parse(source.availableAt) > Date.parse(cutoffAt) || Date.parse(source.availableAt) > Date.parse(source.exportedAt)) fail('SOURCE_NOT_AVAILABLE_AT_CUTOFF');
   // availableAt is an external declaration, never authenticated timing proof.
   const raceRows = rows(races,['CanonicalRace_ID','Org','RaceDate','Course','Surface','DistanceM']);
   const matching = raceRows.filter(item => item.data.CanonicalRace_ID === raceId);
@@ -39,6 +56,7 @@ export async function createPredictionEvidenceSnapshot({raceId,runId,modelVersio
   const race = matching[0].data;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(race.RaceDate || '') || !Number.isFinite(Date.parse(race.RaceDate))) fail('RACE_DATE_INVALID');
   if (!['JRA','NAR'].includes(race.Org)) fail('ORGANIZATION_INVALID');
+  if (retrospective && race.Org !== 'NAR') fail('NAR_RETROSPECTIVE_ONLY');
   const runnerRows = rows(runners,['CanonicalRace_ID','CanonicalHorse_Key','HorseNo','HorseName','CancelStatus']);
   const historyRows = rows(history,['CanonicalRace_ID','CanonicalHorse_Key','Run_No','PastRaceDate','Finish','DistanceM']);
   const selected = runnerRows.filter(item => item.data.CanonicalRace_ID === raceId);
@@ -80,9 +98,12 @@ export async function createPredictionEvidenceSnapshot({raceId,runId,modelVersio
   const data = {race:{date:race.RaceDate,racecourse:race.Course,surface:race.Surface,distance:number(race.DistanceM),trackCondition:race.TrackCondition_EARLY},horses};
   assertMarketIndependentData(data);
   if (!data.race.surface || !(data.race.distance > 0)) fail('RACE_FEATURES_MISSING');
-  const payload = {schemaVersion:BRIDGE_VERSION,raceId,runId,modelVersion,organization:race.Org,cutoffAt,offAt,
+  const payload = {schemaVersion:retrospective ? RETROSPECTIVE_BRIDGE_VERSION : BRIDGE_VERSION,raceId,runId,modelVersion,organization:race.Org,cutoffAt,offAt,
     source:copy(source),identities,data,evidence,researchOnly:true,formalKpiEligible:false,productionActivationReady:false,
     sourceAuthentication:'UNVERIFIED',trustedTiming:'UNVERIFIED',identityProof:'CALLER_DECLARED'};
+  if (retrospective) Object.assign(payload,{replayMode:'RETROSPECTIVE_ONLY',earlyEligible:false,
+    replayEvidence:{observedAt:replayEvidence.observedAt,basis:replayEvidence.basis,refs:copy(replayEvidence.refs)},
+    cutoffMeaning:'HISTORICAL_REFERENCE_NOT_AVAILABILITY_PROOF',featureAvailability:'UNVERIFIED_AT_HISTORICAL_CUTOFF'});
   return freeze({...payload,snapshotHash:await stableHash(payload)});
 }
 

@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {stableHash,assertMarketIndependentData} from '../prediction/precomputed-snapshot.mjs';
-import {BRIDGE_VERSION} from './prediction-evidence-bridge-v1.mjs';
+import {BRIDGE_VERSION,RETROSPECTIVE_BRIDGE_VERSION} from './prediction-evidence-bridge-v1.mjs';
 import {buildNarTimeTheory} from '../nar/nar-time-theory.mjs';
 
 const copy = value => structuredClone(value);
@@ -29,10 +29,30 @@ function historyTime(horse,race) {
     finish:r.finish,margin:r.margin,last3f:r.last3F,surface:r.surface}));
   return buildNarTimeTheory({runs,targetDistance:race.distance,targetTrack:race.racecourse});
 }
-export async function compareNarPredictionEvidence(snapshot,baseline,{indexPolicy}={}) {
-  if (snapshot?.schemaVersion !== BRIDGE_VERSION || snapshot.organization !== 'NAR') fail('NAR_SNAPSHOT_REQUIRED');
+export async function compareNarPredictionEvidence(snapshot,baseline,options={}) {
+  return compare(snapshot,baseline,options,false);
+}
+export async function compareNarRetrospectiveEvidence(snapshot,baseline,options={}) {
+  return compare(snapshot,baseline,options,true);
+}
+async function compare(snapshot,baseline,{indexPolicy}={},retrospective) {
+  if (snapshot?.schemaVersion !== (retrospective ? RETROSPECTIVE_BRIDGE_VERSION : BRIDGE_VERSION) || snapshot.organization !== 'NAR') fail('NAR_SNAPSHOT_REQUIRED');
   const {snapshotHash,...payload} = snapshot;
   if (await stableHash(payload) !== snapshotHash) fail('SNAPSHOT_HASH_MISMATCH');
+  if (retrospective) {
+    const valid = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+    const r=snapshot.replayEvidence;
+    if (snapshot.replayMode!=='RETROSPECTIVE_ONLY' || snapshot.earlyEligible!==false || snapshot.researchOnly!==true
+      || snapshot.formalKpiEligible!==false || snapshot.productionActivationReady!==false
+      || snapshot.cutoffMeaning!=='HISTORICAL_REFERENCE_NOT_AVAILABILITY_PROOF'
+      || snapshot.featureAvailability!=='UNVERIFIED_AT_HISTORICAL_CUTOFF'
+      || ![snapshot.cutoffAt,snapshot.offAt,snapshot.source?.availableAt,snapshot.source?.exportedAt,r?.observedAt].every(valid)
+      || Date.parse(snapshot.cutoffAt)>=Date.parse(snapshot.offAt)
+      || Date.parse(snapshot.source.availableAt)<Date.parse(snapshot.offAt)
+      || Date.parse(r.observedAt)<Date.parse(snapshot.source.availableAt) || Date.parse(r.observedAt)>Date.parse(snapshot.source.exportedAt)
+      || r.basis!=='POST_RACE_IDENTITY_ONLY' || !Array.isArray(r.refs) || !r.refs.length
+      || r.refs.some(ref=>typeof ref!=='string'||!/^https:\/\//.test(ref))) fail('RETROSPECTIVE_PROVENANCE_REQUIRED');
+  } else if (snapshot.replayMode !== undefined || snapshot.earlyEligible === false) fail('RETROSPECTIVE_CANNOT_USE_PRE_OFF_CONSUMER');
   if (baseline?.raceId !== snapshot.raceId || baseline?.runId !== snapshot.runId || baseline?.modelVersion !== snapshot.modelVersion) fail('BASELINE_IDENTITY_VERSION_MISMATCH');
   if (await stableHash(baseline.data?.race) !== await stableHash(snapshot.data.race)) fail('BASELINE_RACE_CONTEXT_MISMATCH');
   if (!TRACKS.has(snapshot.data.race.racecourse) || !/ダ/.test(snapshot.data.race.surface || '')) fail('NAR_TRACK_OR_SURFACE_UNSUPPORTED');
@@ -93,6 +113,7 @@ export async function compareNarPredictionEvidence(snapshot,baseline,{indexPolic
     item.stage=item.stages.at(-1);item.unusedReason=item.decisionUsed?null:'NO_OBSERVED_MODEL_OUTPUT_CHANGE';trace.push(item);
   }
   return {status:'COMPARED_SHADOW_ONLY',consumerVersion:'NAR_APP_EVIDENCE_CONSUMER_V1',appVersion:app.APP_VERSION,
+    ...(retrospective ? {replayMode:'RETROSPECTIVE_ONLY',earlyEligible:false,performanceClaim:'NONE',baselineMeaning:'CALLER_SUPPLIED_RESEARCH_BASELINE'} : {}),
     appSourceHash:await stableHash(source),snapshotHash,runId:snapshot.runId,modelVersion:snapshot.modelVersion,
     indexPolicyStatus:useIndex?'CALLER_DECLARED_RESEARCH_APPROVAL':'UNAPPROVED',before,after,outputHash,trace,
     changed:await stableHash(before)!==outputHash,researchOnly:true,formalKpiEligible:false,productionActivationReady:false,
