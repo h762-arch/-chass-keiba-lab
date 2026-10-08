@@ -8,6 +8,7 @@ import {createInterface} from 'node:readline';
 import {captureNarInitialResearchBundle as capture,readNarInitialResearchBundle as read} from '../src/research/nar-initial-research-bundle.mjs';
 import {freezeNarEarlySnapshot} from '../src/research/nar-early-freeze.mjs';
 import {createNarInitialSqlStore,NAR_INITIAL_RESEARCH_SCHEMA_SQL} from '../src/research/nar-initial-sql-store.mjs';
+import {runNarAppInitialShadowResearch as appSession,createNarShadowAppAcquire,NAR_SHADOW_WORKER_ORIGIN} from '../src/research/nar-shadow-app-source.mjs';
 import {runNarInitialShadowSession as session} from '../src/research/nar-initial-shadow-session.mjs';
 import {observeNarSqlCommitResearch,saveNarCommitObservationResearch as saveObservation,readNarInitialAdmissionResearch as admission,verifyNarCommitObservationResearch} from '../src/research/nar-commit-admission.mjs';
 import {NAR_EARLY_RESEARCH_SCHEMA_SQL} from '../src/research/nar-early-sql-store.mjs';
@@ -262,4 +263,36 @@ test('session: another valid bundle cannot receive the original insert observati
  const other=await capture({...args(replacement.db),acquire:async()=>{const r=receipt();r.record.predictionSnapshot.horses[0].predictedTime='1:34.0';r.record.snapshotIntegrity.hashes.predictionSnapshot=fp(r.record.predictionSnapshot);return r}});assert.equal(other.status,'CREATED');
  const different=await storedText(replacement.db),probe=commitProbe(f.db,async commit=>{await commit();await f.db.run('UPDATE research_nar_initial_bundles SET snapshot_json=?',[different])});
  const x=await session(sessionArgs(probe.db,j));assert.equal(x.captureStatus,'REJECTED');assert.equal(x.auditStatus,'TARGET_MISMATCH');assert.equal(x.status,'HOLD');assert.equal(x.reason,'COMMIT_EVIDENCE_MISSING');assert.equal(await storedText(f.db),different);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+
+function appPayload(){return {ok:true,raceSuccess:true,organization:'NAR',source:'NAR公式',code:'27',date:'2026-10-07',track:'園田',race:7,postTime:'13:50',distance:1400,surface:'ダート',trackCondition:'良',acquiredAt:at,oddsSnapshotType:'pre',horses:Array.from({length:9},(_,i)=>({horseNo:i+1,horseName:`試験馬${i+1}`,popularity:i+1,odds:5+i*3,abilityWinRate:20-i,abilityScore:80-i,dataConfidence:80,predictedTime:'1:33.5',predictedTimeType:'実績',predictedTimeConfidence:90,runningStyle:'先行・好位',features:{distanceFit:90,courseFit:88,evidence:{sameDistance:2,sameTrack:2}}})),odds:Array.from({length:9},(_,i)=>({horseNo:i+1,odds:5+i*3,popularity:i+1}))}}
+const appResponse=data=>({ok:true,status:200,json:async()=>data});
+test('app session: actual app computation feeds real SQLite source, audit and HOLD with one mocked Worker request',async t=>{
+ const f=await fixture(t),j=await journal(f.db),payload=appPayload(),before=structuredClone(payload),requests=[];
+ const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:(url,options)=>{requests.push({url,options});return appResponse(payload)}});
+ assert.equal(x.captureStatus,'CREATED');assert.equal(x.auditStatus,'CREATED');assert.equal(x.status,'HOLD');assert.equal(x.formalKpiEligible,false);assert.equal(x.admission.snapshot.sourceEarlySnapshot.data.predictionSnapshot.horses.length,9);assert.equal(x.admission.snapshot.assessments.length,4);
+ assert.equal(requests.length,1);assert.equal(requests[0].url,NAR_SHADOW_WORKER_ORIGIN+'/api/nar/race?code=27&date=2026-10-07&race=7');assert.equal(requests[0].options.cache,'no-store');assert.deepEqual(payload,before);
+});
+test('app source: server acquisition and delayed local receipt remain separate without time repair',async()=>{
+ let tick=now;const source=await createNarShadowAppAcquire({clock:()=>tick,fetchImpl:()=>{tick=now+1250;return appResponse(appPayload())}}),r=await source({raceId});
+ assert.equal(r.acquiredAt,at);assert.equal(r.record.race.narSourceAcquiredAt,at);assert.equal(r.receivedAt,new Date(now+1250).toISOString());assert.notEqual(r.acquiredAt,r.receivedAt);
+});
+test('app session: delayed response can save source time intact and journal local COMMIT observation',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let tick=now;
+ const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>tick,fetchImpl:()=>{tick=now+1250;return appResponse(appPayload())}});
+ assert.equal(x.captureStatus,'CREATED');assert.equal(x.status,'HOLD');assert.equal(x.admission.snapshot.acquiredAt,at);assert.equal(x.admission.receipt.observation.returnedAt,now+1250);
+});
+test('app session: OFF and reopened first data bypass app fetch entirely',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let calls=0;const options={enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:()=>{calls++;return appResponse(appPayload())}};
+ assert.equal((await appSession({...options,enabled:false})).status,'DISABLED');assert.equal(calls,0);await appSession(options);const raw=await storedText(f.db);await f.db.close();const db=f.connection(),start=db.calls.length;
+ const x=await appSession({...options,db,receiptStore:journalReader(db),clock:()=>now+12*3600000,fetchImpl(){assert.fail()}});assert.equal(x.captureStatus,'NOT_RUN');assert.equal(x.status,'HOLD');assert.equal(calls,1);assert.equal(await storedText(db),raw);assert.ok(db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('app session: HTTP failure makes one request, no diagnostic/result fallback and no stored rows',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let calls=0;const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:()=>{calls++;return {ok:false,status:503,json:async()=>({errorCode:'nar_temporary',error:'fixture'})}}});assert.equal(x.status,'REJECTED');assert.equal(calls,1);assert.equal(await storedText(f.db),undefined);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+test('app session: prior-to-request source time and incomplete market are rejected without retimestamping',async t=>{
+ for(const change of [p=>{p.acquiredAt=new Date(now-1).toISOString()},p=>{p.odds=[];p.horses.forEach(h=>{h.odds=null;h.popularity=null})}]){
+  const f=await fixture(t),j=await journal(f.db),payload=appPayload();change(payload);const before=structuredClone(payload);
+  const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:()=>appResponse(payload)});assert.equal(x.status,'REJECTED');assert.equal(await storedText(f.db),undefined);assert.deepEqual(payload,before);
+ }
 });
