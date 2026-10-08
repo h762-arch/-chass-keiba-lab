@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import {stableHash,assertMarketIndependentData} from '../prediction/precomputed-snapshot.mjs';
 import {BRIDGE_VERSION,RETROSPECTIVE_BRIDGE_VERSION} from './prediction-evidence-bridge-v1.mjs';
 import {buildNarTimeTheory} from '../nar/nar-time-theory.mjs';
+import {buildNarHistoryInterpretation,NAR_HISTORY_INTERPRETATION_VERSION} from './nar-history-interpretation-v1.mjs';
 
 const copy = value => structuredClone(value);
 const integer = value => Number.isInteger(value) && value > 0;
@@ -93,7 +94,8 @@ async function compare(snapshot,baseline,{indexPolicy}={},retrospective) {
     const result=ready?vm.runInContext('window.CHASS_TEST.transform(__bridgeInput)',context,{timeout:2000}):null;
     return {horses:result?JSON.parse(JSON.stringify(result.horses.map(h=>({horseNo:h.horseNo,horseName:h.horseName,
       win:h.win,place:h.place,overall:h.overall,abilityMark:h.abilityMark})))):projected.horses.map(h=>({horseNo:h.horseNo,horseName:h.horseName,win:null,place:null,overall:null,abilityMark:'',reason:'ABILITY_INDEX_INSUFFICIENT'})),
-      time:data.horses.map(h=>({horseNo:h.horseNo,theory:historyTime(h,data.race)}))};
+      time:data.horses.map(h=>({horseNo:h.horseNo,theory:historyTime(h,data.race)})),
+      historyInterpretation:data.horses.map(h=>buildNarHistoryInterpretation({race:data.race,horse:h}))};
   };
   const before=calculate(input),after=calculate(candidate),outputHash=await stableHash(after);
   const trace=[];
@@ -108,14 +110,22 @@ async function compare(snapshot,baseline,{indexPolicy}={},retrospective) {
     item.affectedOutputs=[];
     if (await stableHash(without.horses)!==await stableHash(after.horses)) item.affectedOutputs.push('PROBABILITY_OR_ABILITY_MARK');
     if (await stableHash(without.time)!==await stableHash(after.time)) item.affectedOutputs.push('TIME_RESEARCH');
-    item.stages.push('INTERPRETED','PROPAGATED','COMPARED');item.decisionUsed=item.affectedOutputs.length>0;
+    item.interpretationUsed=await stableHash(without.historyInterpretation)!==await stableHash(after.historyInterpretation);
+    if(item.interpretationUsed)item.affectedOutputs.push('HISTORY_INTERPRETATION');
+    // Explanatory changes alone never count as use by the probability/mark/TIME model.
+    item.stages.push('INTERPRETED','PROPAGATED','COMPARED');item.decisionUsed=item.affectedOutputs.some(output=>output!=='HISTORY_INTERPRETATION');
     if(item.decisionUsed)item.stages.push('DECISION_USED');
-    item.stage=item.stages.at(-1);item.unusedReason=item.decisionUsed?null:'NO_OBSERVED_MODEL_OUTPUT_CHANGE';trace.push(item);
+    item.stage=item.stages.at(-1);item.unusedReason=item.decisionUsed?null:item.interpretationUsed?'EXPLANATION_ONLY_NOT_PREDICTION_DRIVER':'NO_OBSERVED_MODEL_OUTPUT_CHANGE';trace.push(item);
   }
   return {status:'COMPARED_SHADOW_ONLY',consumerVersion:'NAR_APP_EVIDENCE_CONSUMER_V1',appVersion:app.APP_VERSION,
     ...(retrospective ? {replayMode:'RETROSPECTIVE_ONLY',earlyEligible:false,performanceClaim:'NONE',baselineMeaning:'CALLER_SUPPLIED_RESEARCH_BASELINE'} : {}),
     appSourceHash:await stableHash(source),snapshotHash,runId:snapshot.runId,modelVersion:snapshot.modelVersion,
     indexPolicyStatus:useIndex?'CALLER_DECLARED_RESEARCH_APPROVAL':'UNAPPROVED',before,after,outputHash,trace,
+    historyInterpretationVersion:NAR_HISTORY_INTERPRETATION_VERSION,
+    historyInterpretationStatus:'RESEARCH_EXPLANATION_NOT_PREDICTION_DRIVER',
+    predictionChanged:await stableHash(before.horses)!==await stableHash(after.horses),
+    timeChanged:await stableHash(before.time)!==await stableHash(after.time),
+    interpretationChanged:await stableHash(before.historyInterpretation)!==await stableHash(after.historyInterpretation),
     changed:await stableHash(before)!==outputHash,researchOnly:true,formalKpiEligible:false,productionActivationReady:false,
     probabilityStatus:'EXISTING_MODEL_UNCALIBRATED',markStatus:'EXISTING_ABILITY_MARK_SHADOW_ONLY',
     signalStatus:'NOT_GENERATED',freezeMutation:'NONE',signalMutation:'NONE'};
