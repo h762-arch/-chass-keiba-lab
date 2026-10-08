@@ -296,3 +296,21 @@ test('app session: prior-to-request source time and incomplete market are reject
   const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:()=>appResponse(payload)});assert.equal(x.status,'REJECTED');assert.equal(await storedText(f.db),undefined);assert.deepEqual(payload,before);
  }
 });
+
+test('market rejection: provisional app Signal reports explicit reason with no bundle, audit or COMMIT',async t=>{
+ const f=await fixture(t),j=await journal(f.db),payload=appPayload();payload.odds=[];payload.horses.forEach(h=>{h.odds=null;h.popularity=null});const start=f.db.calls.length;
+ const x=await appSession({enabled:true,db:f.db,receiptStore:j,raceId,clock:()=>now,fetchImpl:()=>appResponse(payload)});
+ assert.equal(x.status,'REJECTED');assert.equal(x.reason,'MARKET_ELIGIBILITY_INVALID');assert.equal(x.captureStatus,'REJECTED');assert.equal(x.auditStatus,'NOT_RUN');assert.equal(x.commitObservationCount,0);assert.equal(await storedText(f.db),undefined);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);assert.ok(!f.db.calls.slice(start).includes('COMMIT'));
+});
+test('market rejection: incomplete, duplicate, zero-odds or invalid rank remains rejected before storage',async t=>{
+ for(const mutate of [r=>r.record.marketSnapshot.signalSnapshot.horses.pop(),r=>r.record.marketSnapshot.signalSnapshot.horses[1].horseNo=1,r=>r.record.marketSnapshot.signalSnapshot.horses[0].oddsAtFreeze=0,r=>r.record.marketSnapshot.signalSnapshot.horses[0].popularityAtFreeze=0]){
+  const f=await fixture(t),r=receipt();mutate(r);const x=await capture({...args(f.db),acquire:async()=>r});assert.equal(x.status,'REJECTED');assert.equal(x.reason,'MARKET_ELIGIBILITY_INVALID');assert.equal(await storedText(f.db),undefined);assert.ok(!f.db.calls.includes('COMMIT'));
+ }
+});
+test('market rejection: external errors cannot impersonate internal market reason or expose private details',async t=>{
+ const f=await fixture(t);
+ for(const message of ['MARKET_ELIGIBILITY_INVALID','private transport detail']){
+  const x=await capture({...args(f.db),acquire(){throw Error(message)}});assert.equal(x.reason,'CAPTURE_FAILED');assert.equal(x.status,'REJECTED');assert.ok(!JSON.stringify(x).includes('private transport detail'));
+ }
+ assert.equal(await storedText(f.db),undefined);
+});

@@ -9,11 +9,12 @@ function canonical(v){if(v===null||['string','boolean'].includes(typeof v))retur
 async function digest(v){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(v)));return [...new Uint8Array(h)].map(n=>n.toString(16).padStart(2,'0')).join('')}
 const keyFor=id=>typeof id==='string'&&/^\d{4}-\d{2}-\d{2}\|[^|]+\|[1-9]\d?$/.test(id)?'nar-initial-research:v1:'+id:null;
 function recordFor(source){const d=source.data;return {race:d.race,predictionSnapshot:d.predictionSnapshot,marketSnapshot:d.marketSnapshot,finalSnapshot:d.finalSnapshot,snapshotIntegrity:d.sourceIntegrity}}
+class MarketEligibilityError extends Error{}
 function eligible(source){
  const horses=source.predictionSnapshot.horses,signal=source.marketSnapshot?.signalSnapshot;
- if(signal?.status!=='frozen'||!Array.isArray(signal.horses)||signal.horses.length!==horses.length)throw Error('MARKET_ELIGIBILITY_INVALID');
+ if(signal?.status!=='frozen'||!Array.isArray(signal.horses)||signal.horses.length!==horses.length)throw new MarketEligibilityError();
  const seen=new Set(),out=[];
- for(const h of signal.horses){if(!Number.isInteger(h.horseNo)||seen.has(h.horseNo)||!horses.some(x=>x.horseNo===h.horseNo)||!Number.isInteger(h.popularityAtFreeze)||h.popularityAtFreeze<1||h.popularityAtFreeze>horses.length||typeof h.oddsAtFreeze!=='number'||!Number.isFinite(h.oddsAtFreeze)||h.oddsAtFreeze<=0)throw Error('MARKET_ELIGIBILITY_INVALID');seen.add(h.horseNo);if(h.popularityAtFreeze>=6)out.push(h.horseNo)}
+ for(const h of signal.horses){if(!Number.isInteger(h.horseNo)||seen.has(h.horseNo)||!horses.some(x=>x.horseNo===h.horseNo)||!Number.isInteger(h.popularityAtFreeze)||h.popularityAtFreeze<1||h.popularityAtFreeze>horses.length||typeof h.oddsAtFreeze!=='number'||!Number.isFinite(h.oddsAtFreeze)||h.oddsAtFreeze<=0)throw new MarketEligibilityError();seen.add(h.horseNo);if(h.popularityAtFreeze>=6)out.push(h.horseNo)}
  return out.sort((a,b)=>a-b);
 }
 async function evaluate(record,receiptAt,at){
@@ -72,5 +73,5 @@ export async function captureNarInitialResearchBundle({enabled=false,store,raceI
   const read=await readNarInitialResearchBundle({store,raceId});if(read.status==='MISSING')return reject('STORE_READBACK_MISSING');if(read.status!=='PRESERVED')return read;
   if(inserted&&(read.kind!=='INITIAL_RESEARCH'||read.snapshot.contentSha256!==snapshot.contentSha256))return reject('STORE_READBACK_MISMATCH');
   return freeze({...read,status:inserted?'CREATED':'PRESERVED'});
- }catch{return reject('CAPTURE_FAILED')}
+ }catch(error){return reject(error instanceof MarketEligibilityError?'MARKET_ELIGIBILITY_INVALID':'CAPTURE_FAILED')}
 }
