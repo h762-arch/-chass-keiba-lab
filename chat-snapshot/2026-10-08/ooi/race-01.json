@@ -6,14 +6,14 @@
   "trackSlug": "ooi",
   "organization": "NAR",
   "freshness": {
-    "latestPredictionAt": "2026-10-07T16:07:07.039Z",
-    "latestOddsAt": "2026-10-07T16:07:07.039Z",
-    "latestResultAt": null
+    "latestPredictionAt": "2026-10-08T08:18:12.704Z",
+    "latestOddsAt": "2026-10-08T08:18:12.670Z",
+    "latestResultAt": "2026-10-08T11:20:51.771Z"
   },
   "diagnostics": {
     "marketTextAvailable": true,
-    "marketHorseCount": 0,
-    "staleMarketHorseCount": 0,
+    "marketHorseCount": 42,
+    "staleMarketHorseCount": 42,
     "unavailableMarketHorseCount": 11,
     "identityMismatchCount": 0,
     "abilityOnlyFallback": false
@@ -23,7 +23,7 @@
     "raceName": "３歳一 二",
     "surface": "ダート",
     "distance": 1600,
-    "going": "不明",
+    "going": "良",
     "startTime": "14:30",
     "horseCount": 11,
     "raceVolatility": 13,
@@ -33,7 +33,7 @@
     "timestamps": {
       "predictionAt": "2026-10-07T16:07:07.039Z",
       "oddsAt": "2026-10-07T16:07:07.039Z",
-      "resultAt": null
+      "resultAt": "2026-10-08T08:17:16.025Z"
     },
     "horses": [
       {
