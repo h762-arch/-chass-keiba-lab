@@ -8,6 +8,7 @@ import {createInterface} from 'node:readline';
 import {captureNarInitialResearchBundle as capture,readNarInitialResearchBundle as read} from '../src/research/nar-initial-research-bundle.mjs';
 import {freezeNarEarlySnapshot} from '../src/research/nar-early-freeze.mjs';
 import {createNarInitialSqlStore,NAR_INITIAL_RESEARCH_SCHEMA_SQL} from '../src/research/nar-initial-sql-store.mjs';
+import {runNarInitialShadowSession as session} from '../src/research/nar-initial-shadow-session.mjs';
 import {observeNarSqlCommitResearch,saveNarCommitObservationResearch as saveObservation,readNarInitialAdmissionResearch as admission,verifyNarCommitObservationResearch} from '../src/research/nar-commit-admission.mjs';
 import {NAR_EARLY_RESEARCH_SCHEMA_SQL} from '../src/research/nar-early-sql-store.mjs';
 const now=Date.parse('2026-10-07T03:00:00Z'),at=new Date(now).toISOString(),raceId='2026-10-07|園田|7',oldKey='nar-early:v1:'+raceId,bundleKey='nar-initial-research:v1:'+raceId;
@@ -203,4 +204,62 @@ test('admission: concurrent independent journal connections preserve one first o
  const [a,b]=await Promise.all([saveObservation({enabled:true,snapshot:x.snapshot,observation:observed,receiptStore:j}),saveObservation({enabled:true,snapshot:x.snapshot,observation:{outcome:'UNOBSERVED',startedAt:null,returnedAt:null},receiptStore:j2})]);
  assert.deepEqual([a.status,b.status].sort(),['CREATED','PRESERVED']);assert.equal(a.receipt.contentSha256,b.receipt.contentSha256);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,1);assert.equal(await storedText(f.db),raw);
  await f.db.run('UPDATE research_nar_commit_observations SET snapshot_json=?',['invalid json']);const start=f.db.calls.length;assert.equal((await gate(f.db,j)).reason,'OBSERVATION_UNREADABLE');assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+
+const sessionArgs=(db,j)=>({enabled:true,db,receiptStore:j,raceId,clock:()=>now,acquire:async()=>receipt()});
+test('session: disabled and invalid contracts perform no SQL or acquisition',async()=>{
+ const forbidden={exec(){assert.fail()},first(){assert.fail()},run(){assert.fail()}};
+ assert.equal((await session({db:forbidden,acquire(){assert.fail()}})).status,'DISABLED');
+ assert.equal((await session({enabled:true,db:{},acquire(){assert.fail()}})).status,'REJECTED');
+});
+test('session: one fresh capture binds commit evidence and restart becomes SELECT-only HOLD',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let acquisitions=0;
+ const x=await session({...sessionArgs(f.db,j),acquire:async()=>{acquisitions++;return receipt()}});
+ assert.equal(x.status,'HOLD');assert.equal(x.captureStatus,'CREATED');assert.equal(x.auditStatus,'CREATED');assert.equal(x.commitObservationCount,1);
+ assert.equal(x.admission.timing,'OBSERVED_WITHIN_WINDOW');assert.equal(x.formalKpiEligible,false);assert.equal(x.adopted,false);assert.equal(acquisitions,1);
+ const raw=await storedText(f.db),evidence=(await f.db.first('SELECT snapshot_json FROM research_nar_commit_observations')).snapshot_json;
+ await f.db.close();const db=f.connection(),start=db.calls.length,y=await session({...sessionArgs(db,journalReader(db)),clock:()=>now+12*3600000,acquire(){assert.fail()}});
+ assert.equal(y.status,'HOLD');assert.equal(y.captureStatus,'NOT_RUN');assert.equal(y.auditStatus,'NOT_RUN');assert.equal(await storedText(db),raw);assert.equal((await db.first('SELECT snapshot_json FROM research_nar_commit_observations')).snapshot_json,evidence);assert.ok(db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('session: late COMMIT is automatically journaled and retained as late HOLD',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let tick=now;
+ const probe=commitProbe(f.db,async commit=>{tick=now+60001;return commit()});
+ const x=await session({...sessionArgs(probe.db,j),clock:()=>tick});assert.equal(x.captureStatus,'CREATED');assert.equal(x.auditStatus,'CREATED');assert.equal(x.reason,'COMMIT_OBSERVED_LATE');assert.equal(x.status,'HOLD');assert.ok(await storedText(f.db));
+});
+test('session: lost acknowledgement keeps committed content and records unknown evidence',async t=>{
+ const f=await fixture(t),j=await journal(f.db),probe=commitProbe(f.db,async commit=>{await commit();throw Error('lost ack')});
+ const x=await session(sessionArgs(probe.db,j));assert.equal(x.captureStatus,'REJECTED');assert.equal(x.auditStatus,'CREATED');assert.equal(x.status,'HOLD');assert.equal(x.reason,'COMMIT_TIMING_UNCONFIRMED');assert.equal(x.admission.receipt.observation.outcome,'REJECTED');assert.ok(await storedText(f.db));
+});
+test('session: pre-COMMIT failure rolls back and cannot manufacture an audit receipt',async t=>{
+ const f=await fixture(t),j=await journal(f.db),probe=commitProbe(f.db,async()=>{throw Error('before commit')});
+ const x=await session(sessionArgs(probe.db,j));assert.equal(x.status,'REJECTED');assert.equal(x.captureStatus,'REJECTED');assert.equal(x.auditStatus,'SOURCE_UNCONFIRMED');assert.equal(await storedText(f.db),undefined);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+test('session: failed journal write preserves data and later session does not invent evidence',async t=>{
+ const f=await fixture(t),j=await journal(f.db),broken={...j,insertIfAbsent(){throw Error('journal unavailable')}};
+ const x=await session(sessionArgs(f.db,broken));assert.equal(x.status,'HOLD');assert.equal(x.auditStatus,'REJECTED');assert.equal(x.reason,'COMMIT_EVIDENCE_MISSING');const raw=await storedText(f.db),start=f.db.calls.length;
+ const y=await session({...sessionArgs(f.db,j),acquire(){assert.fail()}});assert.equal(y.status,'HOLD');assert.equal(y.auditStatus,'NOT_RUN');assert.equal(await storedText(f.db),raw);assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+test('session: winner from another connection is never assigned the losing capture event',async t=>{
+ const f=await fixture(t),j=await journal(f.db),other=f.connection();let winner;
+ const x=await session({...sessionArgs(f.db,j),acquire:async()=>{winner=await capture(args(other));return receipt()}});
+ assert.equal(winner.status,'CREATED');assert.equal(x.captureStatus,'PRESERVED');assert.equal(x.commitObservationCount,0);assert.equal(x.auditStatus,'NOT_RUN');assert.equal(x.reason,'COMMIT_EVIDENCE_MISSING');assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+test('session: same dedicated connection serializes callers into one acquisition and one receipt',async t=>{
+ const f=await fixture(t),j=await journal(f.db);let acquisitions=0;const inputs={...sessionArgs(f.db,j),acquire:async()=>{acquisitions++;return receipt()}};
+ const [a,b]=await Promise.all([session(inputs),session(inputs)]);assert.equal(acquisitions,1);assert.deepEqual([a.captureStatus,b.captureStatus],['CREATED','NOT_RUN']);assert.equal(a.status,'HOLD');assert.equal(b.status,'HOLD');assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,1);
+});
+test('session: post-COMMIT source corruption rejects without attaching or repairing receipt',async t=>{
+ const f=await fixture(t),j=await journal(f.db),probe=commitProbe(f.db,async commit=>{await commit();await f.db.run('UPDATE research_nar_initial_bundles SET snapshot_json=?',['corrupted']);});
+ const x=await session(sessionArgs(probe.db,j));assert.equal(x.status,'REJECTED');assert.equal(x.auditStatus,'SOURCE_UNCONFIRMED');assert.equal(await storedText(f.db),'corrupted');assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
+});
+test('session: legacy first EARLY stays HOLD without acquisition or new audit namespace access',async t=>{
+ const f=await fixture(t),legacy=await freezeNarEarlySnapshot({raceId,record:receipt().record,now,freshAcquisition:true});await f.db.run('INSERT INTO research_nar_early_snapshots VALUES (?,?)',[oldKey,JSON.stringify(legacy.snapshot)]);const start=f.db.calls.length;
+ const x=await session({...sessionArgs(f.db,{get(){assert.fail()},insertIfAbsent(){assert.fail()}}),acquire(){assert.fail()}});assert.equal(x.status,'HOLD');assert.equal(x.reason,'LEGACY_TIMING_UNCONFIRMED');assert.equal(x.captureStatus,'NOT_RUN');assert.ok(f.db.calls.slice(start).every(sql=>sql.startsWith('SELECT')));
+});
+
+test('session: another valid bundle cannot receive the original insert observation',async t=>{
+ const f=await fixture(t),j=await journal(f.db),replacement=await fixture(t);
+ const other=await capture({...args(replacement.db),acquire:async()=>{const r=receipt();r.record.predictionSnapshot.horses[0].predictedTime='1:34.0';r.record.snapshotIntegrity.hashes.predictionSnapshot=fp(r.record.predictionSnapshot);return r}});assert.equal(other.status,'CREATED');
+ const different=await storedText(replacement.db),probe=commitProbe(f.db,async commit=>{await commit();await f.db.run('UPDATE research_nar_initial_bundles SET snapshot_json=?',[different])});
+ const x=await session(sessionArgs(probe.db,j));assert.equal(x.captureStatus,'REJECTED');assert.equal(x.auditStatus,'TARGET_MISMATCH');assert.equal(x.status,'HOLD');assert.equal(x.reason,'COMMIT_EVIDENCE_MISSING');assert.equal(await storedText(f.db),different);assert.equal((await f.db.first('SELECT count(*) AS n FROM research_nar_commit_observations')).n,0);
 });
