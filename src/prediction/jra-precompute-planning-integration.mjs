@@ -8,13 +8,14 @@ import {selectJraPrecomputeCacheJobs} from './jra-precompute-cache-job-selection
 import {runBoundedPrecomputeJobs} from './precompute-execution-budget.mjs';
 import {createIsolatedJraDataRaceRunner} from './jra-data-race-runner-adapter.mjs';
 import {readLatestPrecomputedSnapshot,savePrecomputedSnapshot} from './precomputed-store.mjs';
+import {createJraPrecomputedMarketBridge} from './jra-precomputed-market-bridge.mjs';
 
 // Isolated orchestration. No Worker/scheduled entrypoint imports this module.
 // Planning owns exactly one read of each inspected SOURCE/latest pair; the
 // selector and runner consume those captured values, never a second read.
 export function createJraPrecomputePlanningIntegration({
  DB,sourceMode,maxPlanningJobs,maxJobs,planningDeadline,executionDeadline,
- now,versions,cryptoImpl,
+ now,versions,cryptoImpl,marketBridgeEnabled=false,
  readLatest=readLatestPrecomputedSnapshot,saveSnapshot=savePrecomputedSnapshot
 }={}){
  if(!DB||typeof DB.prepare!=='function')throw new TypeError('invalid_jra_precompute_db');
@@ -102,6 +103,11 @@ export function createJraPrecomputePlanningIntegration({
    organization:'JRA',jobs:selection.selected.map(row=>row.job),
    runner:raceRunner,deadline:executionDeadline,now:wallNow
   });
+  // A separate pass includes unchanged DATA jobs, which DATA selection skips.
+  const marketExecution=marketBridgeEnabled===true?await runBoundedPrecomputeJobs({
+   organization:'JRA',jobs:inspectedJobs.slice(0,maxJobs),deadline:executionDeadline,now:wallNow,
+   runner:createJraPrecomputedMarketBridge({DB,now:wallNow,deadline:executionDeadline,cryptoImpl})
+  }):Object.freeze({status:'DISABLED'});
   // No SOURCE or snapshot payload escapes the invocation.
   return Object.freeze({
    organization:'JRA',targetDate,selectionTurn,discoveredCount:jobs.length,
@@ -113,7 +119,7 @@ export function createJraPrecomputePlanningIntegration({
     deferredJobs:Object.freeze(selection.deferred.map(row=>row.job)),
     unavailable:selection.unavailable,eligibleCount:selection.eligibleCount,
     selectedCount:selection.selectedCount
-   }),execution
+   }),execution,marketExecution
   });
  };
 }
