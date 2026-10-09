@@ -6,6 +6,12 @@ function validJob(job){
   Number.isInteger(job.raceNo)&&job.raceId===raceJobKey(job);}catch{return false;}
 }
 
+function rotateBucket(items,selectionTurn){
+ if(!items.length)return [];
+ const offset=selectionTurn%items.length;
+ return items.slice(offset).concat(items.slice(0,offset));
+}
+
 // Isolated planning only: no Worker, scheduler, network or snapshot writes.
 // selected[].source is the exact validated payload to hand to the eventual
 // runner; do not silently re-read a changed cache row after selection.
@@ -43,12 +49,13 @@ export async function selectJraPrecomputeCacheJobs({jobs,maxJobs,selectionTurn,l
  eligible.sort((a,b)=>Number(a.calculated)-Number(b.calculated)||
   (a.validatedAt??-Infinity)-(b.validatedAt??-Infinity)||
   (a.job.raceId<b.job.raceId?-1:a.job.raceId>b.job.raceId?1:0));
- // Explicit caller-owned turn is needed: a repeatedly failing uncomputed job
- // has no successful snapshot timestamp, so a static priority sort starves peers.
- // Rotate the priority-sorted queue once per scheduling turn. The caller must
- // pass a monotonically changing turn; this module does not own scheduling.
- const offset=eligible.length?selectionTurn%eligible.length:0;
- const rotated=eligible.slice(offset).concat(eligible.slice(0,offset));
+ // Keep the primary invariant intact: every uncalculated exact SOURCE/version
+ // must stay ahead of every already-calculated candidate. Rotate only inside
+ // each priority bucket so a repeatedly failing uncalculated job cannot starve
+ // its uncalculated peers, without allowing a calculated revisit to jump them.
+ const uncalculated=eligible.filter(item=>!item.calculated);
+ const calculated=eligible.filter(item=>item.calculated);
+ const rotated=rotateBucket(uncalculated,selectionTurn).concat(rotateBucket(calculated,selectionTurn));
  return Object.freeze({
   selected:Object.freeze(rotated.slice(0,maxJobs)),
   deferred:Object.freeze(rotated.slice(maxJobs)),
