@@ -3,6 +3,7 @@ import {RETROSPECTIVE_BRIDGE_VERSION} from './prediction-evidence-bridge-v1.mjs'
 import {compareNarPredictionEvidence,compareNarRetrospectiveEvidence} from './nar-prediction-evidence-consumer-v1.mjs';
 import {buildNarMultiAngleComparison} from './nar-multi-angle-comparison-v1.mjs';
 import {buildNarClassContextReview} from './nar-class-context-review-v1.mjs';
+import {auditNarSummaryMetrics} from './nar-summary-metric-audit-v1.mjs';
 
 export const NAR_PREDICTION_REVIEW_VERSION='NAR_PREDICTION_REVIEW_V1';
 const copy=v=>structuredClone(v);
@@ -26,6 +27,8 @@ export async function reviewNarPredictionEvidence(snapshot,baseline,options={}){
   const comparison=await (retrospective?compareNarRetrospectiveEvidence:compareNarPredictionEvidence)(snapshot,baseline,options);
   const dossier=await buildNarMultiAngleComparison(snapshot,comparison);
   const classReview=await buildNarClassContextReview(snapshot,comparison,dossier);
+  // Recompute arithmetic provenance instead of trusting a caller-supplied audit.
+  const summaryMetricAudit=snapshot.supplementalResearch?await auditNarSummaryMetrics(snapshot):null;
   const rows=snapshot.data.horses.filter(h=>h.runningStatus==='active').slice().sort((a,b)=>a.horseNo-b.horseNo).map(h=>{
     const features=comparison.trace.filter(t=>t.horseKey===h.horseKey).map(usage);
     const before=comparison.before.horses.find(o=>o.horseNo===h.horseNo),after=comparison.after.horses.find(o=>o.horseNo===h.horseNo);
@@ -33,6 +36,20 @@ export async function reviewNarPredictionEvidence(snapshot,baseline,options={}){
     const pairs=dossier.pairs.filter(p=>p.a.horseKey===h.horseKey||p.b.horseKey===h.horseKey);
     const questions=classReview.questions.filter(q=>q.pair.includes(h.horseKey));
     const gaps=[];
+    const metricRow=summaryMetricAudit?.rows.find(r=>r.horseKey===h.horseKey);
+    const summaryReconciliation=metricRow?{
+      auditHash:summaryMetricAudit.auditHash,snapshotHash:summaryMetricAudit.snapshotHash,
+      policy:summaryMetricAudit.policy,precisionPolicy:summaryMetricAudit.sourcePrecisionPolicy,
+      status:metricRow.status,metrics:copy(metricRow.metrics),
+      arithmeticMatches:metricRow.metrics.filter(m=>m.status==='MATCH_UNDER_AUDIT_POLICY').map(m=>m.field),
+      modelUse:'NOT_VALIDATED',meaning:'NUMERIC_MATCH_UNDER_EXPLICIT_POLICY_NOT_PREDICTIVE_EVIDENCE'
+    }:null;
+    const metricGapCodes={RAW_INCOMPLETE:'SUMMARY_RAW_INCOMPLETE',NO_RAW_SAMPLE:'SUMMARY_NO_RAW_SAMPLE',
+      UNVERIFIED_DEFINITION_OR_CONDITION:'SUMMARY_DEFINITION_OR_CONDITION_UNVERIFIED',
+      MISMATCH_UNDER_AUDIT_POLICY:'SUMMARY_NUMERIC_MISMATCH',SOURCE_MISSING_OR_NONNUMERIC:'SUMMARY_SOURCE_MISSING_OR_NONNUMERIC'};
+    if(metricRow?.status==='SUMMARY_MISSING')gaps.push({code:'SUMMARY_ROW_MISSING',family:'FORM_RESEARCH'});
+    for(const m of metricRow?.metrics??[])if(metricGapCodes[m.status])gaps.push({code:metricGapCodes[m.status],family:'FORM_RESEARCH',
+      field:m.field,status:m.status,refs:copy(m.refs)});
     for(const f of features){
       if(!f.sourceAvailable)gaps.push({code:'SOURCE_FACTOR_MISSING',family:f.family,refs:copy(f.sourceRefs)});
       else if(f.reason==='CONSUMER_MAPPING_UNSUPPORTED_OR_MISSING')gaps.push({code:'SOURCE_FACTOR_NOT_MAPPED',family:f.family,refs:copy(f.sourceRefs)});
@@ -43,7 +60,7 @@ export async function reviewNarPredictionEvidence(snapshot,baseline,options={}){
     return {horseKey:h.horseKey,horseNo:h.horseNo,horseName:h.horseName,
       existingModel:{before:copy(before),after:copy(after),probabilityStatus:comparison.probabilityStatus,
         markStatus:comparison.markStatus,meaning:'EXISTING_MODEL_SHADOW_OUTPUT_NOT_REVISED_FINAL_PREDICTION'},
-      features,historyInterpretation:copy(history),timeResearch:copy(comparison.after.time.find(o=>o.horseNo===h.horseNo)),
+      features,...(summaryReconciliation?{summaryReconciliation}:{}),historyInterpretation:copy(history),timeResearch:copy(comparison.after.time.find(o=>o.horseNo===h.horseNo)),
       pairCoverage:{total:pairs.length,withSharedHistoricalContext:pairs.filter(p=>p.contexts.length).length},
       counterReview:{questionIndices:questions.map(q=>q.questionIndex),questions:copy(questions),
         missingSharedClassLabel:questions.filter(q=>!q.strata.length).length,
@@ -53,7 +70,7 @@ export async function reviewNarPredictionEvidence(snapshot,baseline,options={}){
   });
   const result={version:NAR_PREDICTION_REVIEW_VERSION,raceId:snapshot.raceId,runId:snapshot.runId,modelVersion:snapshot.modelVersion,
     snapshotHash:snapshot.snapshotHash,consumerOutputHash:comparison.outputHash,parentReviewHash:dossier.reviewHash,
-    classReviewHash:classReview.reviewHash,rows,
+    classReviewHash:classReview.reviewHash,...(summaryMetricAudit?{summaryMetricAuditHash:summaryMetricAudit.auditHash}:{}),rows,
     coverage:{activeRunners:rows.length,pairs:dossier.coverage.pairs,uniqueQuestions:classReview.coverage.questions,
       // A pair question belongs to two horse rows. Never call summed row counts unique evidence.
       rowQuestionReferences:rows.reduce((n,r)=>n+r.counterReview.questionIndices.length,0)},
@@ -65,5 +82,5 @@ export async function reviewNarPredictionEvidence(snapshot,baseline,options={}){
     predictionMutation:'NONE',freezeMutation:'NONE',signalMutation:'NONE',signalStatus:'NOT_GENERATED'};
   const review=freeze({...result,reviewHash:await stableHash(result)});
   // Keep canonical parents available for replay/audit; none is promoted or rewritten.
-  return freeze({comparison,dossier,classReview,review});
+  return freeze({comparison,dossier,classReview,...(summaryMetricAudit?{summaryMetricAudit}:{}),review});
 }
