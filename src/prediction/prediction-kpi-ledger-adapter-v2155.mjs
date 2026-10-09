@@ -78,7 +78,9 @@ export async function assessPredictionKpiLedgerBundleV2155(input={}){
     }
     for(const a of attempts){
       requireThat(a&&at(a.attemptedAt)<=at(byKind.attempts.frozenAt),'ATTEMPT_SECTION_TIME_INVALID');
-      if(a.result==='FOUND')sourceBefore(a.sourceSnapshotId,a.attemptedAt);
+      const completed=a.completedAt??a.attemptedAt;
+      requireThat(Number.isFinite(at(completed))&&at(completed)>=at(a.attemptedAt)&&at(completed)<=at(byKind.attempts.frozenAt),'ATTEMPT_SECTION_TIME_INVALID');
+      if(a.result==='FOUND')sourceBefore(a.sourceSnapshotId,completed);
     }
     // Input storage order has no authority. Preserve attempt numbers and let the
     // policy evaluator reject duplicate/gapped/reordered tier declarations.
