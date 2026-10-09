@@ -6,7 +6,9 @@ const fail=r=>{throw new TypeError(r);};
 const text=v=>typeof v==='string'?v.trim():'';
 const freeze=v=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}return v;};
 const FIELDS=['保存走数','CurrentLevel','PeakAbility','RecentFormShape','ConditionTrigger','先行率','4角平均位置',
-  '近10走ベストTIME','近10走ベスト上がり','トレンド根拠','分析メモ','更新日時','HistoryCoverage','DataConfidence','HistoryStatus','DEEP_SCAN','SampleStatus'];
+  '近10走ベストTIME','近10走ベスト上がり','トレンド根拠','分析メモ','更新日時','HistoryCoverage','DataConfidence','HistoryStatus','DEEP_SCAN','SampleStatus',
+  '直近3走平均着順','直近5走平均着順','近10走平均着順','直近3走平均着差','近10走平均着差','近10走勝率','近10走複勝率',
+  '同距離走数','同距離勝率','同距離複勝率','同場走数','同場勝率','同場複勝率'];
 const REQUIRED=['レースID','対象開催日','主催','競馬場','馬番','馬ID','馬名',...FIELDS.slice(0,12)];
 const available=v=>v!==null&&v!==undefined&&v!==''&&!/^(unknown|missing|hold|n\/a|不明)$/i.test(String(v).trim());
 const raceDate=v=>Number.isInteger(v)&&v>0&&v<100000?new Date(Date.UTC(1899,11,30)+v*86400000).toISOString().slice(0,10)
