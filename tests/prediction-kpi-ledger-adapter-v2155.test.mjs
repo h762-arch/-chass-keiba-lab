@@ -68,3 +68,6 @@ test('template or missing-ledger input is never completed automatically',async()
 test('invalid hashes, non-JSON values and oversized ledgers are bounded HOLD',async()=>{
   const x=await fixture();body(x,'fields')[0].value=NaN;assert.equal((await assess(x)).status,'HOLD');const y=await fixture();y.bundle.sections.find(s=>s.kind==='attempts').body=Array(8001).fill({});assert.equal((await assess(y)).reason,'BOUNDED_ATTEMPTS_REQUIRED');
 });
+test('source observed during an attempt may join only with a valid pre-freeze completion receipt',async()=>{
+  const x=await fixture();body(x,'sources')[2].capturedAt='2026-10-09T08:01:00Z';body(x,'attempts')[0].completedAt='2026-10-09T08:02:00Z';await reseal(x);assert.equal((await assess(x)).status,'POLICY_READY');body(x,'attempts')[0].completedAt='2026-10-09T09:01:00Z';await reseal(x);assert.equal((await assess(x)).status,'HOLD');
+});
