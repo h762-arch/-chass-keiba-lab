@@ -35,7 +35,7 @@ export async function readPredictionAcquisitionQuarantineV2155({root,anchor}={})
     return immutable({status:'READBACK_VERIFIED',persisted:true,readbackVerified:true,payload,anchor:structuredClone(anchor),assessmentOnly:true,formalKpiEligible:false,adopted:false,productionActivationReady:false,freezeMutation:'NONE'});
   }catch(e){return failure(['STORE_LOCATION_INVALID','STORE_SCHEMA_INVALID','PLAN_HASH_MISMATCH','STORE_IDENTITY_MISMATCH','STORE_PROMOTION_FORBIDDEN','STORE_ATTEMPTS_INVALID','READBACK_ANCHOR_MISMATCH','STORE_TOO_LARGE'].includes(e?.message)?e.message:'READBACK_FAILED')}
 }
-export async function executeAndQuarantinePredictionAcquisitionV2155({root,environment,plan,collectors,clock}={}){
+export async function executeAndQuarantinePredictionAcquisitionV2155({root,environment,plan,collectors,clock,supportingEvidence}={}){
   let temp;
   try{
     guard(environment==='QUARANTINE','QUARANTINE_REQUIRED');
@@ -46,6 +46,9 @@ export async function executeAndQuarantinePredictionAcquisitionV2155({root,envir
     const result=await executeBoundedPredictionAcquisitionV2155({plan:copied,collectors,clock});
     guard(result.planHash===hash(copied)&&result.runId===copied.runId&&result.raceId===copied.raceId,'EXECUTED_PLAN_REQUIRED');
     const payload={schemaVersion:VERSION,environment:'QUARANTINE',plan:copied,result};
+    // Optional caller-owned evidence is copied after execution and published in
+    // the same atomic document. This store does not authenticate its semantics.
+    if(supportingEvidence!==undefined)payload.supportingEvidence=JSON.parse(canonical(supportingEvidence));
     const anchor={schemaVersion:VERSION,environment:'QUARANTINE',planId:copied.planId,runId:copied.runId,raceId:copied.raceId,planHash:result.planHash,payloadHash:hash(payload)};
     validate(payload,anchor);const bytes=canonical(payload);guard(Buffer.byteLength(bytes)<=300000,'STORE_TOO_LARGE');
     await mkdir(resolve(root),{recursive:true,mode:0o700});
