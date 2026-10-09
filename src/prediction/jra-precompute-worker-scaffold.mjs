@@ -109,7 +109,8 @@ if(soakGuard){
   const runner=compose({
    DB:env.DB,sourceMode:'official-cache',
    now:liveNow,versions:{calculationVersion,modelVersion},
-   maxPlanningJobs,maxJobs,planningDeadline,executionDeadline
+   maxPlanningJobs,maxJobs,planningDeadline,executionDeadline,
+   marketBridgeEnabled:env.ENABLE_JRA_PRECOMPUTED_MARKET_BRIDGE==='true'
   });
   return runner({scheduledTime});
  };
