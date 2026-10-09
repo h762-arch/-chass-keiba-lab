@@ -8,8 +8,8 @@ import {
 import {scanJraPrecomputePlanningJobs} from '../src/prediction/jra-precompute-planning-budget.mjs';
 
 const day='2026-09-25';
-const job=raceNo=>Object.freeze({organization:'JRA',date:day,track:'中山',raceNo,
- raceId:`20260925-JRA-中山-${String(raceNo).padStart(2,'0')}`});
+const job=(raceNo,track='中山')=>Object.freeze({organization:'JRA',date:day,track,raceNo,
+ raceId:`20260925-JRA-${track}-${String(raceNo).padStart(2,'0')}`});
 
 test('scheduled event alone determines JST target date and stable five-minute turn',()=>{
  const scheduledTime=Date.parse('2026-09-24T15:00:00.000Z');
@@ -27,7 +27,7 @@ test('missing, negative, non-finite and non-integral scheduled times fail closed
  }
 });
 
-test('one-step rotation gives every race a first position over N consecutive turns',()=>{
+test('block rotation gives every race a first position over the long-run cycle',()=>{
  const jobs=Object.freeze(Array.from({length:12},(_,index)=>job(index+1)));
  const first=[];
  for(let turn=1000;turn<1012;turn++){
@@ -38,6 +38,22 @@ test('one-step rotation gives every race a first position over N consecutive tur
  }
  assert.equal(new Set(first).size,jobs.length);
  assert.deepStrictEqual(jobs.map(row=>row.raceNo),Array.from({length:12},(_,index)=>index+1));
+});
+
+test('four-job planning blocks cover twenty-four races in six consecutive turns',()=>{
+ const jobs=Object.freeze([
+  ...Array.from({length:12},(_,index)=>job(index+1,'京都')),
+  ...Array.from({length:12},(_,index)=>job(index+1,'東京'))
+ ]);
+ for(const start of [0,1,5,17,1000]){
+  const inspected=new Set();
+  for(let turn=start;turn<start+6;turn++){
+   const ordered=rotateJraPrecomputePlanningJobs(jobs,turn,4);
+   assert.equal(ordered.length,24);
+   for(const candidate of ordered.slice(0,4))inspected.add(candidate.raceId);
+  }
+  assert.equal(inspected.size,24);
+ }
 });
 
 test('one-inspection deadlines still offer every job a turn without revisiting cache',async()=>{

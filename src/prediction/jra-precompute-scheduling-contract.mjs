@@ -15,8 +15,9 @@ export function jraPrecomputeSchedule(scheduledTime){
  });
 }
 
-// Rotate before planning truncation: even a one-job scan gets a new start
-// position on each successive turn. Never modify the discovery result.
+// Visit every bounded planning block before revisiting one. Repeated visits
+// rotate the first job inside that block so even a one-job deadline remains
+// fair over the long run. Never modify the discovery result.
 export function rotateJraPrecomputePlanningJobs(jobs,selectionTurn,maxPlanningJobs){
  if(!Array.isArray(jobs)||jobs.length===0||
     !Number.isSafeInteger(selectionTurn)||selectionTurn<0||
@@ -39,8 +40,15 @@ export function rotateJraPrecomputePlanningJobs(jobs,selectionTurn,maxPlanningJo
   }
   seen.add(job.raceId);
  }
- const offset=selectionTurn%jobs.length;
- return Object.freeze([...jobs.slice(offset),...jobs.slice(0,offset)]);
+ const planningWidth=Math.min(maxPlanningJobs,jobs.length);
+ const blockCount=Math.ceil(jobs.length/planningWidth);
+ const blockIndex=selectionTurn%blockCount;
+ const blockStart=blockIndex*planningWidth;
+ const blockEnd=Math.min(blockStart+planningWidth,jobs.length);
+ const block=jobs.slice(blockStart,blockEnd);
+ const lane=Math.floor(selectionTurn/blockCount)%block.length;
+ const rotatedBlock=[...block.slice(lane),...block.slice(0,lane)];
+ return Object.freeze([...rotatedBlock,...jobs.slice(blockEnd),...jobs.slice(0,blockStart)]);
 }
 
 // Routing is only classified here. In particular, this does not approve
