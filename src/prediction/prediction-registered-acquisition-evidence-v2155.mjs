@@ -1,5 +1,6 @@
 // Node-only source evidence capture; all production adoption remains external.
 import {createHash} from 'node:crypto';
+import {verifyPredictionAcquisitionEvidenceV2155,validatePredictionSourceSnapshotV2155 as validSnapshot} from './prediction-acquisition-evidence-verifier-v2155.mjs';
 import {registerPredictionAcquisitionSourcesV2155} from './prediction-acquisition-registry-v2155.mjs';
 import {executeAndQuarantinePredictionAcquisitionV2155,readPredictionAcquisitionQuarantineV2155} from './prediction-acquisition-quarantine-v2155.mjs';
 const VERSION='CHASS_REGISTERED_ACQUISITION_EVIDENCE_V2155_V1';
@@ -15,32 +16,11 @@ function copy(v){const s=canonical(v);if(Buffer.byteLength(s)>200000)throw Error
 const equal=(a,b)=>canonical(a)===canonical(b);
 const guard=(v,reason)=>{if(!v)throw Error(reason)};
 const failure=reason=>({status:'HOLD',reason,persisted:false,readbackVerified:false,formalKpiEligible:false,adopted:false,productionActivationReady:false,freezeMutation:'NONE'});
-function validSnapshot(snapshot,receipt,sourceRef){
- guard(snapshot&&snapshot.sourceRef===sourceRef&&Object.hasOwn(snapshot,'payload')&&snapshot.payload!==null,'SOURCE_SNAPSHOT_REQUIRED');
- for(const k of ['sourceSnapshotId','runId','raceId','eligibilityId','fieldId','scopeKey','sourceStage','identityStatus','sourceLineage','leakageGuard','capturedAt','dataAsOf','value'])guard(equal(snapshot[k],receipt[k]),'SOURCE_SNAPSHOT_RECEIPT_MISMATCH');
-}
-function validateEvidence(payload){
- const e=payload.supportingEvidence,p=payload.plan,r=payload.result;
- guard(e?.schemaVersion===VERSION&&Array.isArray(e.traces)&&e.traces.length<=4,'REGISTERED_EVIDENCE_REQUIRED');
- guard(e.registry?.planHash===r.planHash&&e.registry.planId===p.planId&&e.registry.runId===p.runId&&e.registry.raceId===p.raceId&&e.registryAnchor?.registryHash===hash(e.registry)&&e.registryAnchor.registryId===e.registry.registryId&&e.registryAnchor.planHash===r.planHash,'REGISTRY_EVIDENCE_BINDING_INVALID');
- const seen=new Set();
- for(const t of e.traces){
-  guard(!seen.has(t.provider),'DUPLICATE_SOURCE_TRACE');seen.add(t.provider);
-  const entry=e.registry.entries.find(v=>v.provider===t.provider),a=r.attempts.find(v=>v.provider===t.provider);
-  guard(entry&&a&&t.tier===entry.tier&&t.tier===a.tier&&t.sourceCandidate===entry.sourceCandidate&&t.sourceCandidate===a.sourceCandidate&&t.sourceRef===entry.sourceRef,'TRACE_ATTEMPT_BINDING_INVALID');
-  if(t.receipt.result==='FOUND'){validSnapshot(t.sourceSnapshot,t.receipt,t.sourceRef);guard(t.sourceHash===hash(t.sourceSnapshot),'SOURCE_HASH_MISMATCH')}
-  if(a.result==='FOUND')guard(t.receipt.result==='FOUND'&&t.receipt.sourceSnapshotId===a.sourceSnapshotId,'FOUND_TRACE_REQUIRED');
- }
- for(const a of r.attempts.filter(v=>v.result==='FOUND'))guard(e.traces.some(t=>t.provider===a.provider&&t.receipt.result==='FOUND'),'FOUND_TRACE_REQUIRED');
- if(r.acquisitionState==='RESOLVED'){
-  const t=e.traces.find(v=>v.receipt.result==='FOUND'&&v.receipt.sourceSnapshotId===r.sourceSnapshotId);
-  guard(t&&equal(t.receipt.value,r.value),'RESOLVED_SOURCE_VALUE_MISMATCH');
- }
-}
 export async function readRegisteredPredictionAcquisitionEvidenceV2155(input={}){
  const saved=await readPredictionAcquisitionQuarantineV2155(input);
  if(!saved.readbackVerified)return saved;
- try{validateEvidence(saved.payload);return saved}catch{return failure('REGISTERED_EVIDENCE_READBACK_INVALID')}
+ const verified=verifyPredictionAcquisitionEvidenceV2155({payload:saved.payload,anchor:saved.anchor,registered:true});
+ return verified.readbackVerified?saved:verified;
 }
 export async function executeRegisteredPredictionAcquisitionEvidenceV2155({root,environment,plan,registry,registryAnchor,readers,clock}={}){
  try{

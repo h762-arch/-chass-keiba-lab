@@ -2,6 +2,7 @@
 import {mkdir,writeFile,readFile,rename,rm} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+import {verifyPredictionAcquisitionEvidenceV2155} from './prediction-acquisition-evidence-verifier-v2155.mjs';
 import {executeBoundedPredictionAcquisitionV2155} from './prediction-bounded-acquisition-v2155.mjs';
 const VERSION='CHASS_ACQUISITION_QUARANTINE_V2155_V1';
 function canonical(v){
@@ -31,7 +32,9 @@ export async function readPredictionAcquisitionQuarantineV2155({root,anchor}={})
   try{
     const dir=location(root,anchor?.planId),bytes=await readFile(join(dir,'evidence.json'),'utf8');
     guard(Buffer.byteLength(bytes)<=300000,'STORE_TOO_LARGE');
-    const payload=JSON.parse(bytes);validate(payload,anchor);
+    const verified=verifyPredictionAcquisitionEvidenceV2155({payload:JSON.parse(bytes),anchor});
+    if(!verified.readbackVerified)return verified;
+    const payload=verified.payload;
     return immutable({status:'READBACK_VERIFIED',persisted:true,readbackVerified:true,payload,anchor:structuredClone(anchor),assessmentOnly:true,formalKpiEligible:false,adopted:false,productionActivationReady:false,freezeMutation:'NONE'});
   }catch(e){return failure(['STORE_LOCATION_INVALID','STORE_SCHEMA_INVALID','PLAN_HASH_MISMATCH','STORE_IDENTITY_MISMATCH','STORE_PROMOTION_FORBIDDEN','STORE_ATTEMPTS_INVALID','READBACK_ANCHOR_MISMATCH','STORE_TOO_LARGE'].includes(e?.message)?e.message:'READBACK_FAILED')}
 }
