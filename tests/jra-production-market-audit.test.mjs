@@ -73,3 +73,14 @@ test('existing Preflight invokes MARKET and optional Queue readers using SELECTs
  const preflight=readFileSync(new URL('../scripts/jra-production-preflight.mjs',import.meta.url),'utf8');
  assert.match(preflight,/await readProductionMarketAudit/);assert.match(preflight,/MARKET_EVIDENCE_JSON/);
 });
+
+test('profiled MARKET audit reuses captured rows and adds only three SELECTs',async()=>{
+ const f=await fixture(),queries=[];
+ const r=await readProductionMarketAudit(date,{now,profileQueue:true,profileNow:()=>now,execute:async sql=>{
+  queries.push(sql);if(sql.includes('jra_meeting_calendar'))return f.meetingRows;
+  if(sql.includes('precomputed_race_snapshots'))return f.snapshotRows;return [];
+ }});
+ assert.equal(queries.length,6);assert.ok(queries.every(q=>/^SELECT /.test(q)));
+ assert.equal(r.status,'PASS');assert.equal(r.queueReadiness.schema.status,'MISSING');
+ assert.equal(r.queueReadiness.reasonCounts.ALREADY_FROZEN,1);assert.equal(r.queueReadiness.activationReady,false);
+});
