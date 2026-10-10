@@ -64,3 +64,9 @@ test('existing preflight explicitly enables read-only profiling without changing
  const text=readFileSync(new URL('../scripts/jra-production-preflight.mjs',import.meta.url),'utf8');assert.match(text,/profileQueue:true/);
  const c=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8'));assert.equal(c.vars.ENABLE_JRA_MARKET_QUEUE,undefined);assert.equal(c.vars.JRA_PRECOMPUTE_MAX_JOBS,'1');
 });
+test('expired and missing odds remain distinct cache diagnoses across all races',async()=>{
+ const f=await fixture(3);f.oddsRows.shift();f.oddsRows[0].expires_at='2026-10-09T23:00:00Z';
+ const r=await profileCapturedMarketQueue(f);assert.deepEqual(r.oddsReasonCounts,{CACHE_ROW_MISSING:1,CACHE_EXPIRED:1,CACHE_TTL_FRESH_UNVALIDATED:1});
+ assert.equal(r.reasonCounts.ODDS_UNAVAILABLE,2);assert.equal(r.reasonCounts.WOULD_FREEZE,1);assert.equal(r.productionSaveCount,0);
+ assert.equal(r.races[1].oddsDiagnostic.remainingTtlMs,-3600000);
+});

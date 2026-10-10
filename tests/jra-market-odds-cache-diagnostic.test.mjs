@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {diagnoseCapturedMarketOdds as diagnose} from '../scripts/jra-market-odds-cache-diagnostic.mjs';
+const job={date:'2026-10-10',track:'東京',raceNo:7},now=Date.parse('2026-10-10T03:00:00Z');
+const row={kind:'odds',cache_key:'odds|2026-10-10|東京|7',fetched_at:'2026-10-10T02:00:00Z',expires_at:'2026-10-10T04:00:00Z'};
+test('missing cache identity differs from expiry and ignores another race',()=>{const r=diagnose(job,[{...row,cache_key:'odds|2026-10-10|東京|8'}],now);assert.equal(r.reason,'CACHE_ROW_MISSING');assert.equal(r.rowCount,0)});
+test('expired and exact-boundary expiry retain acquisition age and negative TTL',()=>{for(const expires_at of ['2026-10-10T02:30:00Z','2026-10-10T03:00:00Z']){const r=diagnose(job,[{...row,expires_at}],now);assert.equal(r.reason,'CACHE_EXPIRED');assert.equal(r.ageMs,3600000);assert.ok(r.remainingTtlMs<=0)}});
+test('invalid expiry is not mislabeled as missing or expired',()=>{const r=diagnose(job,[{...row,expires_at:'bad'}],now);assert.equal(r.reason,'CACHE_EXPIRY_INVALID');assert.equal(r.remainingTtlMs,null)});
+test('fresh TTL is explicitly unvalidated payload, not Freeze permission',()=>{const r=diagnose(job,[{...row,payload_json:'bad JSON'}],now);assert.equal(r.reason,'CACHE_TTL_FRESH_UNVALIDATED');assert.equal(r.payloadValidated,false);assert.equal(r.remainingTtlMs,3600000)});
+test('invalid and future acquisition clocks have distinct diagnoses',()=>{assert.equal(diagnose(job,[{...row,fetched_at:'bad'}],now).reason,'CACHE_FETCH_TIME_INVALID');assert.equal(diagnose(job,[{...row,fetched_at:'2026-10-10T03:01:00Z'}],now).reason,'CACHE_FETCH_TIME_FUTURE')});
+test('duplicate identity is not arbitrarily resolved',()=>{assert.equal(diagnose(job,[row,row],now).reason,'CACHE_IDENTITY_DUPLICATE')});
+test('diagnosis does not mutate or leak the raw payload',()=>{const rows=[{...row,payload_json:'private content'}],before=JSON.stringify(rows),r=diagnose(job,rows,now);assert.equal(JSON.stringify(rows),before);assert.ok(!JSON.stringify(r).includes('private'))});
+test('invalid collection and clock are rejected',()=>{assert.throws(()=>diagnose(job,null,now));assert.throws(()=>diagnose(job,[],NaN))});
