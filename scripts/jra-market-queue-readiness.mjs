@@ -1,3 +1,4 @@
+import {diagnoseCapturedMarketOdds} from './jra-market-odds-cache-diagnostic.mjs';
 import {validDate} from '../jra-meeting-discovery.mjs';
 import {createJraPrecomputeMeetingProvider} from '../src/prediction/jra-precompute-meeting-provider.mjs';
 import {discoverPrecomputeRaceJobs} from '../src/prediction/precompute-job-discovery.mjs';
@@ -71,16 +72,18 @@ export async function profileCapturedMarketQueue({date,meetingRows,snapshotRows,
  const races=[];
  for(const job of jobs){
   const start=tick();let reason,bridgeEvaluated=false;
+  const oddsDiagnostic=diagnoseCapturedMarketOdds(job,oddsRows,now());
   try{
    const state=await inspectMarketQueueJob(DB,job,now);reason=state.reason;
    if(reason==='READY'){bridgeEvaluated=true;const result=await bridge(job);reason=result.reason||result.status;}
   }catch{reason='VALIDATION_FAILED';}
-  races.push({raceId:job.raceId,reason,bridgeEvaluated,saved:false,validationElapsedMs:tick()-start});
+  races.push({raceId:job.raceId,reason,bridgeEvaluated,oddsDiagnostic,saved:false,validationElapsedMs:tick()-start});
  }
  const counts={};for(const r of races)counts[r.reason]=(counts[r.reason]||0)+1;
+ const oddsReasonCounts={};for(const r of races){const reason=r.oddsDiagnostic.reason;oddsReasonCounts[reason]=(oddsReasonCounts[reason]||0)+1;}
  const finishedAt=now();if(!Number.isFinite(finishedAt)||finishedAt<observedAt)throw Error('invalid_profile_time');
  return {status:'OBSERVED',targetDate:date,observedAt:new Date(observedAt).toISOString(),finishedAt:new Date(finishedAt).toISOString(),
-  expectedCount:jobs.length,races,reasonCounts:counts,simulatedSaveCount:simulatedSaves,productionSaveCount:0,
+  expectedCount:jobs.length,races,reasonCounts:counts,oddsReasonCounts,simulatedSaveCount:simulatedSaves,productionSaveCount:0,
   validationElapsedMs:tick()-started,measurementContext:'CAPTURED_ROWS_NODE_VALIDATION',
   workerD1TimingMeasured:false,saveTimingMeasured:false,auditWriteTimingMeasured:false,budgetDecision:'UNDECIDED',
   limitation:'SELECTs are separate observations, not one atomic snapshot. WOULD_FREEZE is validation only; no save, audit write, deadline trial or production throughput guarantee.'};
@@ -98,5 +101,5 @@ export async function readMarketQueueReadiness(date,{execute,meetingRows,snapsho
  }catch{return {status:'BLOCKED',targetDate:date,schema,readTimings,reason:'READINESS_READ_OR_VALIDATION_FAILED',activationReady:false,budgetDecision:'UNDECIDED',productionSaveCount:0};}
 }
 export function marketQueueReadinessSummary(r){
- return `\n## Phase108 MARKET Queue read-only readiness\n- Status: ${r.status}; audit schema: ${r.schema.status}\n- Reason counts: ${JSON.stringify(r.reasonCounts||{})}\n- Captured-data validation ms: ${r.validationElapsedMs??'UNKNOWN'}\n- Remote SELECT ms (includes CLI overhead): ${JSON.stringify(r.readTimings)}\n- Production saves: 0; audit writes: 0\n- Worker D1/save/audit-write timing: NOT MEASURED\n- Budget decision: UNDECIDED; Activation Ready: NO\n`;
+ return `\n## Phase108 MARKET Queue read-only readiness\n- Status: ${r.status}; audit schema: ${r.schema.status}\n- Reason counts: ${JSON.stringify(r.reasonCounts||{})}\n- Phase109 captured odds cache reasons (all races): ${JSON.stringify(r.oddsReasonCounts||{})}\n- Captured-data validation ms: ${r.validationElapsedMs??'UNKNOWN'}\n- Remote SELECT ms (includes CLI overhead): ${JSON.stringify(r.readTimings)}\n- Production saves: 0; audit writes: 0\n- Worker D1/save/audit-write timing: NOT MEASURED\n- Budget decision: UNDECIDED; Activation Ready: NO\n`;
 }
