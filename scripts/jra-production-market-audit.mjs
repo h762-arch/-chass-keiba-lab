@@ -3,6 +3,7 @@ import {writeFileSync,readFileSync} from 'node:fs';
 import {validDate as validTargetDate} from '../jra-meeting-discovery.mjs';
 import {discoverPrecomputeRaceJobs} from '../src/prediction/precompute-job-discovery.mjs';
 import {createJraPrecomputeMeetingProvider} from '../src/prediction/jra-precompute-meeting-provider.mjs';
+import {readMarketQueueAudit} from './jra-market-queue-audit-reader.mjs';
 import {d1RowToSnapshot} from '../src/prediction/precomputed-store.mjs';
 import {stableHash,createSnapshotHash,createPrecomputedIdentity,assertMarketIndependentData} from '../src/prediction/precomputed-snapshot.mjs';
 
@@ -15,13 +16,17 @@ export function marketAuditQueries(date){
 }
 
 export function productionMarketSummaryLines(report){
- return `## Phase106 JRA MARKET audit\n- Date: ${report.targetDate}\n- Stored MARKET: ${report.passCount}/${report.expectedCount}\n- Missing: ${report.missingCount}; invalid: ${report.failedCount}\n- Status: ${report.status}\n- Observation: ${report.observation}\n- ${report.limitation}\n- Formal KPI/Signal adoption: NOT PERFORMED\n`;
+ const q=report.queueAudit;
+ return `## Phase106 JRA MARKET audit\n- Date: ${report.targetDate}\n- Stored MARKET: ${report.passCount}/${report.expectedCount}\n- Missing: ${report.missingCount}; invalid: ${report.failedCount}\n- Status: ${report.status}\n- Observation: ${report.observation}\n- ${report.limitation}\n- Formal KPI/Signal adoption: NOT PERFORMED\n`+
+  (q?`\n## Phase107 MARKET Queue reason audit\n- Status: ${q.status}\n- Run: ${q.runId||'UNKNOWN'}\n- Reason counts: ${JSON.stringify(q.reasonCounts)}\n- Historical unrecorded reasons: UNKNOWN\n`:'');
 }
 
 export async function readProductionMarketAudit(date,{execute,now=Date.now(),baseline=null}={}){
  const q=marketAuditQueries(date);
  const meetingRows=await execute(q.meeting),snapshotRows=await execute(q.snapshots);
- return auditJraProductionMarket({date,now,meetingRows,snapshotRows,baseline});
+ const report=await auditJraProductionMarket({date,now,meetingRows,snapshotRows,baseline});
+ const queueAudit=await readMarketQueueAudit(date,{execute});
+ return {...report,queueAudit};
 }
 
 function parseWranglerRows(output){
