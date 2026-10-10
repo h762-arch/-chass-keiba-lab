@@ -10,6 +10,7 @@ import {enqueueResearchSync,runResearchSyncQueue} from './src/research/research-
 import {classifyHorseOrigin,classifyRunVenue,mergeCardIdentities,summarizeHorseOrigins} from './src/nar/exchange-origin.mjs';
 import {backgroundPrecomputeEnabled} from './src/prediction/background-precompute.mjs';
 import {createJraPrecomputeWorkerRunner} from './src/prediction/jra-precompute-worker-scaffold.mjs';
+import {createJraMarketQueueWorkerRunner} from './src/prediction/jra-market-queue-worker.mjs';
 import {handleJraPrecomputedViewerPublicApi} from './src/prediction/jra-precomputed-viewer-api.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
@@ -876,5 +877,16 @@ export default{
   if(env?.ASSETS){const reqUrl=new URL(request.url);if(u.pathname==="/")reqUrl.pathname="/index.html";return env.ASSETS.fetch(new Request(reqUrl,request))}
   return new Response("Not Found",{status:404});
  },
- async scheduled(controller,env,ctx){const scheduledNow=new Date(controller?.scheduledTime||Date.now()),task=runScheduledTasks(env?.DB,{now:scheduledNow,env,precomputeRunner:createJraPrecomputeWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()})});if(ctx?.waitUntil)ctx.waitUntil(task);else await task}
+ async scheduled(controller,env,ctx){
+  const scheduledNow=new Date(controller?.scheduledTime||Date.now());
+  const marketQueueRunner=createJraMarketQueueWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()});
+  const task=runScheduledTasks(env?.DB,{now:scheduledNow,env,precomputeRunner:createJraPrecomputeWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()})}).then(async result=>{
+   if(!marketQueueRunner)return result;
+   let marketQueue;
+   try{marketQueue=await marketQueueRunner()}
+   catch{marketQueue={status:'BLOCKED',reason:'MARKET_QUEUE_RUN_FAILED'}}
+   return {...result,marketQueue};
+  });
+  if(ctx?.waitUntil)ctx.waitUntil(task);else await task;
+ }
 };

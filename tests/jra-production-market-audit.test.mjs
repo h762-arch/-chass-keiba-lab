@@ -63,13 +63,13 @@ test('activation only adds MARKET flag and retains operational limits',()=>{
  assert.equal(config.vars.ENABLE_JRA_PRECOMPUTED_MARKET_BRIDGE,'true');
  for(const [key,value] of Object.entries({ENABLE_PRECOMPUTED_VIEWER:'false',ENABLE_JRA_DIRECT_FETCH:'false',ENABLE_JRA_ODDS_DIRECT_FETCH:'false',JRA_PRECOMPUTE_MAX_PLANNING_JOBS:'4',JRA_PRECOMPUTE_MAX_JOBS:'1',JRA_PRECOMPUTE_TOTAL_WINDOW_MS:'8000'}))assert.equal(config.vars[key],value);
 });
-test('existing Preflight invokes MARKET reader; remote adapter sends only two SELECTs',async()=>{
+test('existing Preflight invokes MARKET and optional Queue readers using SELECTs only',async()=>{
  const f=await fixture(),queries=[];
  const r=await readProductionMarketAudit(date,{now,execute:async sql=>{
   queries.push(sql);assert.match(sql,/^SELECT /);
   return sql.includes('jra_meeting_calendar')?f.meetingRows:f.snapshotRows;
  }});
- assert.equal(r.status,'PASS');assert.equal(queries.length,2);
+ assert.equal(r.status,'PASS');assert.equal(queries.length,3);assert.equal(r.queueAudit.status,'UNAVAILABLE');
  const preflight=readFileSync(new URL('../scripts/jra-production-preflight.mjs',import.meta.url),'utf8');
  assert.match(preflight,/await readProductionMarketAudit/);assert.match(preflight,/MARKET_EVIDENCE_JSON/);
 });
