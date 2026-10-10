@@ -212,7 +212,7 @@ if(process.argv[1]&&new URL(`file://${process.argv[1]}`).href===import.meta.url)
   const shadow=await auditProductionJraStarShadow(report,{execute,now});
   const evidence=buildProductionJraAuditEvidence({report,kpi,shadow,commitSha:process.env.GITHUB_SHA||null});
   let market;
-  try{market=await readProductionMarketAudit(date,{execute,now})}
+  try{market=await readProductionMarketAudit(date,{execute,now,profileQueue:true})}
   catch{market={targetDate:date,status:'BLOCKED',passCount:null,expectedCount:null,missingCount:null,failedCount:null,observation:'NOT_COMPARED',races:[],limitation:'MARKET read or input validation failed; coverage is UNKNOWN.'}}
   const body=summary(report)+'\n'+productionKpiSummaryLines(kpi)+'\n'+productionStarShadowSummaryLines(shadow)+'\n'+productionAuditEvidenceLines(evidence)+'\n'+productionMarketSummaryLines(market);
   console.log(body);
