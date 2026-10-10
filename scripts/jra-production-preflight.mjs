@@ -7,6 +7,7 @@ import {auditProductionJraEarlyKpi,productionKpiSummaryLines} from './jra-produc
 import {auditProductionJraStarShadow,productionStarShadowSummaryLines} from './jra-production-star-shadow-reader.mjs';
 import {buildProductionJraAuditEvidence,productionAuditEvidenceLines} from './jra-production-audit-evidence.mjs';
 import {readProductionMarketAudit,productionMarketSummaryLines} from './jra-production-market-audit.mjs';
+import {readProductionSignalBindingAudit,productionSignalBindingSummaryLines} from './jra-production-signal-binding-audit.mjs';
 
 const TABLE='precomputed_race_snapshots';
 const COLUMNS='organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at'.split(',');
@@ -214,9 +215,17 @@ if(process.argv[1]&&new URL(`file://${process.argv[1]}`).href===import.meta.url)
   let market;
   try{market=await readProductionMarketAudit(date,{execute,now,profileQueue:true})}
   catch{market={targetDate:date,status:'BLOCKED',passCount:null,expectedCount:null,missingCount:null,failedCount:null,observation:'NOT_COMPARED',races:[],limitation:'MARKET read or input validation failed; coverage is UNKNOWN.'}}
-  const body=summary(report)+'\n'+productionKpiSummaryLines(kpi)+'\n'+productionStarShadowSummaryLines(shadow)+'\n'+productionAuditEvidenceLines(evidence)+'\n'+productionMarketSummaryLines(market);
+  // Signal coverage is additive and cannot promote or exclude core KPI rows.
+  const expectedSignalRaceIds=Array.isArray(market.races)&&market.expectedCount>0&&
+   market.races.length===market.expectedCount?market.races.map(r=>r.raceId):null;
+  let signalBinding;
+  try{signalBinding=await readProductionSignalBindingAudit(date,{execute,expectedRaceIds:expectedSignalRaceIds});}
+  catch{signalBinding={targetDate:date,status:'BLOCKED',reason:'SIGNAL_AUDIT_FAILED',mode:'research',
+   authenticity:'NOT_VERIFIED',adopted:false,formalKpiEligible:false,productionActivationReady:false};}
+  const body=summary(report)+'\n'+productionKpiSummaryLines(kpi)+'\n'+productionStarShadowSummaryLines(shadow)+'\n'+productionAuditEvidenceLines(evidence)+'\n'+productionMarketSummaryLines(market)+'\n'+productionSignalBindingSummaryLines(signalBinding);
   console.log(body);
   console.log('MARKET_EVIDENCE_JSON:'+JSON.stringify(market));
+  console.log('SIGNAL_BINDING_EVIDENCE_JSON:'+JSON.stringify(signalBinding));
   if(process.env.GITHUB_STEP_SUMMARY)writeFileSync(process.env.GITHUB_STEP_SUMMARY,body,{flag:'a'});
   if([report.migration,report.schema,report.indexes,report.snapshotAudit].includes('FAIL')||
     kpi.status==='BLOCKED'||shadow.status==='BLOCKED'||evidence.status!=='READY'||['FAIL','BLOCKED'].includes(market.status))process.exitCode=1;
