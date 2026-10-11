@@ -1,7 +1,7 @@
 // Offline research adapter for explicitly supplied JRA card HTML, never a live fetcher.
 import {createHash} from 'node:crypto';
 import {parseJraRaceCard} from '../../jra-race-fetch.mjs';
-import {adaptJraPdfEvidence} from './jra-pdf-evidence-adapter-v1.mjs';
+import {adaptJraPdfEvidence,describeJraPdfMissingHistory} from './jra-pdf-evidence-adapter-v1.mjs';
 const fail=r=>{throw new TypeError(r);};
 const guard=(ok,r)=>{if(!ok)fail(r);};
 const table=objects=>{const h=[...new Set(objects.flatMap(Object.keys))];return [h,...objects.map(o=>h.map(k=>o[k]??null))];};
@@ -16,7 +16,10 @@ export function buildJraPdfOfficialCardEvidence({pdfInput,html,sourceUrl,capture
  guard(url.origin==='https://www.jra.go.jp'&&url.pathname==='/JRADB/accessD.html'&&!url.username&&!url.password,'OFFICIAL_CARD_URL_REQUIRED');
  guard(iso(capturedAt)&&iso(nowAt)&&Number.isInteger(maxAgeMs)&&maxAgeMs>=1&&maxAgeMs<=3600000&&Date.parse(nowAt)>=Date.parse(capturedAt),'OFFICIAL_CARD_CLOCK_REQUIRED');
  guard(Date.parse(nowAt)-Date.parse(capturedAt)<=maxAgeMs,'OFFICIAL_CARD_CAPTURE_STALE');
- const input=structuredClone(pdfInput),base=adaptJraPdfEvidence({...input,associations:[],statuses:[]});
+ const input=structuredClone(pdfInput);
+ const missing=describeJraPdfMissingHistory(input);
+ if(missing.length) input.missingHistoryDeclarations=missing;
+ const base=adaptJraPdfEvidence({...input,associations:[],statuses:[]});
  // Card identity is read from its header, not adopted from URL tokens alone.
  const card=parseJraRaceCard(html,{date:base.context.date,track:base.context.course,race:base.context.raceNo});
  guard(card.race.surface===base.context.surface&&card.race.distance===base.context.distance,'OFFICIAL_PDF_RACE_CONTEXT_CONFLICT');
