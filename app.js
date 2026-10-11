@@ -936,9 +936,10 @@ function commitJraNormalized(normalized,provenance=null){const prepared=mergeJra
 function commitJraOfficial(data,generation){
   if(generation!==activeRaceGeneration||raceTypeOf(state)!=='JRA')return false;
   const selected=jraRaceInput();
-  const same=data.date===selected.date&&data.track===selected.racecourse&&Number(data.race)===Number(selected.raceNo);
+  const card=data?.race;
+  const same=data?.organization==='JRA'&&card?.date===selected.date&&card?.racecourse===selected.racecourse&&Number(card?.raceNo)===Number(selected.raceNo);
   if(!same)return false;
-  if(!jraPayloadMatchesActive(data))beginActiveRaceTransition('JRA',jraDraftFromSelection(selected));
+  if(!jraPayloadMatchesActive({date:card.date,track:card.racecourse,race:card.raceNo}))beginActiveRaceTransition('JRA',jraDraftFromSelection(selected));
   fillJraRace(data.race);
   const horses=(data.horses||[]).filter(h=>h.runningStatus==='active');
   const normalized=window.CHASS_JRA_NORMALIZER.normalizeJraData({race:data.race,horses});
