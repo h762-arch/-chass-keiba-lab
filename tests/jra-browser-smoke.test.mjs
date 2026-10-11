@@ -61,7 +61,8 @@ async function browserDom(chrome,url){
   child.on('error',fail);
   child.on('exit',(code,signal)=>fail(new Error(`CHASS_BROWSER_SMOKE_CHROME_EXIT:${code}:${signal}:${stderr.slice(-1000)}`)));
   const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
-    const id=++nextId,timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CHASS_BROWSER_SMOKE_CDP_TIMEOUT:${method}`))},8000);
+    // Full-suite CI starts Chrome alongside hundreds of Node test workers.
+    const id=++nextId,timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CHASS_BROWSER_SMOKE_CDP_TIMEOUT:${method}`))},25000);
     pending.set(id,{resolve,reject,timer});
     child.stdio[3].write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0',error=>{if(error)fail(error)});
   });
@@ -69,6 +70,7 @@ async function browserDom(chrome,url){
   try{
     const {targetId}=await call('Target.createTarget',{url});
     const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
+    await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},sessionId);
     const started=Date.now();let dom='';
     while(Date.now()-started<12000){
       const result=await call('Runtime.evaluate',{expression:'document.documentElement.outerHTML',returnByValue:true},sessionId);
@@ -84,7 +86,7 @@ async function browserDom(chrome,url){
   }
 }
 
-test('real Chromium boots shared JRA Ability Core browser chain',{timeout:30000},async t=>{
+test('real Chromium boots shared JRA Ability Core browser chain',{timeout:60000},async t=>{
   const chrome=chromePath();
   const port=await freePort();
   const smokeName=`chass-browser-smoke-${process.pid}-${Date.now()}.html`;
@@ -98,7 +100,9 @@ test('real Chromium boots shared JRA Ability Core browser chain',{timeout:30000}
 <script>
 (()=>{
  const errors=[];
- let finished=false,loading=false;
+ let finished=false,loading=false,completedAt=0,scrollRequests=0,initialScrollY=0;
+ const originalScrollIntoView=Element.prototype.scrollIntoView;
+ Element.prototype.scrollIntoView=function(...args){scrollRequests++;return originalScrollIntoView.apply(this,args)};
  const finish=(ok,detail)=>{if(finished)return;finished=true;document.documentElement.setAttribute('data-chass-browser-smoke',ok?'pass':'fail');document.documentElement.setAttribute('data-chass-browser-smoke-errors',String(errors.length));document.documentElement.setAttribute('data-chass-browser-smoke-detail',String(detail||''));};
  addEventListener('error',event=>errors.push(String(event.error?.stack||event.message||'error')));
  addEventListener('unhandledrejection',event=>errors.push(String(event.reason?.stack||event.reason||'unhandledrejection')));
@@ -123,14 +127,20 @@ test('real Chromium boots shared JRA Ability Core browser chain',{timeout:30000}
     document.getElementById('jraCourse').value=card.race.racecourse;
     document.getElementById('jraRaceNo').value=String(card.race.raceNo);
     mode.value='JRA';mode.onchange({target:mode});
+    // Start at the load control on a phone-sized viewport, then keep that position.
+    originalScrollIntoView.call(document.getElementById('jraOfficialLoad'),{block:'center',behavior:'instant'});
+    initialScrollY=window.scrollY;scrollRequests=0;
     document.getElementById('jraOfficialLoad').click();
    }
    if(loading){
     const status=document.getElementById('jraStatus'),rows=document.querySelectorAll('#quickList .quick-row');
     if(status.textContent.includes('予想計算完了')){
+     if(!completedAt){completedAt=Date.now();return;}
+     if(Date.now()-completedAt<800)return;
      const statusVisible=!status.closest('details:not([open])');
      const names=card.horses.every(h=>document.getElementById('quickList').textContent.includes(h.horseName));
-     clearInterval(timer);finish(errors.length===0&&!jraPanel.hidden&&statusVisible&&rows.length===card.horses.length&&names,errors[0]||'saved_card_render');return;
+     const positionPreserved=scrollRequests===0&&Math.abs(window.scrollY-initialScrollY)<=2;
+     clearInterval(timer);finish(errors.length===0&&!jraPanel.hidden&&statusVisible&&rows.length===card.horses.length&&names&&positionPreserved,errors[0]||('saved_card_render:scrollRequests='+scrollRequests+':scrollDelta='+(window.scrollY-initialScrollY)));return;
     }
    }
    if(Date.now()-started>6000){clearInterval(timer);finish(false,errors[0]||document.getElementById('jraStatus')?.textContent||'bootstrap_timeout');}
