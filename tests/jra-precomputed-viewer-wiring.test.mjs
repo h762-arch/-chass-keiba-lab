@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {handlePublicApi} from '../worker.js';
 import {
   handleJraPrecomputedViewerPublicApi,
   readJraPrecomputedViewerRaces,
@@ -43,6 +45,33 @@ class D1{
   }
 }
 const req=path=>new Request(`https://example.test${path}`);
+
+test('production viewer discovers and displays 24 precomputed races without app saved rows',async()=>{
+  const env=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8')).vars;
+  assert.equal(env.ENABLE_PRECOMPUTED_VIEWER,'true');
+  const DB=new D1(['東京','京都'].flatMap(track=>Array.from({length:12},(_,i)=>row(track,i+1))));
+  const discovery=await handlePublicApi(req(`/api/chass/v1/public/races?date=${date}&organization=JRA`),{...env,DB});
+  assert.equal(discovery.status,200);
+  const discovered=await discovery.json();assert.equal(discovered.count,24);
+  for(const track of ['東京','京都']){
+    const response=await handlePublicApi(req(`/api/chass/v1/public/day?date=${date}&track=${track}&organization=JRA&format=compact`),{...env,DB});
+    assert.equal(response.status,200);
+    const day=sanitizeViewerDayPayload(await response.json());assert.equal(day.races.length,12);
+    assert.deepEqual(day.races.map(r=>r.raceNo),Array.from({length:12},(_,i)=>i+1));
+    assert.ok(day.races.every(r=>r.horses.length===2&&r.horses[0].aiWinRate===.25));
+    assert.equal(viewerAllowsMarketOverlay(day),false);
+  }
+  assert.equal(DB.calls.length,3);
+  for(const {sql} of DB.calls)assert.match(sql,/FROM precomputed_race_snapshots/);
+  assert.equal(DB.writes,0);
+});
+
+test('production viewer missing DATA does not fall back to app predictions or calculate on read',async()=>{
+  const DB=new D1([]),env=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8')).vars;
+  const response=await handlePublicApi(req(`/api/chass/v1/public/day?date=${date}&track=東京&organization=JRA`),{...env,DB});
+  assert.equal(response.status,404);assert.equal((await response.json()).error.code,'RACE_NOT_FOUND');
+  assert.equal(DB.calls.length,1);assert.equal(DB.writes,0);
+});
 
 test('flag OFF bypasses wiring with zero precomputed D1 reads',async()=>{
   const DB=new D1([row()]);
