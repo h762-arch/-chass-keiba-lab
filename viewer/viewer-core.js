@@ -172,6 +172,7 @@ function sanitizeHorse(raw = {}) {
     dangerMark: textOrNull(danger?.mark ?? (typeof raw.danger === 'string' ? raw.danger : null) ?? raw.warning),
     dangerReason: textOrNull(danger?.reason),
     runnerStatus: textOrNull(raw.runnerStatus) || 'active',
+    ...(raw.marketStatus==='frozen'?{marketStatus:'frozen'}:{}),
   });
 }
 
@@ -192,6 +193,7 @@ function sanitizeRace(raw = {}) {
     startTime: textOrNull(identity.startTime ?? identity.postTime),
     fieldSize: finiteOrNull(identity.fieldSize) ?? horses.length,
     marketAvailable: Boolean(identity.marketAvailable ?? horses.some((horse) => horse.odds != null)),
+    ...(identity.marketFreeze?{marketFreeze:{status:textOrNull(identity.marketFreeze.status),reason:textOrNull(identity.marketFreeze.reason),acquiredAt:textOrNull(identity.marketFreeze.acquiredAt),frozenAt:textOrNull(identity.marketFreeze.frozenAt),source:textOrNull(identity.marketFreeze.source),coverage:finiteOrNull(identity.marketFreeze.coverage)}}:{}),
     horses: Object.freeze(horses),
   });
 }

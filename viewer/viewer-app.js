@@ -254,6 +254,7 @@ function timeGapInfo(horse, ranks) {
 }
 
 function liveExpectedValue(horse) {
+  if(horse.marketStatus==='frozen')return null;
   if (horse.aiWinRate == null || horse.odds == null) return null;
   const probability = Number(horse.aiWinRate);
   const odds = Number(horse.odds);
@@ -547,6 +548,7 @@ function raceKey(race) {
 }
 
 function marketStatus(race) {
+  if(race.marketFreeze?.status==='READY')return {text:'事前市場 固定済み',state:'ready'};
   const active = race.horses.filter((horse) => horse.runnerStatus === 'active');
   const withOdds = active.filter((horse) => horse.odds != null).length;
   const finalCount = active.filter(
@@ -691,6 +693,12 @@ function raceCard(race) {
     race.fieldSize ? `${race.fieldSize}頭` : null,
   ].filter(Boolean).join(' · ');
   header.append(title, meta);
+  if(race.marketFreeze){
+    const freeze=document.createElement('div');freeze.className='viewer-race-meta';
+    const stamp=value=>{const n=Date.parse(value);return Number.isFinite(n)?new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(n)):'—'};
+    freeze.textContent=race.marketFreeze.status==='READY'?`JRA公式・全頭の事前市場固定｜取得 ${stamp(race.marketFreeze.acquiredAt)}｜固定 ${stamp(race.marketFreeze.frozenAt)} JST`:race.marketFreeze.reason==='MARKET_NOT_SAVED'?'事前市場 未保存':'事前市場 検証保留';
+    header.append(freeze);
+  }
 
   const mobile = mobileRaceBody(race);
 
@@ -1302,7 +1310,7 @@ async function loadViewerDay() {
 
     renderDay(day);
     updateAddressBar(activeContext);
-    setStatus(viewerAllowsMarketOverlay(day) ? '' : '保存済みEARLY能力予想を表示しています。オッズ・EV・💎・⚠️はこの表示に未接続です。', 'success');
+    setStatus(viewerAllowsMarketOverlay(day) ? '' : day.viewerMode==='precomputed-early-frozen-market'?'EARLY能力予想と検証済みの固定市場を表示しています。EV・💎・⚠️は未接続です。':'保存済みEARLY能力予想を表示しています。オッズ・EV・💎・⚠️はこの表示に未接続です。', 'success');
 
     const cached = trackDiscoveryCache.get(`${date}|${organization}`) || [];
     renderTrackChips(cached);
