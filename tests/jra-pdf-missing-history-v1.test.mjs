@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {adaptJraPdfEvidence as adapt,describeJraPdfMissingHistory as describe} from '../src/research/jra-pdf-evidence-adapter-v1.mjs';
+const table=objects=>{const h=Object.keys(objects[0]);return [h,...objects.map(o=>h.map(k=>o[k]))];};
+function fixture(){return {sourceRaceId:'r',canonicalRaceId:'canonical',sourceSpreadsheetId:'pdf',
+ manifestTable:table([{Race_ID:'r','開催日':'2026-10-11','競馬場':'東京','レース番号':1,'芝ダ障':'ダート','距離':1600,'出走頭数':1}]),
+ runnerTable:table([{Race_ID:'r','開催日':'2026-10-11','競馬場':'東京',R:1,'馬番':1,'馬名':'horse',Horse_Key:'TEMP|horse','取消状態':'UNKNOWN',KnownHistoryRuns:0,UnknownHistorySlots:5}]),
+ historyTable:table([1,2,3,4,5].map(n=>({Race_ID:'r',Horse_Key:'TEMP|horse','馬番':1,'馬名':'horse',Run_No:n,'過去走日付':'UNKNOWN','競馬場':'UNKNOWN','芝ダ':'UNKNOWN','距離':'UNKNOWN','着順':'UNKNOWN','走破TIME':'UNKNOWN',Raw_PDF:'UNKNOWN'}))),
+ associations:[{sourceRaceId:'r',canonicalRaceId:'canonical',sourceHorseKey:'TEMP|horse',horseNo:1,horseName:'horse',canonicalHorseKey:'JRA|1',status:'PASS',evidenceRef:'proof'}],
+ statuses:[{sourceRaceId:'r',horseNo:1,horseName:'horse',status:'ACTIVE',evidenceRef:'preoff'}]};}
+function set(f,tableName,row,col,value){f[tableName][row][f[tableName][0].indexOf(col)]=value;}
+test('explicit source-empty declarations record missing slots without inventing runs',()=>{const f=fixture(),before=structuredClone(f);const d=describe(f);assert.equal(d.length,5);const out=adapt({...f,missingHistoryDeclarations:d});assert.equal(out.failures.length,0);assert.equal(out.audit.filter(a=>a.declaredMissing).length,5);assert.equal(out.history.length,1);assert.equal(out.formalKpiEligible,false);assert.deepEqual(f,before);});
+test('legacy undeclared slots retain HOLD and the original output shape',()=>{const out=adapt(fixture());assert.equal(out.failures.length,5);assert.equal('declaredMissingHistory' in out,false);assert.equal(out.audit[0].reason,'PDF_HISTORY_DATE_MISSING');});
+test('partial source features including raw PDF text cannot be declared empty',()=>{for(const col of ['競馬場','芝ダ','距離','着順','走破TIME','Raw_PDF']){const f=fixture();set(f,'historyTable',1,col,'known');set(f,'runnerTable',1,'KnownHistoryRuns',1);set(f,'runnerTable',1,'UnknownHistorySlots',4);const d=describe(f);assert.equal(d.length,4);const out=adapt({...f,missingHistoryDeclarations:d});assert.equal(out.failures.length,1);assert.equal(out.failures[0].reason,'PDF_HISTORY_DATE_MISSING');}});
+test('inconsistent or absent coverage keeps unknown slots on HOLD',()=>{for(const value of [null,'UNKNOWN',3,-1]){const f=fixture();set(f,'runnerTable',1,'UnknownHistorySlots',value);assert.equal(describe(f).length,0);}});
+test('sparse exports cannot prove source-empty slots',()=>{const f=fixture(),i=f.historyTable[0].indexOf('Raw_PDF');f.historyTable.forEach(r=>r.splice(i,1));assert.equal(describe(f).length,0);});
+test('forged, duplicate and cross-race declarations reject',()=>{const f=fixture(),d=describe(f);for(const bad of [[...d,d[0]],d.map((v,i)=>i? v:{...v,sourceRaceId:'other'}),d.map((v,i)=>i? v:{...v,evidenceRef:'unrelated'})])assert.throws(()=>adapt({...f,missingHistoryDeclarations:bad}),/DECLARATION_INVALID/);});
+test('a full dated past run remains separate from source-empty slots',()=>{const f=fixture();set(f,'historyTable',1,'過去走日付','2026-08-02');set(f,'runnerTable',1,'KnownHistoryRuns',1);set(f,'runnerTable',1,'UnknownHistorySlots',4);const out=adapt({...f,missingHistoryDeclarations:describe(f)});assert.equal(out.history.length,2);assert.equal(out.audit.filter(a=>a.declaredMissing).length,4);assert.equal(out.failures.length,0);});

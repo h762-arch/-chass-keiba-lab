@@ -12,8 +12,28 @@ function rows(values, required, startRow) {
     || values.slice(1).some(r => !Array.isArray(r) || r.length > values[0].length || r.some(v => v != null && !['string','number','boolean'].includes(typeof v)))) fail('PDF_TABLE_INVALID');
   return values.slice(1).map((r,i) => ({row:startRow+i, data:Object.fromEntries(values[0].map((k,j) => [k,r[j] ?? null]))}));
 }
+const identityColumns = new Set(['Race_ID','Horse_Key','馬番','馬名','Run_No']);
+const emptyCell = v => v == null || typeof v === 'string' && ['', 'UNKNOWN'].includes(v.trim());
+const emptySlot = h => Object.entries(h).filter(([k]) => !identityColumns.has(k)).every(([,v]) => emptyCell(v));
+// A source-empty declaration describes a PDF slot, never an inferred past run.
+export function describeJraPdfMissingHistory(input) {
+  const {sourceRaceId,sourceSpreadsheetId,runnerTable,historyTable,runnerStartRow=2,historyStartRow=2}=input;
+  if (!['過去走日付','競馬場','芝ダ','距離','着順','走破TIME','Raw_PDF'].every(k=>historyTable?.[0]?.includes(k))) return [];
+  const runners=rows(runnerTable,['Race_ID','Horse_Key','馬番','馬名'],runnerStartRow).filter(r=>r.data.Race_ID===sourceRaceId);
+  const histories=rows(historyTable,['Race_ID','Horse_Key','馬番','馬名','Run_No'],historyStartRow).filter(r=>r.data.Race_ID===sourceRaceId);
+  const declarations=[];
+  for (const {data:r} of runners) {
+    const hs=histories.filter(h=>h.data.Horse_Key===r.Horse_Key && num(h.data['馬番'])===num(r['馬番']) && h.data['馬名']===r['馬名']);
+    const blank=hs.filter(h=>emptySlot(h.data)),known=num(r.KnownHistoryRuns),unknown=num(r.UnknownHistorySlots);
+    if (hs.length!==5 || new Set(hs.map(h=>num(h.data.Run_No))).size!==5 || hs.some(h=>!positive(h.data.Run_No)||num(h.data.Run_No)>5)
+      || !Number.isInteger(known)||!Number.isInteger(unknown)||known<0||unknown<0||known+unknown!==5||unknown!==blank.length) continue;
+    for (const h of blank) declarations.push({sourceRaceId,sourceHorseKey:r.Horse_Key,horseNo:num(r['馬番']),horseName:r['馬名'],runNo:num(h.data.Run_No),status:'SOURCE_EMPTY',
+      evidenceRef:`${sourceSpreadsheetId}/JRA_HISTORY/row/${h.row}`});
+  }
+  return declarations;
+}
 export function adaptJraPdfEvidence({sourceRaceId, canonicalRaceId, sourceSpreadsheetId, manifestTable, runnerTable, historyTable,
-  manifestStartRow=2, runnerStartRow=2, historyStartRow=2, associations=[], statuses=[]} = {}) {
+  manifestStartRow=2, runnerStartRow=2, historyStartRow=2, associations=[], statuses=[], missingHistoryDeclarations=[]} = {}) {
   if (![sourceRaceId, canonicalRaceId, sourceSpreadsheetId].every(str) || !Array.isArray(associations) || !Array.isArray(statuses)) fail('EXPLICIT_PDF_SOURCE_REQUIRED');
   const manifests = rows(manifestTable, ['Race_ID','開催日','競馬場','レース番号','芝ダ障','距離','出走頭数'], manifestStartRow).filter(r => r.data.Race_ID === sourceRaceId);
   if (manifests.length !== 1) fail('PDF_MANIFEST_AMBIGUOUS_OR_MISSING');
@@ -26,6 +46,11 @@ export function adaptJraPdfEvidence({sourceRaceId, canonicalRaceId, sourceSpread
   if (runners.some(({data:r}) => !positive(r['馬番']) || !str(r['馬名']) || !str(r.Horse_Key))
     || new Set(runners.map(r => num(r.data['馬番']))).size !== runners.length || new Set(runners.map(r => r.data.Horse_Key)).size !== runners.length) fail('PDF_RUNNER_DUPLICATE_OR_INVALID');
   if (histories.some(({data:h}) => !runners.some(({data:r}) => num(h['馬番']) === num(r['馬番']) && h.Horse_Key === r.Horse_Key && h['馬名'] === r['馬名']))) fail('PDF_HISTORY_IDENTITY_CONFLICT');
+  if (!Array.isArray(missingHistoryDeclarations) || missingHistoryDeclarations.length>500) fail('PDF_MISSING_HISTORY_DECLARATION_INVALID');
+  const allowed=describeJraPdfMissingHistory({sourceRaceId,sourceSpreadsheetId,runnerTable,historyTable,runnerStartRow,historyStartRow});
+  const declarationKey=d=>JSON.stringify([d.sourceRaceId,d.sourceHorseKey,d.horseNo,d.horseName,d.runNo,d.status,d.evidenceRef]);
+  const keys=missingHistoryDeclarations.map(declarationKey);
+  if (new Set(keys).size!==keys.length || keys.some(k=>!allowed.some(d=>declarationKey(d)===k))) fail('PDF_MISSING_HISTORY_DECLARATION_INVALID');
   const output=[], past=[], identityMap=[], audit=[], failures=[];
   for (const item of runners) {
     const r=item.data, no=num(r['馬番']), hs=histories.filter(h => h.data.Horse_Key === r.Horse_Key);
@@ -41,6 +66,12 @@ export function adaptJraPdfEvidence({sourceRaceId, canonicalRaceId, sourceSpread
     if (resolved) identityMap.push({raceId:canonicalRaceId,horseKey:key,horseNo:no,horseName:r['馬名'],status:'PASS',evidenceRef:proofs[0].evidenceRef});
     for (const h of hs) {
       const v=h.data, rawDate=str(v['過去走日付']), fullDate=date(rawDate), reason=fullDate ? null : /^\d{2}\/\d{2}$/.test(rawDate) ? 'PDF_HISTORY_YEAR_UNCONFIRMED' : 'PDF_HISTORY_DATE_MISSING';
+      const declared=missingHistoryDeclarations.some(d=>d.sourceHorseKey===r.Horse_Key && d.runNo===num(v.Run_No));
+      if (declared) {
+        audit.push({horseNo:no,runNo:num(v.Run_No),rawDate,pastRaceDate:null,reason:'PDF_HISTORY_SOURCE_SLOT_EMPTY',declaredMissing:true,
+          refs:[{spreadsheetId:sourceSpreadsheetId,sheet:'JRA_HISTORY',row:h.row}]});
+        continue;
+      }
       if (fullDate && fullDate >= context.date) fail('PDF_HISTORY_CURRENT_OR_FUTURE');
       audit.push({horseNo:no,runNo:num(v.Run_No),rawDate,pastRaceDate:fullDate,reason,refs:[{spreadsheetId:sourceSpreadsheetId,sheet:'JRA_HISTORY',row:h.row}]});
       if (reason) { failures.push({horseNo:no,runNo:num(v.Run_No),reason}); continue; }
@@ -51,6 +82,7 @@ export function adaptJraPdfEvidence({sourceRaceId, canonicalRaceId, sourceSpread
   if (new Set(identityMap.map(h => h.horseKey)).size !== identityMap.length) fail('PDF_CANONICAL_KEY_REUSED');
   return {adapterVersion:'JRA_PDF_EVIDENCE_ADAPTER_V1',sourceRaceId,canonicalRaceId,sourceSpreadsheetId,context,
     races:table([{CanonicalRace_ID:canonicalRaceId,Org:'JRA',RaceDate:context.date,Course:context.course,R:context.raceNo,Surface:context.surface,DistanceM:context.distance,TrackCondition_EARLY:'UNKNOWN'}]),
+    ...(missingHistoryDeclarations.length ? {declaredMissingHistory:structuredClone(missingHistoryDeclarations)} : {}),
     runners:table(output),history:past.length ? table(past) : [['CanonicalRace_ID','CanonicalHorse_Key','Run_No','PastRaceDate','Finish','DistanceM']],identityMap,audit,failures,
     refs:[{spreadsheetId:sourceSpreadsheetId,sheet:'JRA_PDF_MANIFEST',row:manifests[0].row},...runners.map(r => ({spreadsheetId:sourceSpreadsheetId,sheet:'JRA_RACE_RUNNER',row:r.row}))],
     runnerCount:runners.length,historySlotCount:histories.length,joinedCount:identityMap.length,status:failures.length ? 'HOLD' : 'READY_FOR_UNVERIFIED_RESEARCH_SNAPSHOT',
