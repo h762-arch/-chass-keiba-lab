@@ -1302,7 +1302,7 @@ async function loadViewerDay() {
 
     renderDay(day);
     updateAddressBar(activeContext);
-    setStatus('', 'success');
+    setStatus(viewerAllowsMarketOverlay(day) ? '' : '保存済みEARLY能力予想を表示しています。オッズ・EV・💎・⚠️はこの表示に未接続です。', 'success');
 
     const cached = trackDiscoveryCache.get(`${date}|${organization}`) || [];
     renderTrackChips(cached);

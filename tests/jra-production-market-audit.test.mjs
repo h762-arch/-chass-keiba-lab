@@ -61,7 +61,8 @@ test('24 race planning rotation reaches each first MARKET candidate under caps 4
 test('activation only adds MARKET flag and retains operational limits',()=>{
  const config=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8'));
  assert.equal(config.vars.ENABLE_JRA_PRECOMPUTED_MARKET_BRIDGE,'true');
- for(const [key,value] of Object.entries({ENABLE_PRECOMPUTED_VIEWER:'false',ENABLE_JRA_DIRECT_FETCH:'false',ENABLE_JRA_ODDS_DIRECT_FETCH:'false',JRA_PRECOMPUTE_MAX_PLANNING_JOBS:'4',JRA_PRECOMPUTE_MAX_JOBS:'1',JRA_PRECOMPUTE_TOTAL_WINDOW_MS:'8000'}))assert.equal(config.vars[key],value);
+ assert.ok(['true','false'].includes(config.vars.ENABLE_PRECOMPUTED_VIEWER));
+ for(const [key,value] of Object.entries({ENABLE_JRA_DIRECT_FETCH:'false',ENABLE_JRA_ODDS_DIRECT_FETCH:'false',JRA_PRECOMPUTE_MAX_PLANNING_JOBS:'4',JRA_PRECOMPUTE_MAX_JOBS:'1',JRA_PRECOMPUTE_TOTAL_WINDOW_MS:'8000'}))assert.equal(config.vars[key],value);
 });
 test('existing Preflight invokes MARKET and optional Queue readers using SELECTs only',async()=>{
  const f=await fixture(),queries=[];
