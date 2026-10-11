@@ -5,6 +5,45 @@
   "branch": "chass-data",
   "snapshots": [
     {
+      "date": "2026-10-11",
+      "track": "京都",
+      "trackSlug": "kyoto",
+      "organization": "JRA",
+      "raceCount": 1,
+      "totalHorseCount": 15,
+      "latestPredictionAt": "2026-10-11T00:27:50.680Z",
+      "latestOddsAt": "2026-10-11T00:27:50.680Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-10-11/kyoto/day.json"
+    },
+    {
+      "date": "2026-10-11",
+      "track": "盛岡",
+      "trackSlug": "morioka",
+      "organization": "NAR",
+      "raceCount": 1,
+      "totalHorseCount": 12,
+      "latestPredictionAt": "2026-10-11T00:37:48.343Z",
+      "latestOddsAt": "2026-10-11T00:37:48.343Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-10-11/morioka/day.json"
+    },
+    {
+      "date": "2026-10-11",
+      "track": "東京",
+      "trackSlug": "tokyo",
+      "organization": "JRA",
+      "raceCount": 2,
+      "totalHorseCount": 31,
+      "latestPredictionAt": "2026-10-11T00:40:13.682Z",
+      "latestOddsAt": "2026-10-11T00:40:13.682Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-10-11/tokyo/day.json"
+    },
+    {
       "date": "2026-10-08",
       "track": "大井",
       "trackSlug": "ooi",
