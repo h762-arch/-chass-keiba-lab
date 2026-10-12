@@ -12,6 +12,7 @@ import {backgroundPrecomputeEnabled} from './src/prediction/background-precomput
 import {createJraPrecomputeWorkerRunner} from './src/prediction/jra-precompute-worker-scaffold.mjs';
 import {createJraMarketQueueWorkerRunner} from './src/prediction/jra-market-queue-worker.mjs';
 import {handleJraPrecomputedViewerPublicApi} from './src/prediction/jra-precomputed-viewer-api.mjs';
+import {createNarAbilityPrecomputeRunner,handleNarAbilityViewer,fetchNarPrecomputeHtml,assertNarAbilityCardIdentity} from './src/prediction/nar-ability-precompute.mjs';
 import {composeJraFrozenMarketResponse} from './src/prediction/jra-viewer-frozen-market.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
@@ -694,6 +695,8 @@ export async function handlePublicApi(request,env){
  if(u.pathname.endsWith('/health')){try{await DB.prepare('SELECT 1 AS ok').first();return publicJson({ok:true,service:'CHASS KEIBA LAB',version:VERSION,apiVersion:'1',mode:'read-only',database:true,timestamp:new Date().toISOString()},{cache:'public, max-age=60, s-maxage=60',head})}catch{return publicError('DATABASE_UNAVAILABLE','Prediction storage is unavailable.',503,publicCorsHeaders('no-store'),head)}}
  try{publicStage='D1_QUERY';
   if(snapshotPath){const {date,track,organization,slug}=snapshotPath,read=await publicAbilityMappedRaces(DB,{date,track}),races=read.races.filter(r=>r.date===date&&r.track===track&&publicOrganization(r)===organization&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested snapshot were not found.',404,publicCorsHeaders('no-store'),head);publicStage='BUILD_DAY_PAYLOAD';const modifiedAt=publicSnapshotModifiedAt(read),payload=publicSnapshotPayload(races,{date,track,failures:read.failures||[],modifiedAt}),fingerprint=d1Fingerprint(payload)?.split(':').at(-1)||'unknown',etag=`"chass-${date.replaceAll('-','')}-${slug}-${fingerprint}"`,lastModified=modifiedAt?new Date(modifiedAt).toUTCString():null,item={payload,etag,lastModified};await publicSnapshotCacheWrite(env,snapshotPath,item);const processingMs=Math.max(0,Date.now()-startedAt);if(request.headers.get('if-none-match')===etag)return new Response(null,{status:304,headers:{...publicCorsHeaders('public, max-age=60, s-maxage=120, stale-while-revalidate=60'),ETag:etag,'X-CHASS-Cache':'MISS','X-CHASS-Processing-Ms':String(processingMs),...(lastModified?{'Last-Modified':lastModified}:{})}});publicStage='JSON_SERIALIZE';const response=publicSnapshotResponse(item,{head,cacheStatus:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',processingMs});console.info('[CHASS AI SNAPSHOT]',{requestId,date,track,stage:'COMPLETE',processingMs,responseBytes:Number(response.headers.get('X-CHASS-Response-Bytes'))||0,cacheHit:!!read.cacheHit,edgeCache:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',etag});return response}
+  const narResponse=await handleNarAbilityViewer(request,env);
+  if(narResponse)return head?new Response(null,{status:narResponse.status,headers:narResponse.headers}):narResponse;
   const precomputedViewerResponse=await handleJraPrecomputedViewerPublicApi(request,env,DB,{head});
   if(precomputedViewerResponse)return head?precomputedViewerResponse:await composeJraFrozenMarketResponse(precomputedViewerResponse,DB);
   const organization=String(u.searchParams.get('organization')||'').toUpperCase(),filterOrg=organization==='JRA'||organization==='NAR'?organization:null,outputParam=u.searchParams.get('format'),format=outputParam==='compact',requestedDate=u.searchParams.get('date')||'',requestedTrack=normalizePublicTrack(u.searchParams.get('track')||''),abilityCompact=format&&(u.pathname.endsWith('/day-ai')||u.pathname.endsWith('/race')),read=abilityCompact&&requestedDate&&requestedTrack?await publicAbilityMappedRaces(DB,{date:requestedDate,track:requestedTrack}):await publicMappedRaces(DB,{date:requestedDate,track:requestedTrack||'',limit:requestedDate&&requestedTrack?24:40}),mapped=read.races;
@@ -882,6 +885,12 @@ export default{
   const scheduledNow=new Date(controller?.scheduledTime||Date.now());
   const marketQueueRunner=createJraMarketQueueWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()});
   const task=runScheduledTasks(env?.DB,{now:scheduledNow,env,precomputeRunner:createJraPrecomputeWorkerRunner(env,{scheduledTime:controller?.scheduledTime,wallNow:()=>Date.now()})}).then(async result=>{
+   const narRunner=createNarAbilityPrecomputeRunner(env,{scheduledTime:controller?.scheduledTime,meeting:({code,date,timeoutMs})=>fetchNarMeeting({code,date,fetcher:u=>fetchNarPrecomputeHtml(u,{timeoutMs})}),card:async({code,date,race,track,timeoutMs})=>{
+    const urls=historicalNarUrls(code,date,race),html=await fetchNarPrecomputeHtml(urls.detail,{timeoutMs});
+    assertNarAbilityCardIdentity(html,{date,track,race});
+    return buildNarRacePayloadStable({code,date,race,urls,fetcher:async u=>{if(u!==urls.detail)throw new Error('OPTIONAL_DISABLED');return html;}});
+   }});
+   if(narRunner){try{result={...result,narAbility:await narRunner()};console.info('[CHASS NAR PRECOMPUTE]',result.narAbility);}catch{result={...result,narAbility:{status:'BLOCKED',reason:'NAR_RUN_FAILED'}};}}
    if(!marketQueueRunner)return result;
    let marketQueue;
    try{marketQueue=await marketQueueRunner()}
