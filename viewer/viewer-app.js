@@ -1310,7 +1310,7 @@ async function loadViewerDay() {
 
     renderDay(day);
     updateAddressBar(activeContext);
-    setStatus(viewerAllowsMarketOverlay(day) ? '' : day.viewerMode==='precomputed-early-frozen-market'?'EARLY能力予想と検証済みの固定市場を表示しています。EV・💎・⚠️は未接続です。':'保存済みEARLY能力予想を表示しています。オッズ・EV・💎・⚠️はこの表示に未接続です。', 'success');
+    setStatus(day.viewerMode==='nar-precomputed-ability-research'?'NAR事前能力計算・研究用。能力順位と実走由来TIMEを表示します。勝率・複勝率・市場・EV・Signalは未接続です。':viewerAllowsMarketOverlay(day) ? '' : day.viewerMode==='precomputed-early-frozen-market'?'EARLY能力予想と検証済みの固定市場を表示しています。EV・💎・⚠️は未接続です。':'保存済みEARLY能力予想を表示しています。オッズ・EV・💎・⚠️はこの表示に未接続です。', 'success');
 
     const cached = trackDiscoveryCache.get(`${date}|${organization}`) || [];
     renderTrackChips(cached);
