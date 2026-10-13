@@ -1144,3 +1144,8 @@ button,input,select { font: inherit; }
   .viewer-ability-stat span { font-size: 7px; }
   .viewer-ability-stat strong { font-size: 11px; }
 }
+
+/* NAR research ability rows: independent of formal marks and market cards. */
+.viewer-nar-ability-row { padding: 16px; border-top: 1px solid var(--border, #29313b); }
+.viewer-nar-ability-row p { margin: 8px 0; font-size: 14px; line-height: 1.6; }
+.viewer-nar-ability-row small { color: var(--muted, #9ba3af); }

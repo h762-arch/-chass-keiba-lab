@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {narAbilityDisplayRows as rows,narAbilityTableRow as row,narAbilityMobileBody as mobile} from '../viewer/nar-ability-view.js';
+const horse={horseNo:1,horseName:'テスト',abilityScore:87.5,abilityRank:1,predictedTimeText:'0:55.1',runnerStatus:'active'};
+const doc={createElement:tag=>({tag,textContent:'',children:[],append(...v){this.children.push(...v);}})};
+test('NAR research readout exposes ability rank/score and TIME without probability or marks',()=>{const out=rows({horses:[horse]})[0];assert.equal(out.score,'87.5');assert.equal(out.rank,'1位');assert.equal(out.time,'0:55.1');assert.equal('mark' in out,false);assert.equal('probability' in out,false);});
+test('missing ability/TIME and unknown/inactive status retain explicit labels',()=>{const out=rows({horses:[{horseNo:2,abilityScore:null,abilityRank:null,runnerStatus:'unknown'},{...horse,runnerStatus:'scratched'}]});assert.equal(out[0].score,'未確認');assert.equal(out[0].rank,'未確認');assert.equal(out[0].time,'TIME未生成');assert.equal(out[0].status,'状態未確認');assert.equal(out[1].status,'取消');});
+test('desktop and mobile create text nodes and never mutate the original horses',()=>{const h={...horse,horseName:'<img src=x onerror=alert(1)>'},before=structuredClone(h),table=row(doc,h),body=mobile(doc,{horses:[h]});assert.equal(table.children.length,6);assert.equal(table.children[1].textContent,h.horseName);assert.equal(body.children[1].children[0].textContent,`1番 ${h.horseName}`);assert.deepEqual(h,before);});
+test('research presentation is selected only for the explicit NAR research mode',async()=>{const app=await readFile(new URL('../viewer/viewer-app.js',import.meta.url),'utf8');assert.match(app,/raceCard\(race,day.viewerMode==='nar-precomputed-ability-research'\)/);assert.match(app,/showAbility\?narAbilityMobileBody\(document,race\):mobileRaceBody\(race\)/);assert.match(app,/<th>能力値<\/th><th>能力順位<\/th>/);assert.match(app,/globalLegend.hidden=true/);});
