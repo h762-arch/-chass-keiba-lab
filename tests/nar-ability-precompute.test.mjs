@@ -1,3 +1,4 @@
+import {narAbilityRunWindow} from '../src/prediction/nar-ability-run-window.mjs';
 import {handlePublicApi} from '../worker.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,10 +45,43 @@ test('missing canary configuration and expired dates block before DB or discover
 test('canary stop time reached during discovery prevents any card or save',async()=>{const f=fixture();let at=f.clock(),calls=0;const out=await f.run({wallNow:()=>at,meeting:async j=>{at=Date.parse(f.env.NAR_PRECOMPUTE_STOP_AT);return f.meeting(j);},card:async()=>{calls++;}});assert.equal(out.saved,0);assert.equal(calls,0);});
 test('read-only canary status reports saved coverage and does not fetch or insert',async()=>{const f=fixture();await f.run();const before=JSON.stringify(f.DB.rows),out=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(out.active,true);assert.equal(out.schemaReady,true);assert.equal(out.savedRaceCount,3);assert.equal(out.races[0].timeCount,2);assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:Date.parse('2026-10-13T06:00:00Z')})).active,false);});
 test('canary status rejects invalid dates and exposes unreadable schema without guessing zero',async()=>{const f=fixture();assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'bad'})).ok,false);f.env.DB={prepare(){throw Error('missing');}};const out=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(out.schemaReady,false);assert.equal(out.savedRaceCount,null);});
-test('production canary configuration is one venue, same-day expiry and preserves JRA caps',async()=>{
- const config=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));assert.equal(config.vars.NAR_PRECOMPUTE_TRACK_CODES,'21');assert.equal(config.vars.NAR_PRECOMPUTE_CANARY_DATE,'2026-10-13');assert.equal(config.vars.NAR_PRECOMPUTE_MAX_JOBS,'3');assert.equal(config.vars.JRA_PRECOMPUTE_MAX_JOBS,'1');assert.equal(config.vars.JRA_PRECOMPUTE_MAX_PLANNING_JOBS,'4');assert.equal(config.vars.NAR_PRECOMPUTE_STOP_AT,'2026-10-13T14:55:00+09:00');
+test('production daily trial is one venue, seven days and preserves JRA caps',async()=>{
+ const config=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));assert.equal(config.vars.NAR_PRECOMPUTE_TRACK_CODES,'21');assert.equal(config.vars.NAR_PRECOMPUTE_RUN_MODE,'daily');assert.equal(config.vars.NAR_PRECOMPUTE_DAILY_FROM,'2026-10-14');assert.equal(config.vars.NAR_PRECOMPUTE_DAILY_UNTIL,'2026-10-20');assert.equal(config.vars.NAR_PRECOMPUTE_MAX_JOBS,'3');assert.equal(config.vars.JRA_PRECOMPUTE_MAX_JOBS,'1');assert.equal(config.vars.JRA_PRECOMPUTE_MAX_PLANNING_JOBS,'4');assert.equal(config.vars.NAR_PRECOMPUTE_DAILY_START_JST,'07:00');assert.equal(config.vars.NAR_PRECOMPUTE_DAILY_STOP_JST,'14:55');assert.equal(config.vars.NAR_PRECOMPUTE_STOP_AT,undefined);
 });
 
 test('real public handler exposes canary status as GET/HEAD only without D1 writes',async()=>{const f=fixture();await f.run();const before=JSON.stringify(f.DB.rows),url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13';const response=await handlePublicApi(new Request(url),f.env);assert.equal(response.status,200);assert.equal((await response.json()).savedRaceCount,3);assert.equal(response.headers.get('access-control-allow-origin'),'*');assert.equal((await handlePublicApi(new Request(url,{method:'HEAD'}),f.env)).status,200);assert.equal((await handlePublicApi(new Request(url,{method:'POST'}),f.env)).status,405);assert.equal((await handlePublicApi(new Request(url.replace('2026-10-13','bad')),f.env)).status,400);assert.equal(JSON.stringify(f.DB.rows),before);});
 
 test('existing JRA market queue precedes NAR and busy result runs suppress NAR work',async()=>{const worker=await readFile(new URL('../worker.js',import.meta.url),'utf8'),part=worker.slice(worker.indexOf('async scheduled'));assert.ok(part.indexOf('await marketQueueRunner()')<part.indexOf('narAbility:await narRunner()'));assert.match(part,/Number\(result.autoResult\?\.processed\)>=3/);assert.match(part,/AUTO_RESULT_PRIORITY/);});
+
+const dailySettings={NAR_PRECOMPUTE_RUN_MODE:'daily',NAR_PRECOMPUTE_DAILY_FROM:'2026-10-14',NAR_PRECOMPUTE_DAILY_UNTIL:'2026-10-20',NAR_PRECOMPUTE_DAILY_START_JST:'07:00',NAR_PRECOMPUTE_DAILY_STOP_JST:'14:55'};
+const jst=d=>Date.parse(d+'+09:00');
+test('daily window uses JST including inclusive trial dates and exclusive daily stop',()=>{
+ for(const [at,active,reason] of [['2026-10-13T08:00:00',false,'DAILY_DATE_CLOSED'],['2026-10-14T06:59:59',false,'DAILY_WINDOW_CLOSED'],['2026-10-14T07:00:00',true],['2026-10-20T14:54:59',true],['2026-10-20T14:55:00',false,'DAILY_WINDOW_CLOSED'],['2026-10-21T08:00:00',false,'DAILY_DATE_CLOSED']]){const w=narAbilityRunWindow(dailySettings,jst(at));assert.equal(w.active,active);assert.equal(w.reason,reason);}
+ assert.equal(narAbilityRunWindow(dailySettings,Date.parse('2026-10-13T22:00:00Z')).date,'2026-10-14');
+});
+test('missing daily settings, invalid dates, overnight windows and excessive trial fail closed',()=>{
+ for(const patch of [{NAR_PRECOMPUTE_DAILY_FROM:''},{NAR_PRECOMPUTE_DAILY_FROM:'2026-02-30'},{NAR_PRECOMPUTE_DAILY_UNTIL:'2026-10-13'},{NAR_PRECOMPUTE_DAILY_UNTIL:'2026-10-21'},{NAR_PRECOMPUTE_DAILY_START_JST:'7:00'},{NAR_PRECOMPUTE_DAILY_STOP_JST:'07:00'},{NAR_PRECOMPUTE_DAILY_START_JST:'23:00'},{NAR_PRECOMPUTE_RUN_MODE:'unknown'}])assert.equal(narAbilityRunWindow({...dailySettings,...patch},jst('2026-10-14T08:00:00')).status,'BLOCKED');
+});
+test('closed daily schedule touches neither schema nor official source',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);f.env.DB={prepare(){throw Error('must not query');}};let calls=0;
+ for(const at of ['2026-10-13T08:00:00','2026-10-14T06:59:59','2026-10-14T14:55:00','2026-10-21T08:00:00']){const out=await f.run({wallNow:()=>jst(at),meeting:async()=>{calls++;}});assert.equal(out.status,'SKIPPED');}assert.equal(calls,0);
+});
+test('daily schedule saves distinct days, preserves original rows and reads after expiry',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);let at=jst('2026-10-14T08:00:00');const extra={wallNow:()=>at};assert.equal((await f.run(extra)).saved,3);assert.equal((await f.run(extra)).saved,1);const first=JSON.stringify(f.DB.rows);assert.equal((await f.run(extra)).saved,0);assert.equal(JSON.stringify(f.DB.rows),first);
+ at=jst('2026-10-15T08:00:00');assert.equal((await f.run(extra)).saved,3);assert.equal(f.DB.rows.length,7);assert.match(f.DB.rows[4].race_id,/^20261015-/);
+ const response=await api(new Request(req().url.replace('2026-10-13','2026-10-14')),f.env);assert.equal((await response.json()).count,4);
+ const status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-14',now:jst('2026-10-21T08:00:00')});assert.equal(status.active,false);assert.equal(status.savedRaceCount,4);assert.equal(status.scheduleMode,'daily');
+});
+test('daily stop reached during discovery prevents cards and writes',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);let at=jst('2026-10-14T14:54:59'),calls=0;
+ const out=await f.run({wallNow:()=>at,meeting:async j=>{at=jst('2026-10-14T14:55:00');return f.meeting(j);},card:async()=>{calls++;}});assert.equal(calls,0);assert.equal(out.saved,0);assert.equal(f.DB.rows.length,0);
+});
+test('daily stop reached after card acquisition prevents save',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);let at=jst('2026-10-14T14:54:59');const out=await f.run({wallNow:()=>at,card:async j=>{const p=await f.card(j);at=jst('2026-10-14T14:55:00');return {...p,postTime:'15:00'};}});assert.equal(out.saved,0);assert.equal(f.DB.rows.length,0);assert.ok(out.events.some(e=>e.reason==='DEADLINE'));
+});
+test('daily post-off cards remain rejected within an otherwise active window',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);const out=await f.run({wallNow:()=>jst('2026-10-14T08:00:00'),card:async j=>({...await f.card(j),postTime:'08:00'})});assert.equal(out.saved,0);assert.ok(out.events.every(e=>['POST_TIME_REACHED','NOT_SELECTED_LIMIT'].includes(e.reason)));
+});
+test('daily status cannot claim another date active or bypass invalid schedule',async()=>{
+ const f=fixture();Object.assign(f.env,dailySettings);const now=jst('2026-10-14T08:00:00');assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'2026-10-14',now})).active,true);assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now})).active,false);f.env.NAR_PRECOMPUTE_DAILY_STOP_JST='bad';const out=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-14',now});assert.equal(out.active,false);assert.equal(out.scheduleReason,'DAILY_CONFIGURATION_INVALID');
+});
