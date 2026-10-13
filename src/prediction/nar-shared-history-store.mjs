@@ -54,6 +54,7 @@ export async function verifyNarRollingHistory(pack,{horseKey,targetDate,sourceAc
  }catch{return false;}
 }
 export async function materializeNarSharedHistory(DB,{raceId,sourceAcquiredAt,cutoffAt,horses,links,canContinue=()=>true}){
+ const startedAt=performance.now();
  guard(canContinue);if(!await narSharedHistorySchemaReady(DB))throw Error('HISTORY_SCHEMA_UNAVAILABLE');
  if(!isoOK(cutoffAt)||!links?.body||Date.parse(cutoffAt)<Date.parse(links.body.observedAt)||Date.parse(cutoffAt)>=Date.parse(`${links.body.date}T${links.body.postTime}:00+09:00`))throw Error('HISTORY_WRITE_CONTEXT');
  if(!Array.isArray(horses)||horses.length<1||horses.length>30||new Set(horses.map(h=>h.horseNo)).size!==horses.length||new Set(horses.map(h=>h.history?.body.globalHorseIdentity)).size!==horses.length)throw Error('HISTORY_IDENTITY_UNVERIFIED');
@@ -80,5 +81,5 @@ export async function materializeNarSharedHistory(DB,{raceId,sourceAcquiredAt,cu
  const projected=[];
  for(const h of horses){guard(canContinue);projected.push({...h,rollingHistory:await readNarRollingHistory(DB,{horseKey:keys.get(h.horseNo),targetDate:links.body.date,cutoffAt,canContinue})});}
  guard(canContinue);
- return {horses:projected,audit:{status:'PARTIAL',reasonCode:'ROLLING_HISTORY_RESEARCH_ONLY',insertedObservationCount:inserted,existingObservationCount:existing,unresolvedObservationCount:unresolved,availableEpisodeCount:projected.reduce((n,h)=>n+h.rollingHistory.body.availableCount,0),heldEpisodeCount:projected.reduce((n,h)=>n+h.rollingHistory.body.heldCount,0),cutoffAt,recoveryAction:'Accumulate identified observations in new eligible runs; resolve conflicts before model use.'}};
+ return {horses:projected,audit:{status:'PARTIAL',reasonCode:'ROLLING_HISTORY_RESEARCH_ONLY',insertedObservationCount:inserted,existingObservationCount:existing,unresolvedObservationCount:unresolved,availableEpisodeCount:projected.reduce((n,h)=>n+h.rollingHistory.body.availableCount,0),heldEpisodeCount:projected.reduce((n,h)=>n+h.rollingHistory.body.heldCount,0),elapsedMs:Math.max(0,Math.round(performance.now()-startedAt)),cutoffAt,recoveryAction:'Accumulate identified observations in new eligible runs; resolve conflicts before model use.'}};
 }

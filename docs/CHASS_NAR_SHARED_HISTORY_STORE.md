@@ -1,4 +1,4 @@
-# NAR shared history research store (Phase138)
+# NAR shared history research store (Phase139 activation audit)
 
 ## Scope and contract
 
@@ -48,32 +48,34 @@ Additional D1 work has not been benchmarked in production. Large fields can
 require up to five observation writes/readbacks per runner plus its read query;
 do not infer daily throughput or full ten-run coverage from unit tests.
 
+On a successful shared-store materialization, each frozen `historyStoreAudit`
+keeps inserted/existing/unresolved and available/held counts and now also records
+`elapsedMs`. This is the shared-store materialization duration for that race, not
+the full Cron invocation time. HOLD paths continue to expose bounded reason
+codes; a deadline HOLD is evidence that the current budget boundary was reached,
+not permission to enlarge the 20-second budget automatically.
+
 ## Provisioning and activation
 
-The patch ships `ENABLE_NAR_SHARED_HISTORY=false`. Merge/deploy alone does not
-enable store writes. History link enrichment remains enabled. There is no
-automatic DDL or production migration from Cron.
+Phase139 sets `ENABLE_NAR_SHARED_HISTORY=true` inside the already bounded daily
+trial. It does not create, recreate, or migrate D1. History link enrichment
+remains enabled and there is still no automatic DDL from Cron.
 
 1. Verify Bridge PR/CI and deployed revision.
-2. Confirm the selected production D1 matches the Worker's `DB` binding.
-3. Apply only `migrations/0014_nar_shared_history.sql` in that D1 console.
-   The script is additive/idempotent; it does not alter snapshot tables. Do not
-   run every historical migration indiscriminately.
-4. Check columns with `PRAGMA table_info(nar_shared_history_observations);` and
-   inspect all objects:
-
-   ```sql
-   SELECT type,name FROM sqlite_master
-   WHERE tbl_name='nar_shared_history_observations' ORDER BY type,name;
-   ```
-
-   Expect one table, the named read index (plus primary-key autoindex), and both
-   no-update/no-delete triggers. The public nar-precompute-status endpoint must
-   report historyStoreSchemaReady=true. That field validates column readability;
-   object inspection is additionally required to verify indexes/triggers.
-5. In a separate reviewed activation change, set ENABLE_NAR_SHARED_HISTORY=true
-   within the existing daily trial. Measure real D1 duration, deadline outcomes,
-   saved coverage and per-race historyStoreAudit before expanding.
+2. Confirm the selected production D1 still matches the Worker's `DB` binding.
+3. Confirm the already-provisioned schema before relying on new DATA. The public
+   nar-precompute-status endpoint must report `historyStoreSchemaReady=true`.
+   If object-level reinspection is needed, use the Phase138 PRAGMA/sqlite_master
+   checks; do not rerun migration history merely because the flag is enabled.
+4. Keep Kawasaki-only, maxJobs=3, the 20-second budget, the existing five-minute
+   Cron, and the 2026-10-14 through 2026-10-20 daily trial unchanged.
+5. For each newly saved race, inspect `historyStoreAudit`: status/reasonCode,
+   insertedObservationCount, existingObservationCount,
+   unresolvedObservationCount, availableEpisodeCount, heldEpisodeCount and
+   elapsedMs. Inspect `rollingHistoryPacks` separately for the frozen readback.
+6. Do not infer success from activation alone. Distinguish new inserts, existing
+   reuse, HOLD, deadline, ALREADY_SAVED and not-yet-processed races. Do not
+   backfill or rewrite previously frozen DATA.
 
 When enabled without schema or verified identities, the ability snapshot may
 still save, with explicit HOLD and no rolling projection. The shared-store
@@ -87,5 +89,6 @@ Real SQLite tests cover immutable DDL/idempotency, per-horse identity isolation,
 cross-race provenance, cutoff-based conflict visibility, latest ten slots,
 tampering, schema/readback failure, explicit disabled/HOLD fallback, Cron-to-API
 readback, original snapshot preservation, and Pack V1–V4 compatibility.
-Production provisioning, enabled throughput, and actual cross-day coverage
-remain unverified until the separate activation audit.
+Production enabled throughput, observed elapsed time, actual reuse, and cross-day
+coverage remain unverified until Phase139 is deployed and new eligible DATA is
+read back from the public status/viewer APIs.
