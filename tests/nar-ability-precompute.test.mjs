@@ -1,3 +1,4 @@
+import {retainNarAbilityEvidence,auditNarAbilityEvidence} from '../src/prediction/nar-ability-evidence.mjs';
 import {narAbilityRunWindow} from '../src/prediction/nar-ability-run-window.mjs';
 import {handlePublicApi} from '../worker.js';
 import test from 'node:test';
@@ -84,4 +85,22 @@ test('daily post-off cards remain rejected within an otherwise active window',as
 });
 test('daily status cannot claim another date active or bypass invalid schedule',async()=>{
  const f=fixture();Object.assign(f.env,dailySettings);const now=jst('2026-10-14T08:00:00');assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'2026-10-14',now})).active,true);assert.equal((await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now})).active,false);f.env.NAR_PRECOMPUTE_DAILY_STOP_JST='bad';const out=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-14',now});assert.equal(out.active,false);assert.equal(out.scheduleReason,'DAILY_CONFIGURATION_INVALID');
+});
+
+test('evidence projection retains bounded official components without market or arbitrary fields',()=>{
+ const input={runs:[{sameDistance:true,sameTrack:true,odds:4},{sameDistance:false,sameTrack:false}],recentIndex:Array.from({length:20},(_,i)=>i),timeIndex:80,fiveRaceAvgIndex:75,distanceIndex:70,courseIndex:65,predictedTime:'1:30.0',predictedTimeType:'実績',predictedTimeConfidence:86,odds:5,abilityWinRate:60,features:{market:5}};
+ const before=structuredClone(input),e=retainNarAbilityEvidence(input);assert.equal(e.runCount,2);assert.equal(e.sameDistanceCount,1);assert.equal(e.sameTrackCount,1);assert.equal(e.recentIndices.length,10);assert.equal(e.timeType,'実績');assert.equal(e.timeMissingReason,null);assert.deepEqual(e.components,{timeIndex:80,fiveRaceAvgIndex:75,distanceIndex:70,courseIndex:65});assert.equal('odds' in e,false);assert.equal('features' in e,false);assert.equal('abilityWinRate' in e,false);assert.deepEqual(input,before);
+});
+test('upstream TIME reasons are retained exactly, unknown reasons remain unavailable',()=>{
+ for(const reason of ['time_missing_no_history','time_missing_no_same_surface','time_missing_parse','time_missing_unknown'])assert.equal(retainNarAbilityEvidence({predictedTimeMissingReason:reason}).timeMissingReason,reason);
+ assert.equal(retainNarAbilityEvidence({predictedTimeMissingReason:'made_up'}).timeMissingReason,'TIME_REASON_UNAVAILABLE');assert.equal(retainNarAbilityEvidence({}).runCount,null);
+});
+test('old snapshots distinguish unretained reasons from known no-history',()=>{
+ const audit=auditNarAbilityEvidence([{horseNo:1,abilityScore:null,predictedTime:null},{horseNo:2,abilityScore:null,evidence:retainNarAbilityEvidence({runs:[],predictedTimeMissingReason:'time_missing_no_history'})}]);assert.equal(audit.horses[0].abilityReason,'EVIDENCE_NOT_RETAINED');assert.equal(audit.horses[0].timeReason,'EVIDENCE_NOT_RETAINED');assert.equal(audit.horses[1].abilityReason,'NO_PARSED_HISTORY');assert.equal(audit.horses[1].timeReason,'time_missing_no_history');assert.equal(audit.retainedEvidenceCount,1);
+});
+test('quality audit separates active runners and never substitutes probability for ability coverage',()=>{
+ const audit=auditNarAbilityEvidence([{horseNo:1,abilityScore:80,predictedTime:'1:30.0',runnerStatus:'active'},{horseNo:2,abilityScore:70,runnerStatus:'active'},{horseNo:3,abilityScore:null,runnerStatus:'scratched'}]);assert.equal(audit.horseCount,3);assert.equal(audit.activeHorseCount,2);assert.equal(audit.activeAbilityCount,2);assert.equal(audit.activeTimeCount,1);assert.equal(audit.abilityComplete,true);assert.equal(audit.probabilityStatus,'MODEL_HOLD');assert.equal(audit.probabilityReason,'PROBABILITY_MODEL_NOT_CONNECTED');assert.equal(auditNarAbilityEvidence([{abilityScore:null},{abilityScore:70}]).abilityComplete,false);assert.equal(auditNarAbilityEvidence([]).abilityComplete,false);
+});
+test('new evidence is persisted in immutable DATA and exposed through read-only status and Viewer',async()=>{
+ const f=fixture();await f.run({card:async j=>({...await f.card(j),horses:[{horseNo:1,horseName:'A',abilityScore:80,predictedTime:'1:30.0',runs:[{sameDistance:true}],timeIndex:80,predictedTimeType:'実績'},{horseNo:2,horseName:'B',abilityScore:70,runs:[],predictedTimeMissingReason:'time_missing_no_history'}]})});const first=JSON.stringify(f.DB.rows),data=JSON.parse(f.DB.rows[0].data_json);assert.equal(data.horses[0].evidence.runCount,1);assert.equal(data.horses[1].evidence.timeMissingReason,'time_missing_no_history');const status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(status.races[0].quality.activeTimeCount,1);const body=await (await api(req(),f.env)).json();assert.equal(body.races[0].quality.retainedEvidenceCount,2);assert.equal(body.races[0].horses[0].probability.win,null);assert.equal(body.races[0].horses[0].probability.reasonCode,'PROBABILITY_MODEL_NOT_CONNECTED');assert.equal(JSON.stringify(f.DB.rows),first);
 });

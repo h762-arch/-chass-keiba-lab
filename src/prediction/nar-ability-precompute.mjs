@@ -1,3 +1,4 @@
+import {retainNarAbilityEvidence,auditNarAbilityEvidence} from './nar-ability-evidence.mjs';
 import {narAbilityRunWindow} from './nar-ability-run-window.mjs';
 import {meetingText} from '../../meeting-discovery.mjs';
 import {createPrecomputedSnapshot,createSnapshotHash} from './precomputed-snapshot.mjs';
@@ -57,7 +58,7 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,wallNow=Date.
     if(!Array.isArray(p.horses)||p.horses.length<2||p.horses.length>30||new Set(p.horses.map(h=>Number(h.horseNo))).size!==p.horses.length||p.horses.some(h=>!Number.isInteger(Number(h.horseNo))||Number(h.horseNo)<1||Number(h.horseNo)>30||typeof h.horseName!=='string'||!h.horseName.trim()||h.horseName.length>80))fail('FIELD_INVALID');
     const active=p.horses.filter(h=>!['scratched','excluded','withdrawn'].includes(h.horseStatus||h.runnerStatus)),scored=active.filter(h=>number(h.abilityScore)!=null);if(scored.length<2)fail('ABILITY_INSUFFICIENT');
     const ranks=new Map([...scored].sort((a,b)=>b.abilityScore-a.abilityScore||a.horseNo-b.horseNo).map((h,i)=>[Number(h.horseNo),i+1]));
-    const data={race:{date,track:job.track,raceNo:job.race,raceName:p.raceName||'',postTime:p.postTime,surface:p.surface,distance:p.distance},horses:p.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,abilityScore:number(h.abilityScore),abilityRank:ranks.get(Number(h.horseNo))??null,predictedTime:h.predictedTime||null,runnerStatus:h.horseStatus||h.runnerStatus||'active'})),...flags};
+    const data={race:{date,track:job.track,raceNo:job.race,raceName:p.raceName||'',postTime:p.postTime,surface:p.surface,distance:p.distance},horses:p.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,abilityScore:number(h.abilityScore),abilityRank:ranks.get(Number(h.horseNo))??null,predictedTime:h.predictedTime||null,runnerStatus:h.horseStatus||h.runnerStatus||'active',evidence:retainNarAbilityEvidence(h)})),...flags};
     const iso=new Date(at).toISOString(),snapshot=await createPrecomputedSnapshot({organization:'NAR',raceId:job.raceId,source:{organization:'NAR',raceId:job.raceId,date,track:job.track,raceNo:job.race,acquiredAt:iso,source:'NAR_OFFICIAL_CARD',...flags},data,versions:{calculationVersion:NAR_ABILITY_VERSION,modelVersion:NAR_ABILITY_VERSION},now:iso});
     if(wallNow()>=post||!remaining())fail('DEADLINE');
     const values=snapshotToD1Values(snapshot,{revision:1,createdAt:new Date(wallNow()).toISOString()});
@@ -76,7 +77,7 @@ export async function handleNarAbilityViewer(request,env){
   const code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
   if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||!Number.isFinite(Date.parse(s.sourceAcquiredAt)))continue;
   if(!Object.values(TRACKS).includes(d.race.track)||!s.raceId.startsWith(prefix)||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))continue;
-  seen.add(s.raceId);races.push({raceId:s.raceId,organization:'NAR',date,track:d.race.track,raceNo:d.race.raceNo,raceName:d.race.raceName,postTime:d.race.postTime,distance:d.race.distance,surface:d.race.surface,horses:d.horses.map(h=>({...h,ability:{score:h.abilityScore},predictedTime:h.predictedTime?{text:h.predictedTime}:{},probability:{win:null,top3:null,status:'MODEL_HOLD'},market:{odds:null,popularity:null},mark:null})),...flags});
+  seen.add(s.raceId);races.push({raceId:s.raceId,organization:'NAR',date,track:d.race.track,raceNo:d.race.raceNo,raceName:d.race.raceName,postTime:d.race.postTime,distance:d.race.distance,surface:d.race.surface,quality:auditNarAbilityEvidence(d.horses),horses:d.horses.map(h=>({...h,ability:{score:h.abilityScore},predictedTime:h.predictedTime?{text:h.predictedTime}:{},probability:{win:null,top3:null,status:'MODEL_HOLD',reasonCode:'PROBABILITY_MODEL_NOT_CONNECTED'},market:{odds:null,popularity:null},mark:null})),...flags});
  }catch{}}
  if(!races.length)return null;
  if(url.pathname.endsWith('/races'))return respond({ok:true,date,organization:'NAR',races:races.map(({horses,...r})=>r),...flags});
@@ -94,7 +95,7 @@ export async function readNarAbilityCanaryStatus(env,{date,now=Date.now()}={}){
   const races=[],seen=new Set();let rejected=0;
   for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA,code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
    if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||d.formalKpiEligible!==false||s.layers.MARKET||s.layers.FINAL||s.layers.RESULT||!Number.isFinite(Date.parse(s.sourceAcquiredAt))||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))throw Error('invalid');
-   if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length});
+   if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length,quality:auditNarAbilityEvidence(d.horses)});
   }catch{rejected++;}}
   return {...base,schemaReady:true,savedRaceCount:races.length,rejectedRowCount:rejected,races};
  }catch{return {...base,schemaReady:false,status:'BLOCKED',reason:'SCHEMA_OR_READ_UNAVAILABLE',savedRaceCount:null,races:[]};}
