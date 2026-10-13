@@ -1,3 +1,4 @@
+import {narAbilityTableRow,narAbilityMobileBody} from './nar-ability-view.js';
 import {
   VIEWER_TRACKS,
   buildViewerDayUrl,
@@ -519,7 +520,8 @@ function mobileHorseCard(horse, featured = false, ranks = null) {
   return card;
 }
 
-function horseRow(horse) {
+function horseRow(horse,showAbility=false) {
+  if(showAbility)return narAbilityTableRow(document,horse);
   const row = document.createElement('tr');
   if (horse.runnerStatus !== 'active') row.classList.add('viewer-runner-inactive');
   const values = [
@@ -668,7 +670,7 @@ function mobileRaceBody(race) {
   return shell;
 }
 
-function raceCard(race) {
+function raceCard(race,showAbility=false) {
   const article = document.createElement('article');
   article.className = 'viewer-race-card';
   article.id = `viewer-race-${race.raceNo ?? 'unknown'}`;
@@ -700,19 +702,19 @@ function raceCard(race) {
     header.append(freeze);
   }
 
-  const mobile = mobileRaceBody(race);
+  const mobile = showAbility?narAbilityMobileBody(document,race):mobileRaceBody(race);
 
   const scroll = document.createElement('div');
   scroll.className = 'viewer-table-scroll';
   const table = document.createElement('table');
   table.className = 'viewer-table';
-  table.innerHTML = `
+  table.innerHTML = showAbility?'<thead><tr><th>馬番</th><th>馬名</th><th>能力値</th><th>能力順位</th><th>予想TIME</th><th>出走状態</th></tr></thead>':`
     <thead><tr>
       <th>印</th><th>馬番</th><th>馬名</th><th>人気</th><th>オッズ</th>
       <th>EV</th><th>AI勝率</th><th>AI複勝率</th><th>予想TIME</th>
     </tr></thead>`;
   const body = document.createElement('tbody');
-  race.horses.forEach((horse) => body.append(horseRow(horse)));
+  race.horses.forEach((horse) => body.append(horseRow(horse,showAbility)));
   table.append(body);
   scroll.append(table);
 
@@ -770,10 +772,11 @@ function renderDay(day) {
   activeDay = day;
   elements.races.replaceChildren();
   day.races.forEach(normalizeDuplicateMainMarks);
-  day.races.forEach((race) => elements.races.append(raceCard(race)));
+  day.races.forEach((race) => elements.races.append(raceCard(race,day.viewerMode==='nar-precomputed-ability-research')));
   elements.summary.textContent = `${day.date || ''} ${day.track || ''} · ${day.races.length}レース`;
   elements.summary.hidden = false;
   renderRaceNav(day);
+  if(day.viewerMode==='nar-precomputed-ability-research')globalLegend.hidden=true;
 }
 
 function updateAddressBar({ date, organization, track }) {
