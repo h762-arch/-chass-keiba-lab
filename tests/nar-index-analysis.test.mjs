@@ -23,7 +23,7 @@ test('different columns stay separate, do not aggregate strength or invent Clust
 });
 test('v2 stores the scan deterministically while v1 packs verify without backfill',async()=>{
  const x={raceId:'20261014-NAR-21-01',race:{date:'2026-10-14',track:'川崎',raceNo:1},sourceAcquiredAt:'2026-10-14T00:00:00Z',horses:horses([90,80])},before=structuredClone(x);
- const current=await build(x),legacy=await build({...x,contractVersion:'CHASS_PRE_ANALYSIS_PACK_V1'});assert.equal(current.body.contractVersion,'CHASS_PRE_ANALYSIS_PACK_V2');assert.equal(current.body.indexAnalysis.columns.length,4);assert.equal('indexAnalysis' in legacy.body,false);assert.equal(await verify(current,x),true);assert.equal(await verify(legacy,x),true);assert.deepEqual(await build(x),current);assert.deepEqual(x,before);
+ const current=await build(x),legacy=await build({...x,contractVersion:'CHASS_PRE_ANALYSIS_PACK_V1'});assert.equal(current.body.contractVersion,'CHASS_PRE_ANALYSIS_PACK_V3');assert.equal(current.body.indexAnalysis.columns.length,4);assert.equal('indexAnalysis' in legacy.body,false);assert.equal(await verify(current,x),true);assert.equal(await verify(legacy,x),true);assert.deepEqual(await build(x),current);assert.deepEqual(x,before);
 });
 test('numeric zero remains valid and input order does not change horse-associated metrics',()=>{
  const h=horses([10,0,-10]),a=column(h),b=column(h.slice().reverse());assert.equal(a.rows[1].value,0);assert.equal(a.rows[1].rank,2);for(const r of a.rows){const other=b.rows.find(x=>x.horseNo===r.horseNo);assert.equal(other.rank,r.rank);assert.equal(other.topDeficit,r.topDeficit);}
