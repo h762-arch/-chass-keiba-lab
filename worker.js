@@ -1,3 +1,4 @@
+import {extractNarOfficialHistoryLinks} from './src/prediction/nar-official-history-links.mjs';
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
 import {handleJraRaceRequest} from './jra-race-fetch.mjs';
 import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
@@ -890,6 +891,9 @@ export default{
     const urls=historicalNarUrls(code,date,race),html=await fetchNarPrecomputeHtml(urls.detail,{timeoutMs});
     assertNarAbilityCardIdentity(html,{date,track,race});
     return buildNarRacePayloadStable({code,date,race,urls,fetcher:async u=>{if(u!==urls.detail)throw new Error('OPTIONAL_DISABLED');return html;}});
+   },historyLinks:async({code,date,race,track,timeoutMs,expectedHorses})=>{
+    const sourceUrl=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_babaCode=${code}&k_raceDate=${encodeURIComponent(date.replaceAll('-','/'))}&k_raceNo=${race}`;
+    const html=await fetchNarPrecomputeHtml(sourceUrl,{timeoutMs});return extractNarOfficialHistoryLinks(html,{sourceUrl,date,track,code,raceNo:race,observedAt:new Date().toISOString(),expectedHorses});
    }});
    if(marketQueueRunner){
     try{result={...result,marketQueue:await marketQueueRunner()};}
