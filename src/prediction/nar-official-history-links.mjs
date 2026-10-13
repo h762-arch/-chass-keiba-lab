@@ -34,7 +34,7 @@ export async function extractNarOfficialHistoryLinks(html,{sourceUrl,date,track,
   rows.push({horseNo:no,horseName:expected[0].horseName,providerHorseId:horseId,providerHorseKey:`NAR_LINEAGE:${horseId}`,pastRaceReferences:refs});
  }
  if(rows.length!==expectedHorses.length||new Set(rows.map(r=>r.horseNo)).size!==rows.length||new Set(rows.map(r=>r.providerHorseId)).size!==rows.length)fail('RUNNER_COVERAGE');
- const body={schemaVersion:1,status:'IDENTITY_LINKS_RESOLVED',sourceUrl:source.href,observedAt,date,track,code:String(code),raceNo,
+ const body={schemaVersion:1,status:'IDENTITY_LINKS_RESOLVED',sourceUrl:source.href,observedAt,date,postTime:time,track,code:String(code),raceNo,
   scope:'OFFICIAL_FULL_CARD_LINKS_ONLY',researchOnly:true,formalKpiEligible:false,resultPageFetchCount:0,historyFactJoinStatus:'NOT_PERFORMED',rows};
  return {body,linksHash:await stableHash(body)};
 }

@@ -1,4 +1,5 @@
-import {retainNarCardHistory,verifyNarCardHistory} from './nar-history-pack.mjs';
+import {attachNarHistoryIdentity,verifyNarHistoryIdentity} from './nar-history-identity-bridge.mjs';
+import {retainNarCardHistory} from './nar-history-pack.mjs';
 import {buildNarPreAnalysisPack,verifyNarPreAnalysisPack} from './nar-pre-analysis-pack.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from './nar-ability-evidence.mjs';
 import {narAbilityRunWindow} from './nar-ability-run-window.mjs';
@@ -21,7 +22,7 @@ export function assertNarAbilityCardIdentity(html,{date,track,race}){
  if(!validDate(date)||!Object.values(TRACKS).includes(track)||!Number.isInteger(race)||race<1||race>99||!new RegExp(`${y}年0?${m}月0?${d}日`).test(header)||!header.includes(track)||!header.includes(`第${race}競走`))fail('CARD_IDENTITY');
 }
 export async function fetchNarPrecomputeHtml(url,{timeoutMs=5000,fetchImpl=globalThis.fetch}={}){
- const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb/TodayRaceInfo/DebaTableSmall'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
+ const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
  const controller=new AbortController();let reader,timer;
  try{return await Promise.race([new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('SOURCE_DEADLINE'));},timeoutMs);}), (async()=>{
   const r=await fetchImpl(url,{redirect:'manual',signal:controller.signal});if(controller.signal.aborted){void r.body?.cancel();fail('SOURCE_DEADLINE');}if(!r.ok||r.redirected||r.status!==200)fail('SOURCE_HTTP');reader=r.body.getReader();const parts=[];let size=0;
@@ -29,7 +30,7 @@ export async function fetchNarPrecomputeHtml(url,{timeoutMs=5000,fetchImpl=globa
   const raw=new Uint8Array(size);let at=0;for(const p of parts){raw.set(p,at);at+=p.byteLength;}return new TextDecoder('utf-8',{fatal:true}).decode(raw);
  })()]);}finally{clearTimeout(timer);controller.abort();if(reader)void reader.cancel().catch(()=>{});}
 }
-export function createNarAbilityPrecomputeRunner(env,{meeting,card,wallNow=Date.now,scheduledTime=Date.now()}={}){
+export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,wallNow=Date.now,scheduledTime=Date.now()}={}){
  if(String(env?.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')!=='true')return null;
  return async()=>{
   const codes=String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').map(v=>v.trim()).filter(Boolean),limit=Number(env.NAR_PRECOMPUTE_MAX_JOBS||3),budget=Number(env.NAR_PRECOMPUTE_BUDGET_MS||20000);
@@ -60,9 +61,15 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,wallNow=Date.
     if(!Array.isArray(p.horses)||p.horses.length<2||p.horses.length>30||new Set(p.horses.map(h=>Number(h.horseNo))).size!==p.horses.length||p.horses.some(h=>!Number.isInteger(Number(h.horseNo))||Number(h.horseNo)<1||Number(h.horseNo)>30||typeof h.horseName!=='string'||!h.horseName.trim()||h.horseName.length>80))fail('FIELD_INVALID');
     const active=p.horses.filter(h=>!['scratched','excluded','withdrawn'].includes(h.horseStatus||h.runnerStatus)),scored=active.filter(h=>number(h.abilityScore)!=null);if(scored.length<2)fail('ABILITY_INSUFFICIENT');
     const ranks=new Map([...scored].sort((a,b)=>b.abilityScore-a.abilityScore||a.horseNo-b.horseNo).map((h,i)=>[Number(h.horseNo),i+1]));
+    let links=null,linkAudit={status:'DISABLED',reasonCode:'HISTORY_LINKS_DISABLED'};
+    if(String(env.ENABLE_NAR_HISTORY_LINKS||'false')==='true'){
+     if(typeof historyLinks!=='function')linkAudit={status:'HOLD',reasonCode:'HISTORY_PROVIDER_NOT_CONNECTED'};
+     else if(remaining()>0){try{links=await historyLinks({...job,expectedHorses:p.horses,timeoutMs:Math.min(2000,remaining())});if(!links)throw Error('LINKS_UNAVAILABLE');linkAudit={status:'RESOLVED',reasonCode:null};}catch{links=null;linkAudit={status:'HOLD',reasonCode:'HISTORY_SOURCE_OR_IDENTITY_FAILED'};}}
+    }
+    if(wallNow()>=post||!remaining())fail('DEADLINE');
     const data={race:{date,track:job.track,raceNo:job.race,raceName:p.raceName||'',postTime:p.postTime,surface:p.surface,distance:p.distance},horses:p.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,abilityScore:number(h.abilityScore),abilityRank:ranks.get(Number(h.horseNo))??null,predictedTime:h.predictedTime||null,runnerStatus:h.horseStatus||h.runnerStatus||'active',evidence:retainNarAbilityEvidence(h)})),...flags};
-    const iso=new Date(at).toISOString();data.horses=await Promise.all(data.horses.map(async(h,i)=>({...h,history:await retainNarCardHistory({raceId:job.raceId,horseNo:h.horseNo,sourceAcquiredAt:iso,runs:p.horses[i].runs})})));data.preAnalysisPack=await buildNarPreAnalysisPack({raceId:job.raceId,race:data.race,sourceAcquiredAt:iso,horses:data.horses});
-    const snapshot=await createPrecomputedSnapshot({organization:'NAR',raceId:job.raceId,source:{organization:'NAR',raceId:job.raceId,date,track:job.track,raceNo:job.race,acquiredAt:iso,source:'NAR_OFFICIAL_CARD',...flags},data,versions:{calculationVersion:NAR_ABILITY_VERSION,modelVersion:NAR_ABILITY_VERSION},now:iso});
+    const iso=new Date(at).toISOString();data.horses=await Promise.all(data.horses.map(async(h,i)=>({...h,history:await retainNarCardHistory({raceId:job.raceId,horseNo:h.horseNo,sourceAcquiredAt:iso,runs:p.horses[i].runs})})));if(links){try{const enriched=await Promise.all(data.horses.map(h=>attachNarHistoryIdentity(h.history,links,{raceId:job.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:iso})));data.horses=data.horses.map((h,i)=>({...h,history:enriched[i]}));data.historyLinks=links;linkAudit={status:'RESOLVED',reasonCode:null,providerHorseCount:enriched.length,resolvedEpisodeCount:enriched.reduce((n,h)=>n+h.body.identity.resolvedEpisodeCount,0),heldEpisodeCount:enriched.reduce((n,h)=>n+h.body.identity.references.filter(r=>r.status==='HOLD').length,0)};}catch{linkAudit={status:'HOLD',reasonCode:'HISTORY_FACT_JOIN_FAILED'};}}data.historyLinkAudit={...linkAudit,recoveryAction:linkAudit.status==='RESOLVED'?'Connect canonical episodes to the shared history store.':'Retry only in a new eligible run; preserve frozen DATA.'};data.preAnalysisPack=await buildNarPreAnalysisPack({raceId:job.raceId,race:data.race,sourceAcquiredAt:iso,horses:data.horses});
+    const snapshot=await createPrecomputedSnapshot({organization:'NAR',raceId:job.raceId,source:{organization:'NAR',raceId:job.raceId,date,track:job.track,raceNo:job.race,acquiredAt:iso,source:'NAR_OFFICIAL_CARD',...flags},data,versions:{calculationVersion:NAR_ABILITY_VERSION,modelVersion:NAR_ABILITY_VERSION},now:new Date(wallNow()).toISOString()});
     if(wallNow()>=post||!remaining())fail('DEADLINE');
     const values=snapshotToD1Values(snapshot,{revision:1,createdAt:new Date(wallNow()).toISOString()});
     const write=await env.DB.prepare('INSERT OR IGNORE INTO precomputed_race_snapshots (organization,race_id,revision,source_hash,input_hash,snapshot_hash,source_acquired_at,source_validated_at,data_calculated_at,calculated_at,calculation_version,model_version,cluster_version,signal_rule_version,source_json,data_json,market_json,final_json,result_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(...values).run();
@@ -80,9 +87,9 @@ export async function handleNarAbilityViewer(request,env){
   const code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
   if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||!Number.isFinite(Date.parse(s.sourceAcquiredAt)))continue;
   if(!Object.values(TRACKS).includes(d.race.track)||!s.raceId.startsWith(prefix)||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))continue;
-  if((await Promise.all(d.horses.map(h=>h.history?verifyNarCardHistory(h.history,{raceId:s.raceId,horseNo:h.horseNo,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))continue;
+  if((await Promise.all(d.horses.map(h=>h.history?verifyNarHistoryIdentity(h.history,d.historyLinks,{raceId:s.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))continue;
   if(d.preAnalysisPack&&!await verifyNarPreAnalysisPack(d.preAnalysisPack,{raceId:s.raceId,race:d.race,sourceAcquiredAt:s.sourceAcquiredAt,horses:d.horses}))continue;
-  seen.add(s.raceId);races.push({preAnalysisPack:d.preAnalysisPack||null,preAnalysisStatus:d.preAnalysisPack?'PARTIAL':'NOT_MATERIALIZED',raceId:s.raceId,organization:'NAR',date,track:d.race.track,raceNo:d.race.raceNo,raceName:d.race.raceName,postTime:d.race.postTime,distance:d.race.distance,surface:d.race.surface,quality:auditNarAbilityEvidence(d.horses),horses:d.horses.map(h=>({...h,ability:{score:h.abilityScore},predictedTime:h.predictedTime?{text:h.predictedTime}:{},probability:{win:null,top3:null,status:'MODEL_HOLD',reasonCode:'PROBABILITY_MODEL_NOT_CONNECTED'},market:{odds:null,popularity:null},mark:null})),...flags});
+  seen.add(s.raceId);races.push({preAnalysisPack:d.preAnalysisPack||null,historyLinkAudit:d.historyLinkAudit||null,preAnalysisStatus:d.preAnalysisPack?'PARTIAL':'NOT_MATERIALIZED',raceId:s.raceId,organization:'NAR',date,track:d.race.track,raceNo:d.race.raceNo,raceName:d.race.raceName,postTime:d.race.postTime,distance:d.race.distance,surface:d.race.surface,quality:auditNarAbilityEvidence(d.horses),horses:d.horses.map(h=>({...h,ability:{score:h.abilityScore},predictedTime:h.predictedTime?{text:h.predictedTime}:{},probability:{win:null,top3:null,status:'MODEL_HOLD',reasonCode:'PROBABILITY_MODEL_NOT_CONNECTED'},market:{odds:null,popularity:null},mark:null})),...flags});
  }catch{}}
  if(!races.length)return null;
  if(url.pathname.endsWith('/races'))return respond({ok:true,date,organization:'NAR',races:races.map(({horses,preAnalysisPack,...r})=>r),...flags});
@@ -100,9 +107,9 @@ export async function readNarAbilityCanaryStatus(env,{date,now=Date.now()}={}){
   const races=[],seen=new Set();let rejected=0;
   for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA,code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
    if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||d.formalKpiEligible!==false||s.layers.MARKET||s.layers.FINAL||s.layers.RESULT||!Number.isFinite(Date.parse(s.sourceAcquiredAt))||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))throw Error('invalid');
-   if((await Promise.all(d.horses.map(h=>h.history?verifyNarCardHistory(h.history,{raceId:s.raceId,horseNo:h.horseNo,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))throw Error('invalid history');
+   if((await Promise.all(d.horses.map(h=>h.history?verifyNarHistoryIdentity(h.history,d.historyLinks,{raceId:s.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))throw Error('invalid history');
    if(d.preAnalysisPack&&!await verifyNarPreAnalysisPack(d.preAnalysisPack,{raceId:s.raceId,race:d.race,sourceAcquiredAt:s.sourceAcquiredAt,horses:d.horses}))throw Error('invalid pack');
-   if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({preAnalysisStatus:d.preAnalysisPack?'PARTIAL':'NOT_MATERIALIZED',preAnalysisPackHash:d.preAnalysisPack?.packHash||null,raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length,quality:auditNarAbilityEvidence(d.horses)});
+   if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({historyLinkAudit:d.historyLinkAudit||null,preAnalysisStatus:d.preAnalysisPack?'PARTIAL':'NOT_MATERIALIZED',preAnalysisPackHash:d.preAnalysisPack?.packHash||null,raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length,quality:auditNarAbilityEvidence(d.horses)});
   }catch{rejected++;}}
   return {...base,schemaReady:true,savedRaceCount:races.length,rejectedRowCount:rejected,races};
  }catch{return {...base,schemaReady:false,status:'BLOCKED',reason:'SCHEMA_OR_READ_UNAVAILABLE',savedRaceCount:null,races:[]};}

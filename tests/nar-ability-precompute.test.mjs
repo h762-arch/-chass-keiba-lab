@@ -1,3 +1,4 @@
+import {stableHash} from '../src/prediction/precomputed-snapshot.mjs';
 import {createSnapshotHash} from '../src/prediction/precomputed-snapshot.mjs';
 import {d1RowToSnapshot} from '../src/prediction/precomputed-store.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from '../src/prediction/nar-ability-evidence.mjs';
@@ -116,4 +117,19 @@ test('legacy DATA without pack remains readable and is not silently backfilled',
 
 test('Cron persists card-history observations in DATA and Pack without additional source reads',async()=>{
  const f=fixture();let calls=0;await f.run({card:async j=>{calls++;const p=await f.card(j);p.horses[0].runs=[{date:'09.30',venue:'川崎',runOrganization:'NAR',distance:1400,finish:2,fieldSize:10,timeSec:91.2,corners:'2-2-1',popularity:3}];return p;}});assert.equal(calls,3);const d=JSON.parse(f.DB.rows[0].data_json);assert.equal(d.horses[0].history.body.retainedCount,1);assert.equal(d.horses[1].history.body.status,'SOURCE_NOT_RETAINED');const before=JSON.stringify(f.DB.rows),apiBody=await (await api(req(),f.env)).json();assert.equal(apiBody.races[0].preAnalysisPack.body.historyPacks[0].history.body.episodes[0].facts.timeSec,91.2);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+
+test('enabled bounded history provider enriches new DATA and readback without changing cap',async()=>{
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';let calls=0;
+ const out=await f.run({card:async j=>{const p=await f.card(j);p.horses.forEach(h=>h.runs=[{date:'09.30',venue:'川崎',runOrganization:'NAR',timeSec:91.2}]);return p;},historyLinks:async j=>{calls++;assert.ok(j.timeoutMs>0&&j.timeoutMs<=2000);const body={status:'IDENTITY_LINKS_RESOLVED',date:j.date,postTime:'12:00',code:j.code,raceNo:j.race,observedAt:new Date(f.clock()).toISOString(),rows:j.expectedHorses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,providerHorseKey:'NAR_LINEAGE:'+String(30012403217+Number(h.horseNo)),pastRaceReferences:[{date:'2026-09-30',code:'21',raceNo:1,raceId:'20260930-NAR-21-01'}]}))};return {body,linksHash:await stableHash(body)};}});
+ assert.equal(out.saved,3);assert.equal(calls,3);const d=JSON.parse(f.DB.rows[0].data_json);assert.equal(d.historyLinkAudit.resolvedEpisodeCount,2);assert.equal(d.horses[0].history.body.schemaVersion,2);const body=await (await api(req(),f.env)).json();assert.equal(body.count,3);assert.equal(body.races[0].historyLinkAudit.providerHorseCount,2);
+});
+test('history provider failure/disabled/missing preserves ability DATA with honest audit',async()=>{
+ for(const mode of ['failure','disabled','missing']){const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS=mode==='disabled'?'false':'true';let calls=0;const out=await f.run(mode==='missing'?{}:{historyLinks:async()=>{calls++;throw Error('private source failure');}});assert.equal(out.saved,3);assert.equal(calls,mode==='failure'?3:0);const d=JSON.parse(f.DB.rows[0].data_json);assert.equal(d.historyLinkAudit.status,mode==='disabled'?'DISABLED':'HOLD');assert.equal(d.horses[0].history.body.schemaVersion,1);assert.equal('historyLinks' in d,false);}
+});
+test('late history completion cannot save after daily stop or post time',async()=>{
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';let at=f.clock();const out=await f.run({wallNow:()=>at,historyLinks:async()=>{at=Date.parse(f.env.NAR_PRECOMPUTE_STOP_AT);throw Error('late');}});assert.equal(out.saved,0);assert.equal(f.DB.rows.length,0);
+});
+test('Worker history link wiring uses full card only and production retains daily/cap limits',async()=>{
+ const source=await readFile(new URL('../worker.js',import.meta.url),'utf8'),cfg=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));assert.match(source,/historyLinks:async/);assert.match(source,/extractNarOfficialHistoryLinks\(html/);assert.equal(cfg.vars.ENABLE_NAR_HISTORY_LINKS,'true');assert.equal(cfg.vars.NAR_PRECOMPUTE_MAX_JOBS,'3');assert.equal(cfg.vars.NAR_PRECOMPUTE_BUDGET_MS,'20000');assert.equal(cfg.vars.JRA_PRECOMPUTE_MAX_JOBS,'1');
 });
