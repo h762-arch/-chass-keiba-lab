@@ -12,7 +12,7 @@ import {backgroundPrecomputeEnabled} from './src/prediction/background-precomput
 import {createJraPrecomputeWorkerRunner} from './src/prediction/jra-precompute-worker-scaffold.mjs';
 import {createJraMarketQueueWorkerRunner} from './src/prediction/jra-market-queue-worker.mjs';
 import {handleJraPrecomputedViewerPublicApi} from './src/prediction/jra-precomputed-viewer-api.mjs';
-import {createNarAbilityPrecomputeRunner,handleNarAbilityViewer,fetchNarPrecomputeHtml,assertNarAbilityCardIdentity} from './src/prediction/nar-ability-precompute.mjs';
+import {createNarAbilityPrecomputeRunner,handleNarAbilityViewer,fetchNarPrecomputeHtml,assertNarAbilityCardIdentity,readNarAbilityCanaryStatus} from './src/prediction/nar-ability-precompute.mjs';
 import {composeJraFrozenMarketResponse} from './src/prediction/jra-viewer-frozen-market.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
@@ -687,7 +687,7 @@ export async function handlePublicApi(request,env){
  if(!['GET','HEAD'].includes(request.method))return publicError('METHOD_NOT_ALLOWED','Only GET, HEAD and OPTIONS are allowed.',405,publicCorsHeaders('no-store'),head);
  if(String(env?.ENABLE_PUBLIC_API||'true').toLowerCase()==='false')return publicError('NOT_FOUND','Public API is disabled.',404,publicCorsHeaders('no-store'),head);
  if(!publicRateAllowed(request))return publicError('RATE_LIMITED','Too many requests.',429,{...publicCorsHeaders('no-store'),'retry-after':'60'},head);
- const snapshotPath=publicAiSnapshotPath(u.pathname),allowed=new Set(['/api/chass/v1/public/health','/api/chass/v1/public/latest','/api/chass/v1/public/recent','/api/chass/v1/public/races','/api/chass/v1/public/day','/api/chass/v1/public/day-ai','/api/chass/v1/public/race','/api/chass/v1/public/race-ai','/api/chass/v1/public/result']);
+ const snapshotPath=publicAiSnapshotPath(u.pathname),allowed=new Set(['/api/chass/v1/public/nar-precompute-status','/api/chass/v1/public/health','/api/chass/v1/public/latest','/api/chass/v1/public/recent','/api/chass/v1/public/races','/api/chass/v1/public/day','/api/chass/v1/public/day-ai','/api/chass/v1/public/race','/api/chass/v1/public/race-ai','/api/chass/v1/public/result']);
  if(snapshotPath?.error)return publicError('INVALID_PARAMETER','Snapshot path must contain a valid YYYY-MM-DD date and supported ASCII track slug.',400,publicCorsHeaders('no-store'),head);
  if(!allowed.has(u.pathname)&&!snapshotPath)return publicError('NOT_FOUND','API endpoint was not found.',404,publicCorsHeaders('no-store'),head);
  if(snapshotPath){const cached=await publicSnapshotCacheRead(env,snapshotPath);if(cached){const processingMs=Math.max(0,Date.now()-startedAt);if(request.headers.get('if-none-match')===cached.etag)return new Response(null,{status:304,headers:{...publicCorsHeaders('public, max-age=60, s-maxage=120, stale-while-revalidate=60'),ETag:cached.etag,'X-CHASS-Cache':'HIT','X-CHASS-Processing-Ms':String(processingMs),...(cached.lastModified?{'Last-Modified':cached.lastModified}:{})}});return publicSnapshotResponse(cached,{head,cacheStatus:'HIT',processingMs})}}
@@ -695,6 +695,7 @@ export async function handlePublicApi(request,env){
  if(u.pathname.endsWith('/health')){try{await DB.prepare('SELECT 1 AS ok').first();return publicJson({ok:true,service:'CHASS KEIBA LAB',version:VERSION,apiVersion:'1',mode:'read-only',database:true,timestamp:new Date().toISOString()},{cache:'public, max-age=60, s-maxage=60',head})}catch{return publicError('DATABASE_UNAVAILABLE','Prediction storage is unavailable.',503,publicCorsHeaders('no-store'),head)}}
  try{publicStage='D1_QUERY';
   if(snapshotPath){const {date,track,organization,slug}=snapshotPath,read=await publicAbilityMappedRaces(DB,{date,track}),races=read.races.filter(r=>r.date===date&&r.track===track&&publicOrganization(r)===organization&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested snapshot were not found.',404,publicCorsHeaders('no-store'),head);publicStage='BUILD_DAY_PAYLOAD';const modifiedAt=publicSnapshotModifiedAt(read),payload=publicSnapshotPayload(races,{date,track,failures:read.failures||[],modifiedAt}),fingerprint=d1Fingerprint(payload)?.split(':').at(-1)||'unknown',etag=`"chass-${date.replaceAll('-','')}-${slug}-${fingerprint}"`,lastModified=modifiedAt?new Date(modifiedAt).toUTCString():null,item={payload,etag,lastModified};await publicSnapshotCacheWrite(env,snapshotPath,item);const processingMs=Math.max(0,Date.now()-startedAt);if(request.headers.get('if-none-match')===etag)return new Response(null,{status:304,headers:{...publicCorsHeaders('public, max-age=60, s-maxage=120, stale-while-revalidate=60'),ETag:etag,'X-CHASS-Cache':'MISS','X-CHASS-Processing-Ms':String(processingMs),...(lastModified?{'Last-Modified':lastModified}:{})}});publicStage='JSON_SERIALIZE';const response=publicSnapshotResponse(item,{head,cacheStatus:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',processingMs});console.info('[CHASS AI SNAPSHOT]',{requestId,date,track,stage:'COMPLETE',processingMs,responseBytes:Number(response.headers.get('X-CHASS-Response-Bytes'))||0,cacheHit:!!read.cacheHit,edgeCache:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',etag});return response}
+  if(u.pathname.endsWith('/nar-precompute-status')){const value=await readNarAbilityCanaryStatus(env,{date:u.searchParams.get('date')});if(value.ok===false)return publicError('INVALID_PARAMETER','date must be YYYY-MM-DD.',400,publicCorsHeaders('no-store'),head);return publicJson(value,{cache:'no-store',head});}
   const narResponse=await handleNarAbilityViewer(request,env);
   if(narResponse)return head?new Response(null,{status:narResponse.status,headers:narResponse.headers}):narResponse;
   const precomputedViewerResponse=await handleJraPrecomputedViewerPublicApi(request,env,DB,{head});
@@ -890,12 +891,16 @@ export default{
     assertNarAbilityCardIdentity(html,{date,track,race});
     return buildNarRacePayloadStable({code,date,race,urls,fetcher:async u=>{if(u!==urls.detail)throw new Error('OPTIONAL_DISABLED');return html;}});
    }});
-   if(narRunner){try{result={...result,narAbility:await narRunner()};console.info('[CHASS NAR PRECOMPUTE]',result.narAbility);}catch{result={...result,narAbility:{status:'BLOCKED',reason:'NAR_RUN_FAILED'}};}}
-   if(!marketQueueRunner)return result;
-   let marketQueue;
-   try{marketQueue=await marketQueueRunner()}
-   catch{marketQueue={status:'BLOCKED',reason:'MARKET_QUEUE_RUN_FAILED'}}
-   return {...result,marketQueue};
+   if(marketQueueRunner){
+    try{result={...result,marketQueue:await marketQueueRunner()};}
+    catch{result={...result,marketQueue:{status:'BLOCKED',reason:'MARKET_QUEUE_RUN_FAILED'}};}
+   }
+   if(narRunner){
+    if(Number(result.autoResult?.processed)>=3)result={...result,narAbility:{status:'SKIPPED',reason:'AUTO_RESULT_PRIORITY'}};
+    else{try{result={...result,narAbility:await narRunner()};}catch{result={...result,narAbility:{status:'BLOCKED',reason:'NAR_RUN_FAILED'}};}}
+    console.info('[CHASS NAR PRECOMPUTE]',result.narAbility);
+   }
+   return result;
   });
   if(ctx?.waitUntil)ctx.waitUntil(task);else await task;
  }
