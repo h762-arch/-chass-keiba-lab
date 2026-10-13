@@ -1,3 +1,5 @@
+import {createSnapshotHash} from '../src/prediction/precomputed-snapshot.mjs';
+import {d1RowToSnapshot} from '../src/prediction/precomputed-store.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from '../src/prediction/nar-ability-evidence.mjs';
 import {narAbilityRunWindow} from '../src/prediction/nar-ability-run-window.mjs';
 import {handlePublicApi} from '../worker.js';
@@ -103,4 +105,11 @@ test('quality audit separates active runners and never substitutes probability f
 });
 test('new evidence is persisted in immutable DATA and exposed through read-only status and Viewer',async()=>{
  const f=fixture();await f.run({card:async j=>({...await f.card(j),horses:[{horseNo:1,horseName:'A',abilityScore:80,predictedTime:'1:30.0',runs:[{sameDistance:true}],timeIndex:80,predictedTimeType:'実績'},{horseNo:2,horseName:'B',abilityScore:70,runs:[],predictedTimeMissingReason:'time_missing_no_history'}]})});const first=JSON.stringify(f.DB.rows),data=JSON.parse(f.DB.rows[0].data_json);assert.equal(data.horses[0].evidence.runCount,1);assert.equal(data.horses[1].evidence.timeMissingReason,'time_missing_no_history');const status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(status.races[0].quality.activeTimeCount,1);const body=await (await api(req(),f.env)).json();assert.equal(body.races[0].quality.retainedEvidenceCount,2);assert.equal(body.races[0].horses[0].probability.win,null);assert.equal(body.races[0].horses[0].probability.reasonCode,'PROBABILITY_MODEL_NOT_CONNECTED');assert.equal(JSON.stringify(f.DB.rows),first);
+});
+
+test('Cron persists partial pre-analysis packs and API returns stored readback hashes',async()=>{
+ const f=fixture();await f.run();const saved=JSON.parse(f.DB.rows[0].data_json),before=JSON.stringify(f.DB.rows);assert.equal(saved.preAnalysisPack.body.contractVersion,'CHASS_PRE_ANALYSIS_PACK_V1');assert.equal(saved.preAnalysisPack.body.runnerCards.length,2);const body=await (await api(req(),f.env)).json();assert.equal(body.races[0].preAnalysisPack.packHash,saved.preAnalysisPack.packHash);assert.equal(body.races[0].preAnalysisStatus,'PARTIAL');const status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(status.races[0].preAnalysisPackHash,saved.preAnalysisPack.packHash);const listing=await (await api(req('races'),f.env)).json();assert.equal('preAnalysisPack' in listing.races[0],false);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+test('legacy DATA without pack remains readable and is not silently backfilled',async()=>{
+ const f=fixture();await f.run();for(const row of f.DB.rows){const data=JSON.parse(row.data_json);delete data.preAnalysisPack;row.data_json=JSON.stringify(data);row.snapshot_hash=await createSnapshotHash(d1RowToSnapshot(row));}const before=JSON.stringify(f.DB.rows),body=await (await api(req(),f.env)).json();assert.equal(body.races[0].preAnalysisPack,null);assert.equal(body.races[0].preAnalysisStatus,'NOT_MATERIALIZED');await f.run();assert.equal(f.DB.rows[0].data_json,JSON.parse(before)[0].data_json);
 });
