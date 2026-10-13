@@ -31,7 +31,10 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,wallNow=Date.
   const codes=String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').map(v=>v.trim()).filter(Boolean),limit=Number(env.NAR_PRECOMPUTE_MAX_JOBS||3),budget=Number(env.NAR_PRECOMPUTE_BUDGET_MS||20000);
   if(!codes.length||codes.length>3||new Set(codes).size!==codes.length||codes.some(c=>!TRACKS[c])||!Number.isInteger(limit)||limit<1||limit>4||!Number.isInteger(budget)||budget<1000||budget>30000||!env.DB?.prepare||typeof meeting!=='function'||typeof card!=='function')return {status:'BLOCKED',reason:'CONFIGURATION_INVALID'};
   const start=wallNow(),date=new Date(start+9*3600000).toISOString().slice(0,10),deadline=start+budget,events=[],jobs=[];
-  const remaining=()=>Math.max(0,deadline-wallNow());
+  const canaryDate=env.NAR_PRECOMPUTE_CANARY_DATE,stop=Date.parse(env.NAR_PRECOMPUTE_STOP_AT||'');
+  if(!validDate(canaryDate)||!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(env.NAR_PRECOMPUTE_STOP_AT||'')||!Number.isFinite(stop)||stop<=Date.parse(`${canaryDate}T00:00:00+09:00`)||stop>Date.parse(`${canaryDate}T00:00:00+09:00`)+86400000)return {status:'BLOCKED',reason:'CANARY_CONFIGURATION_INVALID'};
+  if(date!==canaryDate||start>=stop)return {status:'SKIPPED',reason:'CANARY_WINDOW_CLOSED',date};
+  const remaining=()=>Math.max(0,Math.min(deadline,stop)-wallNow());
   try{await env.DB.prepare('SELECT organization,race_id,revision,source_json,data_json,calculation_version,model_version FROM precomputed_race_snapshots LIMIT 0').all();}catch{return {status:'BLOCKED',reason:'SCHEMA_UNAVAILABLE'};}
   for(const code of codes){
    if(!remaining()){events.push({track:TRACKS[code],reason:'DEADLINE'});continue;}
@@ -79,4 +82,19 @@ export async function handleNarAbilityViewer(request,env){
  const raceNo=Number(url.searchParams.get('race'));const selected=url.pathname.endsWith('/race')?races.filter(r=>r.raceNo===raceNo):races;
  if(url.pathname.endsWith('/race'))return selected.length?respond({ok:true,...selected[0],viewerMode:NAR_ABILITY_VIEWER_MODE,marketEvaluation:'disabled'}):respond({ok:false,error:'RACE_NOT_FOUND'},{status:404});
  return respond({ok:true,date,track,organization:'NAR',count:selected.length,races:selected,viewerMode:NAR_ABILITY_VIEWER_MODE,marketEvaluation:'disabled',...flags});
+}
+
+export async function readNarAbilityCanaryStatus(env,{date,now=Date.now()}={}){
+ if(!validDate(date))return {ok:false,error:'INVALID_DATE'};
+ const enabled=String(env.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')==='true',stop=Date.parse(env.NAR_PRECOMPUTE_STOP_AT||''),today=new Date(now+9*3600000).toISOString().slice(0,10),active=enabled&&date===env.NAR_PRECOMPUTE_CANARY_DATE&&today===date&&now<stop;
+ const base={ok:true,date,enabled,viewerEnabled:String(env.ENABLE_NAR_ABILITY_VIEWER||'false')==='true',canaryDate:env.NAR_PRECOMPUTE_CANARY_DATE||null,stopAt:env.NAR_PRECOMPUTE_STOP_AT||null,active,trackCodes:String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').filter(Boolean),...flags};
+ try{
+  const prefix=`${date.replaceAll('-','')}-NAR-`,rows=await env.DB.prepare('SELECT * FROM precomputed_race_snapshots WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=? ORDER BY race_id,revision ASC LIMIT 500').bind('NAR',prefix,prefix+'\uffff',NAR_ABILITY_VERSION,NAR_ABILITY_VERSION).all();
+  const races=[],seen=new Set();let rejected=0;
+  for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA,code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
+   if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||d.formalKpiEligible!==false||s.layers.MARKET||s.layers.FINAL||s.layers.RESULT||!Number.isFinite(Date.parse(s.sourceAcquiredAt))||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))throw Error('invalid');
+   if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length});
+  }catch{rejected++;}}
+  return {...base,schemaReady:true,savedRaceCount:races.length,rejectedRowCount:rejected,races};
+ }catch{return {...base,schemaReady:false,status:'BLOCKED',reason:'SCHEMA_OR_READ_UNAVAILABLE',savedRaceCount:null,races:[]};}
 }
