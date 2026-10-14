@@ -14,6 +14,7 @@ import {createJraPrecomputeWorkerRunner} from './src/prediction/jra-precompute-w
 import {createJraMarketQueueWorkerRunner} from './src/prediction/jra-market-queue-worker.mjs';
 import {handleJraPrecomputedViewerPublicApi} from './src/prediction/jra-precomputed-viewer-api.mjs';
 import {createNarAbilityPrecomputeRunner,handleNarAbilityViewer,fetchNarPrecomputeHtml,assertNarAbilityCardIdentity,readNarAbilityCanaryStatus} from './src/prediction/nar-ability-precompute.mjs';
+import {publicNarRunAuditFields,readNarPrecomputeRunAudit,writeNarPrecomputeRunAudit} from './src/prediction/nar-precompute-run-audit.mjs';
 import {composeJraFrozenMarketResponse} from './src/prediction/jra-viewer-frozen-market.mjs';
 const TRACK_NAMES={3:"帯広",10:"盛岡",11:"水沢",18:"浦和",19:"船橋",20:"大井",21:"川崎",22:"笠松",23:"金沢",24:"名古屋",27:"園田",28:"姫路",31:"高知",32:"佐賀",36:"門別"};
 export const VERSION="10.0.1";
@@ -696,7 +697,7 @@ export async function handlePublicApi(request,env){
  if(u.pathname.endsWith('/health')){try{await DB.prepare('SELECT 1 AS ok').first();return publicJson({ok:true,service:'CHASS KEIBA LAB',version:VERSION,apiVersion:'1',mode:'read-only',database:true,timestamp:new Date().toISOString()},{cache:'public, max-age=60, s-maxage=60',head})}catch{return publicError('DATABASE_UNAVAILABLE','Prediction storage is unavailable.',503,publicCorsHeaders('no-store'),head)}}
  try{publicStage='D1_QUERY';
   if(snapshotPath){const {date,track,organization,slug}=snapshotPath,read=await publicAbilityMappedRaces(DB,{date,track}),races=read.races.filter(r=>r.date===date&&r.track===track&&publicOrganization(r)===organization&&r.original?.horses?.length).slice(0,12);if(!races.length)return publicError('RACE_NOT_FOUND','Saved predictions for the requested snapshot were not found.',404,publicCorsHeaders('no-store'),head);publicStage='BUILD_DAY_PAYLOAD';const modifiedAt=publicSnapshotModifiedAt(read),payload=publicSnapshotPayload(races,{date,track,failures:read.failures||[],modifiedAt}),fingerprint=d1Fingerprint(payload)?.split(':').at(-1)||'unknown',etag=`"chass-${date.replaceAll('-','')}-${slug}-${fingerprint}"`,lastModified=modifiedAt?new Date(modifiedAt).toUTCString():null,item={payload,etag,lastModified};await publicSnapshotCacheWrite(env,snapshotPath,item);const processingMs=Math.max(0,Date.now()-startedAt);if(request.headers.get('if-none-match')===etag)return new Response(null,{status:304,headers:{...publicCorsHeaders('public, max-age=60, s-maxage=120, stale-while-revalidate=60'),ETag:etag,'X-CHASS-Cache':'MISS','X-CHASS-Processing-Ms':String(processingMs),...(lastModified?{'Last-Modified':lastModified}:{})}});publicStage='JSON_SERIALIZE';const response=publicSnapshotResponse(item,{head,cacheStatus:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',processingMs});console.info('[CHASS AI SNAPSHOT]',{requestId,date,track,stage:'COMPLETE',processingMs,responseBytes:Number(response.headers.get('X-CHASS-Response-Bytes'))||0,cacheHit:!!read.cacheHit,edgeCache:publicSnapshotCacheBinding(env)?'MISS':'BYPASS',etag});return response}
-  if(u.pathname.endsWith('/nar-precompute-status')){const value=await readNarAbilityCanaryStatus(env,{date:u.searchParams.get('date')});if(value.ok===false)return publicError('INVALID_PARAMETER','date must be YYYY-MM-DD.',400,publicCorsHeaders('no-store'),head);return publicJson(value,{cache:'no-store',head});}
+  if(u.pathname.endsWith('/nar-precompute-status')){const date=u.searchParams.get('date'),value=await readNarAbilityCanaryStatus(env,{date});if(value.ok===false)return publicError('INVALID_PARAMETER','date must be YYYY-MM-DD.',400,publicCorsHeaders('no-store'),head);const narRunAudit=await readNarPrecomputeRunAudit(DB,{date});return publicJson({...value,...publicNarRunAuditFields(narRunAudit)},{cache:'no-store',head});}
   const narResponse=await handleNarAbilityViewer(request,env);
   if(narResponse)return head?new Response(null,{status:narResponse.status,headers:narResponse.headers}):narResponse;
   const precomputedViewerResponse=await handleJraPrecomputedViewerPublicApi(request,env,DB,{head});
@@ -903,6 +904,9 @@ export default{
     if(Number(result.autoResult?.processed)>=3)result={...result,narAbility:{status:'SKIPPED',reason:'AUTO_RESULT_PRIORITY'}};
     else{try{result={...result,narAbility:await narRunner()};}catch{result={...result,narAbility:{status:'BLOCKED',reason:'NAR_RUN_FAILED'}};}}
     console.info('[CHASS NAR PRECOMPUTE]',result.narAbility);
+    try{
+     await writeNarPrecomputeRunAudit(env.DB,{scheduledAt:new Date(controller?.scheduledTime||Date.now()).toISOString(),result:result.narAbility,autoResultProcessed:Number(result.autoResult?.processed)||0});
+    }catch(error){console.error('[CHASS NAR PRECOMPUTE AUDIT]',{reason:String(error?.message||error).slice(0,120)});}
    }
    return result;
   });
