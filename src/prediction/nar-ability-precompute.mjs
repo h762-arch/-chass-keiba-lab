@@ -4,7 +4,7 @@ import {retainNarCardHistory} from './nar-history-pack.mjs';
 import {buildNarPreAnalysisPack,verifyNarPreAnalysisPack} from './nar-pre-analysis-pack.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from './nar-ability-evidence.mjs';
 import {narAbilityRunWindow} from './nar-ability-run-window.mjs';
-import {meetingText} from '../../meeting-discovery.mjs';
+import {meetingText,parseNarRaceList} from '../../meeting-discovery.mjs';
 import {createPrecomputedSnapshot,createSnapshotHash} from './precomputed-snapshot.mjs';
 import {snapshotToD1Values,readLatestPrecomputedSnapshot,d1RowToSnapshot} from './precomputed-store.mjs';
 export const NAR_ABILITY_VERSION='NAR_ABILITY_PRECOMPUTE_V1';
@@ -23,13 +23,33 @@ export function assertNarAbilityCardIdentity(html,{date,track,race}){
  if(!validDate(date)||!Object.values(TRACKS).includes(track)||!Number.isInteger(race)||race<1||race>99||!new RegExp(`${y}年0?${m}月0?${d}日`).test(header)||!header.includes(track)||!header.includes(`第${race}競走`))fail('CARD_IDENTITY');
 }
 export async function fetchNarPrecomputeHtml(url,{timeoutMs=5000,fetchImpl=globalThis.fetch}={}){
- const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
+ const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
  const controller=new AbortController();let reader,timer;
  try{return await Promise.race([new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('SOURCE_DEADLINE'));},timeoutMs);}), (async()=>{
   const r=await fetchImpl(url,{redirect:'manual',signal:controller.signal});if(controller.signal.aborted){void r.body?.cancel();fail('SOURCE_DEADLINE');}if(!r.ok||r.redirected||r.status!==200)fail('SOURCE_HTTP');reader=r.body.getReader();const parts=[];let size=0;
   while(true){const next=await reader.read();if(controller.signal.aborted)fail('SOURCE_DEADLINE');if(next.done)break;size+=next.value.byteLength;if(size>1000000)fail('SOURCE_SIZE');parts.push(next.value);}
   const raw=new Uint8Array(size);let at=0;for(const p of parts){raw.set(p,at);at+=p.byteLength;}return new TextDecoder('utf-8',{fatal:true}).decode(raw);
  })()]);}finally{clearTimeout(timer);controller.abort();if(reader)void reader.cancel().catch(()=>{});}
+}
+export async function fetchNarPrecomputeMeeting({code,date,timeoutMs=5000,fetchImpl=globalThis.fetch}={}){
+ const track=TRACKS[String(code)];
+ if(!track||!validDate(date)||!Number.isFinite(Number(timeoutMs))||Number(timeoutMs)<500)fail('MEETING_CONFIGURATION_INVALID');
+ const query=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(date.replaceAll('-','/'))}`;
+ const routes=[
+  {name:'RaceList',url:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?${query}`},
+  {name:'RaceList_ipat',url:`https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat?${query}`}
+ ];
+ const started=Date.now(),audit=[];
+ for(let i=0;i<routes.length;i++){
+  const remaining=Math.max(0,Number(timeoutMs)-(Date.now()-started));if(remaining<250)break;
+  const attemptTimeout=i===0?Math.max(250,Math.floor(remaining/2)):remaining;
+  try{
+   const html=await fetchNarPrecomputeHtml(routes[i].url,{timeoutMs:attemptTimeout,fetchImpl}),parsed=parseNarRaceList(html,{track,date});
+   if(parsed.track!==track||parsed.date!==date||!['meeting','non_meeting'].includes(parsed.status))fail('MEETING_UNCONFIRMED');
+   return {...parsed,sourceRoute:routes[i].name,attemptCount:i+1};
+  }catch(error){audit.push({route:routes[i].name,reason:['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','MEETING_UNCONFIRMED'].includes(error?.message)?error.message:'MEETING_SOURCE_FAILED'});}
+ }
+ const error=new Error('MEETING_SOURCE_UNAVAILABLE');error.meetingAudit=audit;throw error;
 }
 export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,wallNow=Date.now,scheduledTime=Date.now()}={}){
  if(String(env?.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')!=='true')return null;
@@ -48,7 +68,7 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,
     if(m.status==='non_meeting'){events.push({track:m.track,reason:'NON_MEETING'});continue;}
     if(!m.raceNumbers.length||m.raceNumbers.length>99||m.raceNumbers.some(r=>!Number.isInteger(r)||r<1||r>99)||new Set(m.raceNumbers).size!==m.raceNumbers.length)fail('MEETING_UNCONFIRMED');
     for(const race of m.raceNumbers){const raceId=id(date,code,race),existing=await readLatestPrecomputedSnapshot(env.DB,'NAR',raceId);if(existing){events.push({raceId,reason:'ALREADY_SAVED'});continue;}jobs.push({code,date,race,track:m.track,raceId});}
-   }catch{events.push({track:TRACKS[code],reason:'MEETING_UNAVAILABLE'});}
+   }catch(error){const reason=['MEETING_SOURCE_UNAVAILABLE','MEETING_UNCONFIRMED','MEETING_CONFIGURATION_INVALID'].includes(error?.message)?error.message:'MEETING_UNAVAILABLE';events.push({track:TRACKS[code],reason});}
   }
   const offset=jobs.length?Math.floor(Number(scheduledTime)/300000)*limit%jobs.length:0,queue=[...jobs.slice(offset),...jobs.slice(0,offset)];let attempted=0,saved=0;
   for(const job of queue){
