@@ -17,14 +17,26 @@ const number=v=>v!=null&&v!==''&&Number.isFinite(Number(v))?Number(v):null;
 const id=(date,code,race)=>`${date.replaceAll('-','')}-NAR-${code}-${String(race).padStart(2,'0')}`;
 const off=(date,time)=>/^([01]\d|2[0-3]):[0-5]\d$/.test(time||'')?Date.parse(`${date}T${time}:00+09:00`):NaN;
 const fail=reason=>{throw new Error(reason);};
-const meetingAttemptAudit=value=>Array.isArray(value)?value.slice(0,2).flatMap(item=>{const route=['RaceList','RaceList_ipat'].includes(item?.route)?item.route:null,reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED','MEETING_SOURCE_FAILED'].includes(item?.reason)?item.reason:null,status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(item?.httpStatus))&&Number(item.httpStatus)>=100&&Number(item.httpStatus)<=599?Number(item.httpStatus):null;return route&&reason?[{route,reason,...(status?{httpStatus:status}:{})}]:[];}):[];
+const meetingAttemptAudit=value=>Array.isArray(value)?value.slice(0,3).flatMap(item=>{const route=['RaceList','RaceList_ipat','RaceList_mobile'].includes(item?.route)?item.route:null,reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED','MEETING_SOURCE_FAILED'].includes(item?.reason)?item.reason:null,status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(item?.httpStatus))&&Number(item.httpStatus)>=100&&Number(item.httpStatus)<=599?Number(item.httpStatus):null;return route&&reason?[{route,reason,...(status?{httpStatus:status}:{})}]:[];}):[];
+const escapeRegExp=value=>String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+export function parseNarMobileRaceList(html,{code,track,date}={}){
+ if(!TRACKS[String(code)]||TRACKS[String(code)]!==track||!validDate(date))return {status:'meeting_unknown',meeting:false,track,date,raceNumbers:[],source:'NAR公式 Mobile RaceList',reason:'invalid_request'};
+ const text=meetingText(html).normalize('NFKC'),[y,m,d]=date.split('-').map(Number),header=new RegExp(`${escapeRegExp(track)}競馬(?:場)?\\s*${y}年\\s*${m}月\\s*${d}日`).test(text),numbers=[];
+ for(const match of String(html).matchAll(/href=["']([^"']*\/KeibaWebSP\/TodayRaceInfo\/S_DebaTable[^"']*)["']/gi)){
+  try{const u=new URL(match[1].replaceAll('&amp;','&'),'https://sp.keiba.go.jp');if(u.origin!=='https://sp.keiba.go.jp'||u.pathname!=='/KeibaWebSP/TodayRaceInfo/S_DebaTable'||u.searchParams.get('k_babaCode')!==String(code)||u.searchParams.get('k_raceDate')!==date.replaceAll('-','/'))continue;const race=Number(u.searchParams.get('k_raceNo'));if(Number.isInteger(race)&&race>=1&&race<=20)numbers.push(race);}catch{}
+ }
+ const raceNumbers=[...new Set(numbers)].sort((a,b)=>a-b),explicitNonMeeting=/(?:開催はありません|開催情報はありません|レース情報がありません|該当するレースはありません)/.test(text);
+ if(header&&raceNumbers.length)return {status:'meeting',meeting:true,track,date,raceNumbers,changes:[],source:'NAR公式 Mobile RaceList'};
+ if(header&&explicitNonMeeting)return {status:'non_meeting',meeting:false,track,date,raceNumbers:[],changes:[],source:'NAR公式 Mobile RaceList'};
+ return {status:'meeting_unknown',meeting:false,track,date,raceNumbers:[],changes:[],source:'NAR公式 Mobile RaceList',reason:header?'race_numbers_missing':'identity_mismatch'};
+}
 export function assertNarAbilityCardIdentity(html,{date,track,race}){
  const header=meetingText(String(html).split(/<(?:tr\b[^>]*class=["'][^"']*\bdbitem\b|font\b[^>]*class=["'][^"']*\bbamei\b)/i)[0]).normalize('NFKC').replace(/\s+/g,'');
  const [y,m,d]=String(date).split('-').map(Number);
  if(!validDate(date)||!Object.values(TRACKS).includes(track)||!Number.isInteger(race)||race<1||race>99||!new RegExp(`${y}年0?${m}月0?${d}日`).test(header)||!header.includes(track)||!header.includes(`第${race}競走`))fail('CARD_IDENTITY');
 }
 export async function fetchNarPrecomputeHtml(url,{timeoutMs=5000,fetchImpl=globalThis.fetch}={}){
- const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
+ const u=new URL(url),allowed=(u.origin==='https://www.keiba.go.jp'&&['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname))||(u.origin==='https://sp.keiba.go.jp'&&u.pathname==='/KeibaWebSP/TodayRaceInfo/S_RaceList');if(!allowed||u.username||u.password)fail('SOURCE_URL');
  const controller=new AbortController();let reader,timer;
  try{return await Promise.race([new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('SOURCE_DEADLINE'));},timeoutMs);}), (async()=>{
   const r=await fetchImpl(url,{redirect:'manual',signal:controller.signal});if(controller.signal.aborted){void r.body?.cancel();fail('SOURCE_DEADLINE');}if(!r.ok||r.redirected||r.status!==200){const error=new Error('SOURCE_HTTP');error.httpStatus=Number.isInteger(Number(r.status))?Number(r.status):null;throw error;}reader=r.body.getReader();const parts=[];let size=0;
@@ -38,14 +50,15 @@ export async function fetchNarPrecomputeMeeting({code,date,timeoutMs=5000,fetchI
  const query=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(date.replaceAll('-','/'))}`;
  const routes=[
   {name:'RaceList',url:`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?${query}`},
-  {name:'RaceList_ipat',url:`https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat?${query}`}
+  {name:'RaceList_ipat',url:`https://www.keiba.go.jp/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat?${query}`},
+  {name:'RaceList_mobile',url:`https://sp.keiba.go.jp/KeibaWebSP/TodayRaceInfo/S_RaceList?${query}`,mobile:true}
  ];
  const started=Date.now(),audit=[];
  for(let i=0;i<routes.length;i++){
   const remaining=Math.max(0,Number(timeoutMs)-(Date.now()-started));if(remaining<250)break;
-  const attemptTimeout=i===0?Math.max(250,Math.floor(remaining/2)):remaining;
+  const attemptTimeout=i===routes.length-1?remaining:Math.max(250,Math.floor(remaining/2));
   try{
-   const html=await fetchNarPrecomputeHtml(routes[i].url,{timeoutMs:attemptTimeout,fetchImpl}),parsed=parseNarRaceList(html,{track,date});
+   const html=await fetchNarPrecomputeHtml(routes[i].url,{timeoutMs:attemptTimeout,fetchImpl}),parsed=routes[i].mobile?parseNarMobileRaceList(html,{code:String(code),track,date}):parseNarRaceList(html,{track,date});
    if(parsed.track!==track||parsed.date!==date||!['meeting','non_meeting'].includes(parsed.status))fail('MEETING_UNCONFIRMED');
    return {...parsed,sourceRoute:routes[i].name,attemptCount:i+1};
   }catch(error){const reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED'].includes(error?.message)?error.message:'MEETING_SOURCE_FAILED',status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(error?.httpStatus))&&Number(error.httpStatus)>=100&&Number(error.httpStatus)<=599?Number(error.httpStatus):null;audit.push({route:routes[i].name,reason,...(status?{httpStatus:status}:{})});}
