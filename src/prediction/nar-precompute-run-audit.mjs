@@ -4,6 +4,7 @@ const MAX_EVENTS=64;
 const text=(value,max=120)=>value==null?null:String(value).slice(0,max);
 const count=value=>Number.isSafeInteger(Number(value))&&Number(value)>=0?Number(value):0;
 const validDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||''));
+const meetingAttempt=value=>{const route=['RaceList','RaceList_ipat'].includes(value?.route)?value.route:null,reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED','MEETING_SOURCE_FAILED'].includes(value?.reason)?value.reason:null,status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(value?.httpStatus))&&Number(value.httpStatus)>=100&&Number(value.httpStatus)<=599?Number(value.httpStatus):null;return route&&reason?{route,reason,...(status?{httpStatus:status}:{})}:null;};
 
 function iso(value){
  const ms=value instanceof Date?value.getTime():typeof value==='number'?value:Date.parse(String(value||''));
@@ -21,6 +22,8 @@ function compactEvent(event={}){
  if(raceId)out.raceId=raceId;
  if(track)out.track=track;
  if(reason)out.reason=reason;
+ const meetingAttempts=(Array.isArray(event.meetingAttempts)?event.meetingAttempts:[]).slice(0,2).map(meetingAttempt).filter(Boolean);
+ if(meetingAttempts.length)out.meetingAttempts=meetingAttempts;
  return out;
 }
 
