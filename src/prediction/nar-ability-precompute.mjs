@@ -17,6 +17,7 @@ const number=v=>v!=null&&v!==''&&Number.isFinite(Number(v))?Number(v):null;
 const id=(date,code,race)=>`${date.replaceAll('-','')}-NAR-${code}-${String(race).padStart(2,'0')}`;
 const off=(date,time)=>/^([01]\d|2[0-3]):[0-5]\d$/.test(time||'')?Date.parse(`${date}T${time}:00+09:00`):NaN;
 const fail=reason=>{throw new Error(reason);};
+const meetingAttemptAudit=value=>Array.isArray(value)?value.slice(0,2).flatMap(item=>{const route=['RaceList','RaceList_ipat'].includes(item?.route)?item.route:null,reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED','MEETING_SOURCE_FAILED'].includes(item?.reason)?item.reason:null,status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(item?.httpStatus))&&Number(item.httpStatus)>=100&&Number(item.httpStatus)<=599?Number(item.httpStatus):null;return route&&reason?[{route,reason,...(status?{httpStatus:status}:{})}]:[];}):[];
 export function assertNarAbilityCardIdentity(html,{date,track,race}){
  const header=meetingText(String(html).split(/<(?:tr\b[^>]*class=["'][^"']*\bdbitem\b|font\b[^>]*class=["'][^"']*\bbamei\b)/i)[0]).normalize('NFKC').replace(/\s+/g,'');
  const [y,m,d]=String(date).split('-').map(Number);
@@ -26,9 +27,9 @@ export async function fetchNarPrecomputeHtml(url,{timeoutMs=5000,fetchImpl=globa
  const u=new URL(url);if(u.origin!=='https://www.keiba.go.jp'||!['/KeibaWeb/TodayRaceInfo/RaceList','/KeibaWeb_IPAT/TodayRaceInfo/RaceList_ipat','/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable'].includes(u.pathname)||u.username||u.password)fail('SOURCE_URL');
  const controller=new AbortController();let reader,timer;
  try{return await Promise.race([new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new Error('SOURCE_DEADLINE'));},timeoutMs);}), (async()=>{
-  const r=await fetchImpl(url,{redirect:'manual',signal:controller.signal});if(controller.signal.aborted){void r.body?.cancel();fail('SOURCE_DEADLINE');}if(!r.ok||r.redirected||r.status!==200)fail('SOURCE_HTTP');reader=r.body.getReader();const parts=[];let size=0;
+  const r=await fetchImpl(url,{redirect:'manual',signal:controller.signal});if(controller.signal.aborted){void r.body?.cancel();fail('SOURCE_DEADLINE');}if(!r.ok||r.redirected||r.status!==200){const error=new Error('SOURCE_HTTP');error.httpStatus=Number.isInteger(Number(r.status))?Number(r.status):null;throw error;}reader=r.body.getReader();const parts=[];let size=0;
   while(true){const next=await reader.read();if(controller.signal.aborted)fail('SOURCE_DEADLINE');if(next.done)break;size+=next.value.byteLength;if(size>1000000)fail('SOURCE_SIZE');parts.push(next.value);}
-  const raw=new Uint8Array(size);let at=0;for(const p of parts){raw.set(p,at);at+=p.byteLength;}return new TextDecoder('utf-8',{fatal:true}).decode(raw);
+  const raw=new Uint8Array(size);let at=0;for(const p of parts){raw.set(p,at);at+=p.byteLength;}try{return new TextDecoder('utf-8',{fatal:true}).decode(raw);}catch{fail('SOURCE_DECODE');}
  })()]);}finally{clearTimeout(timer);controller.abort();if(reader)void reader.cancel().catch(()=>{});}
 }
 export async function fetchNarPrecomputeMeeting({code,date,timeoutMs=5000,fetchImpl=globalThis.fetch}={}){
@@ -47,7 +48,7 @@ export async function fetchNarPrecomputeMeeting({code,date,timeoutMs=5000,fetchI
    const html=await fetchNarPrecomputeHtml(routes[i].url,{timeoutMs:attemptTimeout,fetchImpl}),parsed=parseNarRaceList(html,{track,date});
    if(parsed.track!==track||parsed.date!==date||!['meeting','non_meeting'].includes(parsed.status))fail('MEETING_UNCONFIRMED');
    return {...parsed,sourceRoute:routes[i].name,attemptCount:i+1};
-  }catch(error){audit.push({route:routes[i].name,reason:['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','MEETING_UNCONFIRMED'].includes(error?.message)?error.message:'MEETING_SOURCE_FAILED'});}
+  }catch(error){const reason=['SOURCE_DEADLINE','SOURCE_HTTP','SOURCE_SIZE','SOURCE_URL','SOURCE_DECODE','MEETING_UNCONFIRMED'].includes(error?.message)?error.message:'MEETING_SOURCE_FAILED',status=reason==='SOURCE_HTTP'&&Number.isInteger(Number(error?.httpStatus))&&Number(error.httpStatus)>=100&&Number(error.httpStatus)<=599?Number(error.httpStatus):null;audit.push({route:routes[i].name,reason,...(status?{httpStatus:status}:{})});}
  }
  const error=new Error('MEETING_SOURCE_UNAVAILABLE');error.meetingAudit=audit;throw error;
 }
@@ -68,7 +69,7 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,
     if(m.status==='non_meeting'){events.push({track:m.track,reason:'NON_MEETING'});continue;}
     if(!m.raceNumbers.length||m.raceNumbers.length>99||m.raceNumbers.some(r=>!Number.isInteger(r)||r<1||r>99)||new Set(m.raceNumbers).size!==m.raceNumbers.length)fail('MEETING_UNCONFIRMED');
     for(const race of m.raceNumbers){const raceId=id(date,code,race),existing=await readLatestPrecomputedSnapshot(env.DB,'NAR',raceId);if(existing){events.push({raceId,reason:'ALREADY_SAVED'});continue;}jobs.push({code,date,race,track:m.track,raceId});}
-   }catch(error){const reason=['MEETING_SOURCE_UNAVAILABLE','MEETING_UNCONFIRMED','MEETING_CONFIGURATION_INVALID'].includes(error?.message)?error.message:'MEETING_UNAVAILABLE';events.push({track:TRACKS[code],reason});}
+   }catch(error){const reason=['MEETING_SOURCE_UNAVAILABLE','MEETING_UNCONFIRMED','MEETING_CONFIGURATION_INVALID'].includes(error?.message)?error.message:'MEETING_UNAVAILABLE',attempts=meetingAttemptAudit(error?.meetingAudit);events.push({track:TRACKS[code],reason,...(attempts.length?{meetingAttempts:attempts}:{})});}
   }
   const offset=jobs.length?Math.floor(Number(scheduledTime)/300000)*limit%jobs.length:0,queue=[...jobs.slice(offset),...jobs.slice(0,offset)];let attempted=0,saved=0;
   for(const job of queue){
