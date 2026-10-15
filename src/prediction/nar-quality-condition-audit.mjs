@@ -1,3 +1,4 @@
+import {compareNarVenueCodes} from './nar-venue-code-comparison.mjs';
 // Pure condition observations over retained DATA. No prediction or identity repair.
 const unavailable = reasonCode => ({status: 'UNAVAILABLE', reasonCode});
 const count = n => Number.isSafeInteger(n) && n >= 0 && n <= 1000;
@@ -56,7 +57,7 @@ export function auditNarHistoryMatchConditions(horse, race) {
       details.push({episodeIndex:i+1, sourceReason:ref.reasonCode, origin, dateSupported, venueRecognized,
         officialReferenceCount:official.length, sameMonthDayReferenceCount:sameMonthDay.length,
         sameVenueReferenceCount:sameVenue.length, dateVenueReferenceCount:combined.length,
-        eligibleCandidateCount, sameDateVenueEpisodeCount, observation});
+        eligibleCandidateCount, sameDateVenueEpisodeCount, observation, ...(origin === 'NAR' && ['NO_VENUE_MATCH','DATE_VENUE_COMBINATION_UNMATCHED'].includes(observation) ? {venueCodeComparison:compareNarVenueCodes(f, official, venues)} : {})});
     }
     const observations = {};
     for (const d of details) observations[d.observation] = (observations[d.observation] || 0) + 1;
