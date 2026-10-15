@@ -5,7 +5,7 @@ import {attachNarHistoryIdentity,verifyNarHistoryIdentity} from './nar-history-i
 import {retainNarCardHistory} from './nar-history-pack.mjs';
 import {buildNarPreAnalysisPack,verifyNarPreAnalysisPack} from './nar-pre-analysis-pack.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from './nar-ability-evidence.mjs';
-import {narAbilityRunWindow} from './nar-ability-run-window.mjs';
+import {narAbilityRunWindow,narAbilityCollectionSelection} from './nar-ability-run-window.mjs';
 import {meetingText,parseNarRaceList} from '../../meeting-discovery.mjs';
 import {createPrecomputedSnapshot,createSnapshotHash} from './precomputed-snapshot.mjs';
 import {snapshotToD1Values,readLatestPrecomputedSnapshot,d1RowToSnapshot} from './precomputed-store.mjs';
@@ -70,9 +70,11 @@ export async function fetchNarPrecomputeMeeting({code,date,timeoutMs=5000,fetchI
 export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,wallNow=Date.now,scheduledTime=Date.now()}={}){
  if(String(env?.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')!=='true')return null;
  return async()=>{
-  const codes=String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').map(v=>v.trim()).filter(Boolean),limit=Number(env.NAR_PRECOMPUTE_MAX_JOBS||3),budget=Number(env.NAR_PRECOMPUTE_BUDGET_MS||20000);
+  const start=wallNow(),selection=narAbilityCollectionSelection(env,start);
+  if(!selection.valid)return {status:'BLOCKED',reason:'DATED_TRIAL_CONFIGURATION_INVALID'};
+  const codes=String(selection.trackCodes||'').split(',').map(v=>v.trim()).filter(Boolean),limit=Number(selection.maxJobs||3),budget=Number(env.NAR_PRECOMPUTE_BUDGET_MS||20000);
   if(!codes.length||codes.length>3||new Set(codes).size!==codes.length||codes.some(c=>!TRACKS[c])||!Number.isInteger(limit)||limit<1||limit>4||!Number.isInteger(budget)||budget<1000||budget>30000||!env.DB?.prepare||typeof meeting!=='function'||typeof card!=='function')return {status:'BLOCKED',reason:'CONFIGURATION_INVALID'};
-  const start=wallNow(),date=new Date(start+9*3600000).toISOString().slice(0,10),deadline=start+budget,events=[],jobs=[];
+  const date=new Date(start+9*3600000).toISOString().slice(0,10),deadline=start+budget,events=[],jobs=[];
   const window=narAbilityRunWindow(env,start);
   if(!window.active)return {status:window.status,reason:window.reason,date};
   const stop=window.stop;
@@ -143,8 +145,9 @@ export async function handleNarAbilityViewer(request,env){
 
 export async function readNarAbilityCanaryStatus(env,{date,now=Date.now(),includeDiagnostics=false,diagnoseRace=diagnoseNarRaceQuality}={}){
  if(!validDate(date))return {ok:false,error:'INVALID_DATE'};
- const enabled=String(env.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')==='true',window=narAbilityRunWindow(env,now);
+ const enabled=String(env.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')==='true',selection=narAbilityCollectionSelection(env,now),originalWindow=narAbilityRunWindow(env,now),window=selection.valid?originalWindow:{...originalWindow,active:false,status:'BLOCKED',reason:'DATED_TRIAL_CONFIGURATION_INVALID'};
  const base={ok:true,date,enabled,viewerEnabled:String(env.ENABLE_NAR_ABILITY_VIEWER||'false')==='true',historyStoreEnabled:String(env.ENABLE_NAR_SHARED_HISTORY||'false')==='true',canaryDate:env.NAR_PRECOMPUTE_CANARY_DATE||null,stopAt:window.stop?new Date(window.stop).toISOString():env.NAR_PRECOMPUTE_STOP_AT||null,active:enabled&&window.active&&window.date===date,scheduleMode:window.mode,scheduleStatus:window.status,scheduleReason:window.reason||null,dailyFrom:env.NAR_PRECOMPUTE_DAILY_FROM||null,dailyUntil:env.NAR_PRECOMPUTE_DAILY_UNTIL||null,dailyStartJst:env.NAR_PRECOMPUTE_DAILY_START_JST||null,dailyStopJst:env.NAR_PRECOMPUTE_DAILY_STOP_JST||null,trackCodes:String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').filter(Boolean),...flags};
+ if(selection.datedTrial){base.trackCodes=String(selection.trackCodes||'').split(',').filter(Boolean);base.effectiveMaxJobs=selection.valid?Number(selection.maxJobs):null;base.datedTrial=selection.datedTrial;}
  const diagnosticInputs=[];let restoredStatus;
  try{
   const prefix=`${date.replaceAll('-','')}-NAR-`,rows=await env.DB.prepare('SELECT * FROM precomputed_race_snapshots WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=? ORDER BY race_id,revision ASC LIMIT 500').bind('NAR',prefix,prefix+'\uffff',NAR_ABILITY_VERSION,NAR_ABILITY_VERSION).all();

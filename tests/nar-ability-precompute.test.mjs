@@ -2,7 +2,7 @@ import {stableHash} from '../src/prediction/precomputed-snapshot.mjs';
 import {createSnapshotHash} from '../src/prediction/precomputed-snapshot.mjs';
 import {d1RowToSnapshot} from '../src/prediction/precomputed-store.mjs';
 import {retainNarAbilityEvidence,auditNarAbilityEvidence} from '../src/prediction/nar-ability-evidence.mjs';
-import {narAbilityRunWindow} from '../src/prediction/nar-ability-run-window.mjs';
+import {narAbilityRunWindow,narAbilityCollectionSelection} from '../src/prediction/nar-ability-run-window.mjs';
 import {handlePublicApi} from '../worker.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,6 +59,54 @@ test('existing JRA market queue precedes NAR and busy result runs suppress NAR w
 
 const dailySettings={NAR_PRECOMPUTE_RUN_MODE:'daily',NAR_PRECOMPUTE_DAILY_FROM:'2026-10-14',NAR_PRECOMPUTE_DAILY_UNTIL:'2026-10-20',NAR_PRECOMPUTE_DAILY_START_JST:'07:00',NAR_PRECOMPUTE_DAILY_STOP_JST:'14:55'};
 const jst=d=>Date.parse(d+'+09:00');
+const datedSettings={NAR_PRECOMPUTE_DATED_TRIAL_DATE:'2026-10-18',NAR_PRECOMPUTE_DATED_TRIAL_CODE:'22',NAR_PRECOMPUTE_DATED_TRIAL_MAX_JOBS:'1'};
+function datedFixture(){const f=fixture();Object.assign(f.env,dailySettings,datedSettings,{NAR_PRECOMPUTE_BUDGET_MS:'20000'});return f;}
+test('Phase140.11 dated trial selects only 22 on target JST date and restores 21 thereafter',()=>{
+ const f=datedFixture(),before=JSON.stringify(f.env);
+ for(const [at,code,limit,status] of [['2026-10-17T23:59:59','21','3','SCHEDULED'],['2026-10-18T00:00:00','22','1','SELECTED_DATE'],['2026-10-18T23:59:59','22','1','SELECTED_DATE'],['2026-10-19T00:00:00','21','3','EXPIRED']]){const s=narAbilityCollectionSelection(f.env,jst(at));assert.equal(s.valid,true);assert.equal(s.trackCodes,code);assert.equal(s.maxJobs,limit);assert.equal(s.datedTrial.status,status);assert.equal(s.datedTrial.totalTrialSaveLimit,null);}
+ assert.equal(JSON.stringify(f.env),before);
+});
+test('Phase140.11 no dated settings retains canary and ordinary collection behavior',()=>{const f=fixture(),s=narAbilityCollectionSelection(f.env,f.clock());assert.equal(s.valid,true);assert.equal(s.trackCodes,'21');assert.equal(s.maxJobs,'3');assert.equal(s.datedTrial,null);});
+test('Phase140.11 actual production vars schedule 22 on October 18 without extending baseline',async()=>{
+ const v=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8')).vars;
+ for(const [k,x] of Object.entries(datedSettings))assert.equal(v[k],x);
+ for(const [at,active,code] of [['2026-10-16T08:00:00',true,'21'],['2026-10-18T06:59:59',false,'22'],['2026-10-18T07:00:00',true,'22'],['2026-10-18T14:55:00',false,'22'],['2026-10-19T08:00:00',true,'21'],['2026-10-21T08:00:00',false,'21']]){assert.equal(narAbilityCollectionSelection(v,jst(at)).trackCodes,code);assert.equal(narAbilityRunWindow(v,jst(at)).active,active);}
+});
+test('Phase140.11 partial, empty and malformed dated settings block before DB or acquisition',async()=>{
+ for(const change of [{NAR_PRECOMPUTE_DATED_TRIAL_DATE:undefined},{NAR_PRECOMPUTE_DATED_TRIAL_DATE:''},{NAR_PRECOMPUTE_DATED_TRIAL_DATE:'2026-02-30'},{NAR_PRECOMPUTE_DATED_TRIAL_CODE:'23'},{NAR_PRECOMPUTE_DATED_TRIAL_CODE:'22,23'},{NAR_PRECOMPUTE_DATED_TRIAL_MAX_JOBS:'2'},{NAR_PRECOMPUTE_DATED_TRIAL_MAX_JOBS:1}]){const f=datedFixture();Object.assign(f.env,change);f.env.DB={prepare(){throw Error('NO_DB');}};let calls=0;const r=await f.run({wallNow:()=>jst('2026-10-18T08:00:00'),meeting:async()=>{calls++;}});assert.deepEqual(r,{status:'BLOCKED',reason:'DATED_TRIAL_CONFIGURATION_INVALID'});assert.equal(calls,0);}
+ const f=datedFixture();delete f.env.NAR_PRECOMPUTE_DATED_TRIAL_CODE;assert.equal(narAbilityCollectionSelection(f.env,jst('2026-10-16T08:00:00')).valid,false);
+});
+test('Phase140.11 out-of-window date or changed baseline cannot activate the override',()=>{
+ for(const change of [{NAR_PRECOMPUTE_DATED_TRIAL_DATE:'2026-10-13'},{NAR_PRECOMPUTE_DATED_TRIAL_DATE:'2026-10-21'},{NAR_PRECOMPUTE_RUN_MODE:'canary'},{NAR_PRECOMPUTE_TRACK_CODES:'21,22'},{NAR_PRECOMPUTE_MAX_JOBS:'4'},{NAR_PRECOMPUTE_BUDGET_MS:'30000'},{NAR_PRECOMPUTE_DAILY_UNTIL:'2026-10-21'},{NAR_PRECOMPUTE_DAILY_STOP_JST:'07:00'}]){const f=datedFixture();Object.assign(f.env,change);assert.equal(narAbilityCollectionSelection(f.env,jst('2026-10-18T08:00:00')).valid,false);}
+});
+test('Phase140.11 selected-day runner requests only Kanazawa and attempts at most one job',async()=>{
+ const f=datedFixture(),seen=[];const out=await f.run({wallNow:()=>jst('2026-10-18T08:00:00'),meeting:async j=>{seen.push(j.code);return {status:'meeting',track:'金沢',date:j.date,raceNumbers:[1,2,3]};}});
+ assert.deepEqual(seen,['22']);assert.equal(out.attempted,1);assert.equal(out.saved,1);assert.equal(f.DB.rows.length,1);assert.equal(f.DB.rows[0].race_id,'20261018-NAR-22-01');const d=JSON.parse(f.DB.rows[0].data_json);assert.equal(d.race.track,'金沢');assert.equal(d.venueRoutingVersion,'NAR_VENUE_ROUTING_22_23_V1');assert.equal(d.researchOnly,true);assert.equal(d.formalKpiEligible,false);assert.equal(d.productionActivationReady,false);assert.equal(f.DB.rows[0].market_json,null);assert.equal(f.DB.rows[0].result_json,null);
+});
+test('Phase140.11 dated trial rerun can save another race but never rewrites an existing row',async()=>{
+ const f=datedFixture(),extra={wallNow:()=>jst('2026-10-18T08:00:00'),meeting:async j=>({status:'meeting',track:'金沢',date:j.date,raceNumbers:[1,2]})};assert.equal((await f.run(extra)).saved,1);const first=JSON.stringify(f.DB.rows[0]);assert.equal((await f.run(extra)).saved,1);assert.equal(JSON.stringify(f.DB.rows[0]),first);const before=JSON.stringify(f.DB.rows);assert.equal((await f.run(extra)).saved,0);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+test('Phase140.11 before start, at stop and after expiry no DB or source is touched',async()=>{
+ for(const at of ['2026-10-18T06:59:59','2026-10-18T14:55:00','2026-10-21T08:00:00']){const f=datedFixture();f.env.DB={prepare(){throw Error('NO_DB');}};let calls=0;const r=await f.run({wallNow:()=>jst(at),meeting:async()=>{calls++;}});assert.equal(r.status,'SKIPPED');assert.equal(calls,0);}
+});
+test('Phase140.11 wrong venue, missing start time and post-off still reject selected-day cards',async()=>{
+ for(const [patch,reason] of [[{track:'笠松'},'CARD_IDENTITY'],[{postTime:''},'POST_TIME_UNKNOWN'],[{postTime:'07:59'},'POST_TIME_REACHED']]){const f=datedFixture(),out=await f.run({wallNow:()=>jst('2026-10-18T08:00:00'),meeting:async j=>({status:'meeting',track:'金沢',date:j.date,raceNumbers:[1]}),card:async j=>({...await f.card(j),...patch})});assert.equal(out.saved,0);assert.equal(f.DB.rows.length,0);assert.ok(out.events.some(e=>e.reason===reason));}
+});
+test('Phase140.11 reaching the daily deadline during acquisition prevents selected-day writes',async()=>{
+ const f=datedFixture();let at=jst('2026-10-18T14:54:59');const out=await f.run({wallNow:()=>at,meeting:async j=>({status:'meeting',track:'金沢',date:j.date,raceNumbers:[1]}),card:async j=>{const p=await f.card(j);at=jst('2026-10-18T14:55:00');return {...p,postTime:'16:00'};}});assert.equal(out.saved,0);assert.equal(f.DB.rows.length,0);assert.ok(out.events.some(e=>e.reason==='DEADLINE'));
+});
+test('Phase140.11 following day runner automatically resumes baseline code and job cap',async()=>{
+ const f=datedFixture(),seen=[];const out=await f.run({wallNow:()=>jst('2026-10-19T08:00:00'),meeting:async j=>{seen.push(j.code);return f.meeting(j);}});assert.deepEqual(seen,['21']);assert.equal(out.attempted,3);assert.equal(out.saved,3);assert.ok(f.DB.rows.every(r=>r.race_id.startsWith('20261019-NAR-21-')));
+});
+test('Phase140.11 read-only status reports current selection separately from requested date',async()=>{
+ const f=datedFixture();for(const [now,date,code,limit,status,active] of [['2026-10-16T08:00:00','2026-10-18','21',3,'SCHEDULED',false],['2026-10-18T08:00:00','2026-10-18','22',1,'SELECTED_DATE',true],['2026-10-18T14:55:00','2026-10-18','22',1,'SELECTED_DATE',false],['2026-10-19T08:00:00','2026-10-18','21',3,'EXPIRED',false]]){const r=await readNarAbilityCanaryStatus(f.env,{date,now:jst(now)});assert.deepEqual(r.trackCodes,[code]);assert.equal(r.effectiveMaxJobs,limit);assert.equal(r.datedTrial.status,status);assert.equal(r.active,active);}assert.equal(f.DB.rows.length,0);
+});
+test('Phase140.11 invalid override blocks collection while twelve frozen rows remain readable',async()=>{
+ const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows);Object.assign(f.env,dailySettings,datedSettings);f.env.NAR_PRECOMPUTE_DATED_TRIAL_CODE='23';const r=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:jst('2026-10-18T08:00:00'),includeDiagnostics:true});assert.equal(r.active,false);assert.equal(r.scheduleStatus,'BLOCKED');assert.equal(r.scheduleReason,'DATED_TRIAL_CONFIGURATION_INVALID');assert.deepEqual(r.trackCodes,[]);assert.equal(r.effectiveMaxJobs,null);assert.deepEqual(r.datedTrial,{status:'INVALID'});assert.equal(r.savedRaceCount,12);assert.equal(r.rejectedRowCount,0);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+test('Phase140.11 valid dated selection preserves twelve old rows across status and new save',async()=>{
+ const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows);Object.assign(f.env,dailySettings,datedSettings);let r=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:jst('2026-10-18T08:00:00'),includeDiagnostics:true});assert.equal(r.savedRaceCount,12);assert.equal(r.rejectedRowCount,0);assert.equal(JSON.stringify(f.DB.rows),before);const out=await f.run({wallNow:()=>jst('2026-10-18T08:00:00'),meeting:async j=>({status:'meeting',track:'金沢',date:j.date,raceNumbers:[1]})});assert.equal(out.saved,1);assert.equal(JSON.stringify(f.DB.rows.slice(0,12)),before);r=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:jst('2026-10-19T08:00:00')});assert.equal(r.savedRaceCount,12);assert.equal(r.rejectedRowCount,0);
+});
 test('daily window uses JST including inclusive trial dates and exclusive daily stop',()=>{
  for(const [at,active,reason] of [['2026-10-13T08:00:00',false,'DAILY_DATE_CLOSED'],['2026-10-14T06:59:59',false,'DAILY_WINDOW_CLOSED'],['2026-10-14T07:00:00',true],['2026-10-20T14:54:59',true],['2026-10-20T14:55:00',false,'DAILY_WINDOW_CLOSED'],['2026-10-21T08:00:00',false,'DAILY_DATE_CLOSED']]){const w=narAbilityRunWindow(dailySettings,jst(at));assert.equal(w.active,active);assert.equal(w.reason,reason);}
  assert.equal(narAbilityRunWindow(dailySettings,Date.parse('2026-10-13T22:00:00Z')).date,'2026-10-14');
