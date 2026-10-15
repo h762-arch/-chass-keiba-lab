@@ -231,3 +231,37 @@ test('Phase140.4 optional condition audits preserve 12-race readback when legacy
  const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows),out=await statusWithDiagnostics(f);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);assert.equal(out.qualityDiagnostics.races.length,12);assert.equal(JSON.stringify(f.DB.rows),before);
  assert.ok(out.qualityDiagnostics.races.every(r=>r.diagnostics.horses.every(h=>h.conditions.time.status==='NOT_APPLICABLE')));assert.equal((await(await api(req(),f.env)).json()).races.length,12);
 });
+
+async function diagnosticSizeFixture(){
+ const counts=[12,8,9,12,12,14,12,14,12,11,11,14],missing={3:[6],8:[11,12],11:[2,6,8,9,11],12:[2]},held={3:{2:1,9:2},7:{4:4,5:2},9:{8:4},10:{2:1,3:4,5:3,8:4,9:4,11:2},11:{10:1}};
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';
+ const meeting=async({date})=>({status:'meeting',track:'川崎',date,raceNumbers:Array.from({length:12},(_,i)=>i+1)});
+ const card=async j=>({...await f.card(j),horses:Array.from({length:counts[j.race-1]},(_,i)=>{const no=i+1,isMissing=missing[j.race]?.includes(no);return {horseNo:no,horseName:`試験馬${no}`,abilityScore:90-no,predictedTime:isMissing?null:'1:30.0',predictedTimeMissingReason:isMissing?'time_missing_unknown':null,runs:Array.from({length:4},(_,k)=>({date:`09.${30-k}`,venue:'川崎',runOrganization:k<(held[j.race]?.[no]||0)?'JRA':'NAR',distance:isMissing?2000:1400,timeSec:130,sameDistance:!isMissing,sameTrack:true}))};})});
+ const historyLinks=async j=>{const body={status:'IDENTITY_LINKS_RESOLVED',date:j.date,postTime:'12:00',code:j.code,raceNo:j.race,observedAt:new Date(f.clock()).toISOString(),rows:j.expectedHorses.map(h=>({horseNo:h.horseNo,horseName:h.horseName,providerHorseKey:'NAR_LINEAGE:'+String(30012403217+h.horseNo),pastRaceReferences:Array.from({length:4},(_,k)=>({date:`2026-09-${30-k}`,code:'21',raceNo:1,raceId:`202609${30-k}-NAR-21-01`}))}))};return {body,linksHash:await stableHash(body)};};
+ for(let i=0;i<4;i++)assert.equal((await f.run({meeting,card,historyLinks})).saved,3);return f;
+}
+
+test('Phase140.4a real handler reproduces oversized 141-horse full response and returns compact 12/0 with all 9/32 details',async t=>{
+ const f=await diagnosticSizeFixture(),before=JSON.stringify(f.DB.rows),url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13&diagnostics=1';
+ const full=await handlePublicApi(new Request(url+'&format=full'),f.env);assert.equal(full.status,413);assert.equal((await full.json()).error.code,'RESPONSE_TOO_LARGE');
+ const res=await handlePublicApi(new Request(url),f.env),text=await res.text(),body=JSON.parse(text);assert.equal(res.status,200);assert.ok(new TextEncoder().encode(text).length<100000);assert.equal(Number(res.headers.get('X-CHASS-Response-Bytes')),new TextEncoder().encode(text).length);t.diagnostic('Representative compact response bytes: '+new TextEncoder().encode(text).length);assert.equal(body.format,'compact');assert.equal(body.savedRaceCount,12);assert.equal(body.rejectedRowCount,0);assert.equal(body.races.length,12);assert.equal(body.qualityDiagnostics.races.length,12);
+ const diag=body.qualityDiagnostics.races.map(r=>r.diagnostics),horses=diag.flatMap(d=>d.horses);assert.equal(diag.reduce((s,d)=>s+d.horseCount,0),141);assert.equal(diag.reduce((s,d)=>s+d.time.missingActiveCount,0),9);assert.equal(diag.reduce((s,d)=>s+d.history.heldReferenceCount,0),32);assert.equal(horses.length,21);assert.equal(horses.filter(h=>h.time.status==='MISSING').length,9);assert.equal(horses.filter(h=>h.history.heldReferenceCount>0).length,12);assert.ok(horses.filter(h=>h.time.status==='MISSING').every(h=>h.conditions.time.observation==='NO_FINITE_TIME_WITHIN_300M'));assert.equal(JSON.stringify(f.DB.rows),before);
+ const explicit=await(await handlePublicApi(new Request(url+'&format=compact'),f.env)).json();assert.deepEqual(explicit,body);assert.equal(body.researchOnly,true);assert.equal(body.formalKpiEligible,false);assert.equal(body.productionActivationReady,false);
+});
+
+test('Phase140.4a compact race filter supports 30 affected horses within shared byte limit',async t=>{
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';
+ const historyLinks=async j=>{const body={status:'IDENTITY_LINKS_RESOLVED',date:j.date,postTime:'12:00',code:j.code,raceNo:j.race,observedAt:new Date(f.clock()).toISOString(),rows:j.expectedHorses.map(h=>({horseNo:h.horseNo,horseName:h.horseName,providerHorseKey:'NAR_LINEAGE:'+String(30012403217+h.horseNo),pastRaceReferences:[{date:'2026-09-30',code:'21',raceNo:1,raceId:'20260930-NAR-21-01'}]}))};return {body,linksHash:await stableHash(body)};};
+ await f.run({historyLinks,card:async j=>({...await f.card(j),horses:Array.from({length:30},(_,i)=>({horseNo:i+1,horseName:`試験馬${i+1}`,abilityScore:80,predictedTime:null,predictedTimeMissingReason:'time_missing_unknown',runs:Array.from({length:5},()=>({date:'09.30',venue:'川崎',runOrganization:'NAR',distance:2000,timeSec:130}))}))})});
+ const url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13&diagnostics=1&format=compact&race=1',res=await handlePublicApi(new Request(url),f.env),text=await res.text(),body=JSON.parse(text);assert.equal(res.status,200);assert.ok(new TextEncoder().encode(text).length<100000);assert.equal(body.savedRaceCount,3);assert.equal(body.races.length,1);assert.equal(body.qualityDiagnostics.races.length,1);assert.equal(body.qualityDiagnostics.races[0].diagnostics.horses.length,30);assert.equal(body.qualityDiagnostics.races[0].diagnostics.history.heldReferenceCount,150);t.diagnostic('Thirty-horse/150-reference compact response bytes: '+new TextEncoder().encode(text).length);assert.equal(body.selectedRaceNo,1);assert.equal(body.countScope,'DATE');assert.equal(res.headers.get('cache-control'),'no-store');
+ const head=await handlePublicApi(new Request(url,{method:'HEAD'}),f.env);assert.equal(head.status,200);assert.equal(await head.text(),'');
+});
+
+test('Phase140.4a normal status stays full by default and compact format/race validation is explicit',async()=>{
+ const f=fixture();await f.run();const before=JSON.stringify(f.DB.rows),url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13';
+ const normal=await(await handlePublicApi(new Request(url),f.env)).json();assert.equal('format' in normal,false);assert.equal('qualityDiagnostics' in normal,false);assert.equal(normal.races[0].quality.horses.length,2);
+ const full=await(await handlePublicApi(new Request(url+'&format=full'),f.env)).json();assert.deepEqual(full,normal);
+ const compact=await(await handlePublicApi(new Request(url+'&format=compact'),f.env)).json();assert.equal(compact.format,'compact');assert.equal(compact.races[0].quality.horses,undefined);assert.equal(compact.races[0].quality.horseCount,2);
+ for(const query of ['&format=tabular','&race=0','&race=100','&race=1.5','&race=abc'])assert.equal((await handlePublicApi(new Request(url+query),f.env)).status,400);
+ assert.equal((await handlePublicApi(new Request(url+'&race=99'),f.env)).status,404);assert.equal(JSON.stringify(f.DB.rows),before);
+});
