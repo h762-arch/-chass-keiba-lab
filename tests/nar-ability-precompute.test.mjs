@@ -133,3 +133,21 @@ test('late history completion cannot save after daily stop or post time',async()
 test('Worker history link wiring uses full card only and production retains daily/cap limits',async()=>{
  const source=await readFile(new URL('../worker.js',import.meta.url),'utf8'),cfg=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8'));assert.match(source,/historyLinks:async/);assert.match(source,/extractNarOfficialHistoryLinks\(html/);assert.equal(cfg.vars.ENABLE_NAR_HISTORY_LINKS,'true');assert.equal(cfg.vars.NAR_PRECOMPUTE_MAX_JOBS,'3');assert.equal(cfg.vars.NAR_PRECOMPUTE_BUDGET_MS,'20000');assert.equal(cfg.vars.JRA_PRECOMPUTE_MAX_JOBS,'1');
 });
+
+test('Phase140.2 offline diagnostics preserve 12 restored races, audits and immutable rows', async () => {
+ const {diagnoseNarRaceQuality} = await import('../src/prediction/nar-quality-diagnostics.mjs');
+ const f=fixture(), meeting=async({date})=>({status:'meeting',track:'川崎',date,raceNumbers:Array.from({length:12},(_,i)=>i+1)});
+ for(let i=0;i<4;i++)assert.equal((await f.run({meeting})).saved,3);
+ const before=JSON.stringify(f.DB.rows), status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});
+ assert.equal(status.savedRaceCount,12);assert.equal(status.rejectedRowCount,0);
+ assert.deepEqual([status.races[0].horseCount,status.races[0].abilityCount,status.races[0].timeCount],[2,2,2]);
+ const viewer=await(await api(req(),f.env)).json();assert.equal(viewer.races.length,12);
+ for(const row of f.DB.rows){const data=d1RowToSnapshot(row).layers.DATA, original=JSON.stringify(data), out=diagnoseNarRaceQuality(data);assert.strictEqual(out.race,data);assert.equal(out.diagnostics.time.missingActiveCount,0);assert.equal(JSON.stringify(data),original);}
+ for(const race of viewer.races){
+  const original=JSON.stringify(race), faulty=new Proxy(race,{get(target,key){if(key==='horses')throw Error('forced diagnostic exception');return Reflect.get(target,key);}}),out=diagnoseNarRaceQuality(faulty);
+  assert.strictEqual(out.race,faulty);assert.equal(out.diagnostics.reasonCode,'DIAGNOSTIC_ERROR');assert.equal(JSON.stringify(race),original);
+  assert.ok('historyStoreAudit' in race);assert.ok('historyLinkAudit' in race);assert.equal(race.researchOnly,true);assert.equal(race.formalKpiEligible,false);assert.equal(race.productionActivationReady,false);
+  assert.ok(race.horses.every(h=>h.probability.status==='MODEL_HOLD'&&h.probability.win===null&&h.probability.top3===null));
+ }
+ const after=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.deepEqual(after,status);assert.equal(JSON.stringify(f.DB.rows),before);
+});
