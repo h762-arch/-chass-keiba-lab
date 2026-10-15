@@ -123,11 +123,24 @@ test('diagnostic output carries no market, raw errors, decisions or probability 
   assert.equal(d.researchOnly, true); assert.equal(d.formalKpiEligible, false); assert.equal(d.productionActivationReady, false); assert.equal(d.probabilityStatus, 'MODEL_HOLD');
 });
 
-test('module remains unreferenced by other prediction modules and runtime roots', async () => {
+test('diagnostics are referenced only by the opt-in status reader', async () => {
   const dir = new URL('../src/prediction/', import.meta.url);
   for (const name of await readdir(dir)) {
     if (!name.endsWith('.mjs') || name === 'nar-quality-diagnostics.mjs') continue;
-    assert.equal((await readFile(new URL(name, dir), 'utf8')).includes('nar-quality-diagnostics'), false, name);
+    assert.equal((await readFile(new URL(name, dir), 'utf8')).includes('nar-quality-diagnostics'), name === 'nar-ability-precompute.mjs', name);
   }
   for (const name of ['worker.js', 'worker-entry.mjs', 'app.js', 'server.mjs']) assert.equal((await readFile(new URL('../' + name, import.meta.url), 'utf8')).includes('nar-quality-diagnostics'), false, name);
+});
+
+import {diagnoseNarRestoredRaceBatch as batch} from '../src/prediction/nar-quality-diagnostics.mjs';
+test('Phase140.3 batch returns diagnostic projections without DATA references',()=>{
+ const input=freeze([{raceId:'20261015-NAR-21-01',data:{horses:[horse()],secret:'PRIVATE_DATA'}}]),before=JSON.stringify(input),out=batch(input);
+ assert.equal(out.races.length,1);assert.equal(out.races[0].diagnostics.history.heldReferenceCount,0);assert.equal(JSON.stringify(out).includes('PRIVATE_DATA'),false);assert.equal('data' in out.races[0],false);assert.equal('race' in out.races[0],false);assert.equal(JSON.stringify(input),before);
+});
+test('Phase140.3 bad batch containers, bound and entry exceptions return unavailable safely',()=>{
+ const throwing={};Object.defineProperty(throwing,'raceId',{get(){throw Error('PRIVATE');}});
+ for(const x of [null,{},new Array(501),[{}],[{raceId:'PRIVATE_ID'}],[throwing]]){const out=batch(x);assert.equal(out.status,'UNAVAILABLE');assert.deepEqual(out.races,[]);assert.equal(JSON.stringify(out).includes('PRIVATE'),false);}
+});
+test('Phase140.3 invalid and throwing diagnostic providers cannot certify a race',()=>{
+ for(const diagnoseRace of [null,()=>null,()=>{throw Error('PRIVATE');},()=>Promise.resolve(null)]){const out=batch([{raceId:'20261015-NAR-21-01',data:{horses:[horse()]}}],{diagnoseRace});assert.equal(out.status,'PARTIAL');assert.equal(out.races[0].diagnostics.reasonCode,'DIAGNOSTIC_ERROR');assert.equal(JSON.stringify(out).includes('PRIVATE'),false);}
 });

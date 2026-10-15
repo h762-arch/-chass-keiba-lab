@@ -151,3 +151,70 @@ test('Phase140.2 offline diagnostics preserve 12 restored races, audits and immu
  }
  const after=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.deepEqual(after,status);assert.equal(JSON.stringify(f.DB.rows),before);
 });
+
+const statusWithDiagnostics=(f,extra={})=>readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock(),includeDiagnostics:true,...extra});
+async function twelveRaceFixture(){const f=fixture(),meeting=async({date})=>({status:'meeting',track:'川崎',date,raceNumbers:Array.from({length:12},(_,i)=>i+1)});for(let i=0;i<4;i++)assert.equal((await f.run({meeting})).saved,3);return f;}
+
+test('Phase140.3 diagnostics are opt-in and default status remains unchanged',async()=>{
+ const f=fixture();await f.run();const before=JSON.stringify(f.DB.rows),normal=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()}),withDiag=await statusWithDiagnostics(f),{qualityDiagnostics,...rest}=withDiag;
+ assert.equal('qualityDiagnostics' in normal,false);assert.deepEqual(rest,normal);assert.equal(qualityDiagnostics.races.length,3);assert.equal(qualityDiagnostics.status,'PARTIAL');assert.equal(JSON.stringify(f.DB.rows),before);
+ for(const r of qualityDiagnostics.races){assert.equal(r.diagnostics.time.missingActiveCount,0);assert.equal(r.diagnostics.history.heldReferenceCount,null);assert.equal(r.diagnostics.history.status,'UNAVAILABLE');}
+});
+
+test('Phase140.3 12 restored races survive every diagnostic throwing with SELECT-only access',async()=>{
+ const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows),normal=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()}),prepare=f.DB.prepare.bind(f.DB);let selects=0,calls=0;
+ f.DB.prepare=sql=>{assert.match(sql,/^SELECT /);selects++;return prepare(sql);};
+ const out=await statusWithDiagnostics(f,{diagnoseRace(){calls++;throw Error('PRIVATE_DIAGNOSTIC_ERROR');}}),{qualityDiagnostics,...rest}=out;
+ assert.deepEqual(rest,normal);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);assert.equal(out.schemaReady,true);assert.equal(calls,12);assert.ok(selects>0);
+ assert.equal(qualityDiagnostics.status,'PARTIAL');assert.ok(qualityDiagnostics.races.every(r=>r.diagnostics.status==='UNAVAILABLE'&&r.diagnostics.reasonCode==='DIAGNOSTIC_ERROR'));
+ assert.equal(JSON.stringify(out).includes('PRIVATE_DIAGNOSTIC_ERROR'),false);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+
+test('Phase140.3 a single diagnostic failure does not suppress other race diagnostics',async()=>{
+ const {diagnoseNarRaceQuality}=await import('../src/prediction/nar-quality-diagnostics.mjs');const f=fixture();await f.run();let calls=0;
+ const out=await statusWithDiagnostics(f,{diagnoseRace(data){calls++;if(calls===2)throw Error('forced');return diagnoseNarRaceQuality(data);}});
+ assert.equal(out.savedRaceCount,3);assert.equal(out.rejectedRowCount,0);assert.equal(out.qualityDiagnostics.races[1].diagnostics.status,'UNAVAILABLE');assert.equal(out.qualityDiagnostics.races[0].diagnostics.horseCount,2);assert.equal(out.qualityDiagnostics.races[2].diagnostics.horseCount,2);
+});
+
+test('Phase140.3 diagnostic result with replaced race fails closed only in sidecar',async()=>{
+ const f=fixture();await f.run();const out=await statusWithDiagnostics(f,{diagnoseRace:()=>({race:{},diagnostics:{status:'OBSERVED'}})});
+ assert.equal(out.savedRaceCount,3);assert.equal(out.rejectedRowCount,0);assert.ok(out.qualityDiagnostics.races.every(r=>r.diagnostics.reasonCode==='DIAGNOSTIC_ERROR'));
+});
+
+test('Phase140.3 actual status handler exposes optional diagnostics on GET, not default or alternate values',async()=>{
+ const f=fixture();await f.run();const before=JSON.stringify(f.DB.rows),url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13';
+ for(const suffix of ['', '&diagnostics=0','&diagnostics=true']){const body=await(await handlePublicApi(new Request(url+suffix),f.env)).json();assert.equal('qualityDiagnostics' in body,false);assert.equal(body.savedRaceCount,3);}
+ const res=await handlePublicApi(new Request(url+'&diagnostics=1'),f.env),body=await res.json();assert.equal(res.status,200);assert.equal(res.headers.get('cache-control'),'no-store');assert.equal(body.qualityDiagnostics.races.length,3);assert.equal(body.savedRaceCount,3);
+ const head=await handlePublicApi(new Request(url+'&diagnostics=1',{method:'HEAD'}),f.env);assert.equal(head.status,200);assert.equal(await head.text(),'');assert.equal((await handlePublicApi(new Request(url+'&diagnostics=1',{method:'POST'}),f.env)).status,405);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+
+test('Phase140.3 missing TIME is diagnosed from restored DATA without Viewer TIME conversion',async()=>{
+ const f=fixture();await f.run({card:async j=>({...await f.card(j),horses:[{horseNo:1,horseName:'A',abilityScore:80,predictedTime:'1:30.0',runs:[]},{horseNo:2,horseName:'B',abilityScore:70,predictedTime:null,runs:[],predictedTimeMissingReason:'time_missing_unknown'}]})});
+ const out=await statusWithDiagnostics(f);for(const race of out.qualityDiagnostics.races){const d=race.diagnostics;assert.equal(d.time.missingActiveCount,1);assert.equal(d.horses[0].time.status,'AVAILABLE');assert.equal(d.horses[1].time.observation,'UPSTREAM_REASON_UNKNOWN');assert.equal(d.horses[1].time.evidenceObservation,'NO_PARSED_HISTORY');}
+ assert.ok(out.races.every(r=>r.timeCount===1&&r.quality.probabilityStatus==='MODEL_HOLD'));assert.equal(out.researchOnly,true);assert.equal(out.formalKpiEligible,false);assert.equal(out.productionActivationReady,false);
+});
+
+test('Phase140.3 rejected hash rows never reach diagnostics and are not repaired',async()=>{
+ const f=fixture();await f.run();f.DB.rows[0].data_json=f.DB.rows[0].data_json.replace('1:30.0','1:20.0');const before=JSON.stringify(f.DB.rows);let calls=0;
+ const out=await statusWithDiagnostics(f,{diagnoseRace(){calls++;throw Error('forced');}});assert.equal(out.savedRaceCount,2);assert.equal(out.rejectedRowCount,1);assert.equal(calls,2);assert.equal(out.qualityDiagnostics.races.length,2);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+
+test('Phase140.3 empty status and unreadable schema never fabricate diagnostic success',async()=>{
+ const f=fixture(),empty=await statusWithDiagnostics(f);assert.equal(empty.savedRaceCount,0);assert.deepEqual(empty.qualityDiagnostics,{schemaVersion:1,status:'EMPTY',races:[]});let calls=0;
+ f.env.DB={prepare(){throw Error('private schema');}};const blocked=await statusWithDiagnostics(f,{diagnoseRace(){calls++;}});assert.equal(blocked.schemaReady,false);assert.equal(blocked.savedRaceCount,null);assert.equal('qualityDiagnostics' in blocked,false);assert.equal(calls,0);
+});
+
+test('Phase140.3 all-three-route 404 remains a source failure while 12 saved races stay readable',async()=>{
+ const {fetchNarPrecomputeMeeting}=await import('../src/prediction/nar-ability-precompute.mjs');const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows);let fetches=0;
+ const out=await f.run({meeting:({code,date,timeoutMs})=>fetchNarPrecomputeMeeting({code,date,timeoutMs,fetchImpl:async()=>{fetches++;return new Response('',{status:404});}})});
+ assert.equal(fetches,3);assert.equal(out.status,'COMPLETED');assert.equal(out.attempted,0);assert.equal(out.saved,0);assert.equal(out.events[0].reason,'MEETING_SOURCE_UNAVAILABLE');assert.deepEqual(out.events[0].meetingAttempts.map(a=>a.httpStatus),[404,404,404]);
+ const status=await statusWithDiagnostics(f);assert.equal(status.savedRaceCount,12);assert.equal(status.rejectedRowCount,0);assert.equal(status.qualityDiagnostics.races.length,12);assert.equal(JSON.stringify(f.DB.rows),before);
+});
+
+test('Phase140.3 verified schema-v2 History reasons match retained link audit without rewriting it',async()=>{
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';
+ const out=await f.run({card:async j=>{const p=await f.card(j),run={date:'09.30',venue:'川崎',runOrganization:'NAR',timeSec:91.2};p.horses[0].runs=[run,{...run}];p.horses[1].runs=[{...run,venue:'大井'}];return p;},historyLinks:async j=>{const body={status:'IDENTITY_LINKS_RESOLVED',date:j.date,postTime:'12:00',code:j.code,raceNo:j.race,observedAt:new Date(f.clock()).toISOString(),rows:j.expectedHorses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,providerHorseKey:'NAR_LINEAGE:'+String(30012403217+Number(h.horseNo)),pastRaceReferences:[{date:'2026-09-30',code:'21',raceNo:1,raceId:'20260930-NAR-21-01'}]}))};return {body,linksHash:await stableHash(body)};}});
+ assert.equal(out.saved,3);const before=JSON.stringify(f.DB.rows),status=await statusWithDiagnostics(f);assert.equal(status.savedRaceCount,3);assert.equal(status.rejectedRowCount,0);
+ for(const r of status.qualityDiagnostics.races){assert.equal(r.diagnostics.status,'OBSERVED');assert.equal(r.diagnostics.history.heldReferenceCount,3);assert.deepEqual(r.diagnostics.history.reasonCounts,{EPISODE_AMBIGUOUS:2,EPISODE_LINK_UNMATCHED:1});assert.equal(status.races.find(x=>x.raceId===r.raceId).historyLinkAudit.heldEpisodeCount,3);}
+ assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await(await api(req(),f.env)).json()).count,3);
+});
