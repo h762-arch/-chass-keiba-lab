@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "scope": "REVIEW_ONLY_NOT_RUNTIME_CONFIG",
+  "calendarCheckedOnJst": "2026-10-15",
+  "expectedCurrent": {
+    "NAR_PRECOMPUTE_TRACK_CODES": "21",
+    "NAR_PRECOMPUTE_RUN_MODE": "daily",
+    "NAR_PRECOMPUTE_DAILY_FROM": "2026-10-14",
+    "NAR_PRECOMPUTE_DAILY_UNTIL": "2026-10-20",
+    "NAR_PRECOMPUTE_DAILY_START_JST": "07:00",
+    "NAR_PRECOMPUTE_DAILY_STOP_JST": "14:55",
+    "NAR_PRECOMPUTE_MAX_JOBS": "3",
+    "NAR_PRECOMPUTE_BUDGET_MS": "20000"
+  },
+  "calendarEvidence": [
+    {"code": "22", "track": "金沢", "date": "2026-10-18", "url": "https://www.keiba.go.jp/KeibaWeb/MonthlyConveneInfo/MonthlyConveneInfoTop?k_month=10&k_year=2026"},
+    {"code": "23", "track": "笠松", "date": "2026-10-21", "url": "https://www.kasamatsu-keiba.com/schedule"}
+  ],
+  "candidates": [
+    {"code": "22", "track": "金沢", "date": "2026-10-18"},
+    {"code": "23", "track": "笠松", "date": "2026-10-21"}
+  ]
+}
