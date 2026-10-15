@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {buildNarMaterialInvestigationPlan} from './nar-material-investigation-plan.mjs';
 import {acceptNarMaterialDiagnostics} from './nar-material-diagnostic-acceptance.mjs';
+import {reportNarMaterialConditions} from './nar-material-condition-report.mjs';
 import {narStatusSourceUrl} from './nar-status-mirror-audit.mjs';
 
 const flags={scope:'BOUNDED_PUBLIC_DIAGNOSTIC_READ_AND_ACCEPTANCE',researchOnly:true,formalKpiEligible:false,acquisitionCertified:false,currentStatusEligible:false,probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO',diagnosisStatus:'NOT_ESTABLISHED',taskCompletion:'NOT_CLAIMED'};
@@ -10,15 +11,23 @@ const fail=reason=>{throw Error(reason);};
 
 // One fixed-origin public GET, never a URL/credential taken from bundle content.
 // The original bundle is cloned before awaiting IO to preserve the read target.
-export async function readNarMaterialDiagnostics(bundle,{expectedDate,mode='CURRENT',wallNow=Date.now,fetchImpl=globalThis.fetch,timeoutMs=8000}={}){
+export async function readNarMaterialDiagnostics(bundle,{expectedDate,mode='CURRENT',wallNow=Date.now,fetchImpl=globalThis.fetch,timeoutMs=8000,includeConditionReport=false}={}){
  let started,reader,timer,controller,readAudit={status:'NOT_ATTEMPTED',requestCount:0};
- const hold=reason=>({...flags,status:'HOLD',reasonCodes:[reason],readAudit,acceptance:null});
+ const hold=reason=>({...flags,status:'HOLD',reasonCodes:[reason],readAudit,acceptance:null,...(includeConditionReport?{conditionReport:null}:{})});
+ const finish=(result,source,response,now)=>{
+  if(!includeConditionReport)return result;
+  if(result.status==='HOLD')return {...result,conditionReport:null};
+  // Use the exact decoded response and pinned source, not a second GET or an
+  // accepted projection. Recheck every report gate at the same completion clock.
+  const conditionReport=reportNarMaterialConditions(source,response,{expectedDate,mode,now});
+  return {...result,status:conditionReport.status,reasonCodes:[...conditionReport.reasonCodes],conditionReport};
+ };
  try{
-  if(typeof wallNow!=='function'||typeof fetchImpl!=='function'||!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>15000)return hold('READ_CONFIGURATION_INVALID');
+  if(typeof includeConditionReport!=='boolean'||typeof wallNow!=='function'||typeof fetchImpl!=='function'||!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>15000)return hold('READ_CONFIGURATION_INVALID');
   started=clock(wallNow);const source=structuredClone(bundle);
   const plan=buildNarMaterialInvestigationPlan(source,{expectedDate,mode,now:started});
   if(!['PLAN_READY','HISTORICAL_PLAN_READY'].includes(plan.status))return hold('SOURCE_PLAN_HOLD');
-  if(!plan.requests.length)return {...flags,status:'NO_DIAGNOSTIC_TASKS',reasonCodes:[],readAudit:{status:'NOT_REQUIRED',requestCount:0},acceptance:null};
+  if(!plan.requests.length)return finish({...flags,status:'NO_DIAGNOSTIC_TASKS',reasonCodes:[],readAudit:{status:'NOT_REQUIRED',requestCount:0},acceptance:null},source,null,started);
   const sourceUrl=narStatusSourceUrl(expectedDate)+'&diagnostics=1';
   controller=new AbortController();readAudit={status:'STARTED',requestCount:1,sourceUrl,attemptedAt:new Date(started).toISOString(),timeoutMs,maxResponseBytes:limit,transportBasis:'FIXED_PUBLIC_ENDPOINT_GET'};
   const value=await Promise.race([
@@ -41,7 +50,7 @@ export async function readNarMaterialDiagnostics(bundle,{expectedDate,mode='CURR
   readAudit={...readAudit,status:'CAPTURED',finishedAt:new Date(finished).toISOString(),responseBytes:value.bytes,responseBytesSha256:value.bytesSha256};
   // Revalidate at completion, not at the pre-fetch clock. No stale fallback.
   const acceptance=acceptNarMaterialDiagnostics(source,value.response,{expectedDate,mode,now:finished});
-  return {...flags,status:acceptance.status,reasonCodes:[...acceptance.reasonCodes],readAudit,acceptance};
+  return finish({...flags,status:acceptance.status,reasonCodes:[...acceptance.reasonCodes],readAudit,acceptance},source,value.response,finished);
  }catch(e){
   const allowed=['READ_CLOCK_INVALID','READ_TIMEOUT','HTTP_UNAVAILABLE','CONTENT_TYPE_INVALID','RESPONSE_TOO_LARGE','BODY_UNAVAILABLE','RESPONSE_JSON_INVALID'];
   const reason=allowed.includes(e?.message)?e.message:'DIAGNOSTIC_READ_UNAVAILABLE';
