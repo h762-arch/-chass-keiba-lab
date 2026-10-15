@@ -218,3 +218,16 @@ test('Phase140.3 verified schema-v2 History reasons match retained link audit wi
  for(const r of status.qualityDiagnostics.races){assert.equal(r.diagnostics.status,'OBSERVED');assert.equal(r.diagnostics.history.heldReferenceCount,3);assert.deepEqual(r.diagnostics.history.reasonCounts,{EPISODE_AMBIGUOUS:2,EPISODE_LINK_UNMATCHED:1});assert.equal(status.races.find(x=>x.raceId===r.raceId).historyLinkAudit.heldEpisodeCount,3);}
  assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await(await api(req(),f.env)).json()).count,3);
 });
+
+test('Phase140.4 verified saved DATA exposes input conditions without changing status or frozen values',async()=>{
+ const f=fixture();f.env.ENABLE_NAR_HISTORY_LINKS='true';
+ const saved=await f.run({card:async j=>{const p=await f.card(j);p.horses[0].runs=[{date:'09.30',venue:'川崎',runOrganization:'NAR',distance:1400,timeSec:90}];p.horses[1]={...p.horses[1],predictedTime:null,predictedTimeMissingReason:'time_missing_unknown',runs:[{date:'09.30',venue:'川崎',runOrganization:'JRA',distance:2000,timeSec:130}]};return p;},historyLinks:async j=>{const body={status:'IDENTITY_LINKS_RESOLVED',date:j.date,postTime:'12:00',code:j.code,raceNo:j.race,observedAt:new Date(f.clock()).toISOString(),rows:j.expectedHorses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,providerHorseKey:'NAR_LINEAGE:'+String(30012403217+Number(h.horseNo)),pastRaceReferences:[{date:'2026-09-30',code:'21',raceNo:1,raceId:'20260930-NAR-21-01'}]}))};return {body,linksHash:await stableHash(body)};}});
+ assert.equal(saved.saved,3);const before=JSON.stringify(f.DB.rows),normal=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()}),withDiag=await statusWithDiagnostics(f),{qualityDiagnostics,...rest}=withDiag;assert.deepEqual(rest,normal);
+ for(const r of qualityDiagnostics.races){const h=r.diagnostics.horses[1];assert.equal(h.time.sourceReason,'time_missing_unknown');assert.equal(h.conditions.time.observation,'NO_FINITE_TIME_WITHIN_300M');assert.equal(h.conditions.time.coverageComplete,true);assert.equal(h.conditions.history.references[0].observation,'ORIGIN_NOT_NAR');assert.equal(h.conditions.history.references[0].origin,'JRA');assert.equal(h.history.heldReferenceCount,1);}
+ assert.equal(JSON.stringify(f.DB.rows),before);assert.ok(normal.races.every(r=>r.quality.probabilityStatus==='MODEL_HOLD'));assert.equal((await(await api(req(),f.env)).json()).count,3);
+});
+
+test('Phase140.4 optional condition audits preserve 12-race readback when legacy facts are unavailable',async()=>{
+ const f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows),out=await statusWithDiagnostics(f);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);assert.equal(out.qualityDiagnostics.races.length,12);assert.equal(JSON.stringify(f.DB.rows),before);
+ assert.ok(out.qualityDiagnostics.races.every(r=>r.diagnostics.horses.every(h=>h.conditions.time.status==='NOT_APPLICABLE')));assert.equal((await(await api(req(),f.env)).json()).races.length,12);
+});

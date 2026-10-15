@@ -1,4 +1,5 @@
-// Pure diagnostics: no imports, IO, hashing or model calls.
+import {auditNarTimeInputConditions,auditNarHistoryMatchConditions} from './nar-quality-condition-audit.mjs';
+// Pure diagnostics: only pure helper imports; no IO, hashing or model calls.
 // Phase140.3: optional status sidecar after row restoration; never in Viewer/writer.
 // Input is restored DATA (predictedTime is string|null), not Viewer horses.
 const timeReasons = new Map([
@@ -57,7 +58,12 @@ function diagnose(race) {
     seen.add(horseNo);
     const runnerStatus = h.runnerStatus || h.horseStatus || 'active';
     if (!['active', 'scratched', 'excluded', 'withdrawn'].includes(runnerStatus)) return unavailable('RUNNER_STATUS_UNSUPPORTED');
-    horses.push({horseNo, active: runnerStatus === 'active', time: timeDiagnostic(h), history: historyDiagnostic(h)});
+    const time = timeDiagnostic(h), history = historyDiagnostic(h);
+    const conditions = {
+      time: time.status === 'MISSING' ? auditNarTimeInputConditions(h, race) : {status:'NOT_APPLICABLE'},
+      history: history.status === 'OBSERVED' && history.heldReferenceCount > 0 ? auditNarHistoryMatchConditions(h, race) : {status:'NOT_APPLICABLE'}
+    };
+    horses.push({horseNo, active: runnerStatus === 'active', time, history, conditions});
   }
   const active = horses.filter(h => h.active), missing = active.filter(h => h.time.status === 'MISSING');
   const unavailableTimeCount = active.filter(h => h.time.status === 'UNAVAILABLE').length;
