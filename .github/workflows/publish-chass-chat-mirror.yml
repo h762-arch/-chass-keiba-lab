@@ -42,10 +42,35 @@ jobs:
           node-version: 24
 
       - name: Verify publisher tests
-        run: node --test tests/chass-chat-snapshot.test.mjs
+        run: node --test tests/chass-chat-snapshot.test.mjs tests/nar-status-snapshot-publisher.test.mjs
 
-      - name: Build read-only ChatGPT mirror from CHASS public APIs
-        id: publish
+      - name: Prepare mirror output
+        shell: bash
+        env:
+          OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
+        run: |
+          set -euo pipefail
+          rm -rf "$OUTPUT_ROOT"
+          mkdir -p "$OUTPUT_ROOT"
+
+      - name: Capture read-only NAR collection status
+        id: status_capture
+        shell: bash
+        env:
+          SNAPSHOT_DATE: ${{ github.event.inputs.date || '' }}
+          OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
+        run: |
+          set -euo pipefail
+          node scripts/publish-nar-status-snapshot.mjs | tee "$OUTPUT_ROOT/status-result.json"
+          node --input-type=module <<'NODE'
+          import {readFile,appendFile} from 'node:fs/promises';
+          const r=JSON.parse(await readFile(process.env.OUTPUT_ROOT+'/status-result.json','utf8'));
+          await appendFile(process.env.GITHUB_OUTPUT,`capture_ok=${r.ok===true}\n`);
+          NODE
+
+      - name: Build read-only race mirror from CHASS public APIs
+        id: races
+        continue-on-error: true
         shell: bash
         env:
           SNAPSHOT_DATE: ${{ github.event.inputs.date || '' }}
@@ -53,20 +78,21 @@ jobs:
           OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
         run: |
           set -euo pipefail
-          rm -rf "$OUTPUT_ROOT"
-          mkdir -p "$OUTPUT_ROOT"
           node publish-chass-chat-snapshot.mjs | tee /tmp/chass-chat-mirror.log
-                    SNAPSHOT_ROOT="$OUTPUT_ROOT/chat-snapshot"
-          if [ ! -e "$SNAPSHOT_ROOT" ]; then
-            COUNT="0"
-          elif [ ! -d "$SNAPSHOT_ROOT" ]; then
-            echo "::error::Snapshot output exists but is not a directory: $SNAPSHOT_ROOT"
-            exit 1
-          else
-            COUNT="$(find "$SNAPSHOT_ROOT" -type f -name 'day.json' | wc -l | tr -d ' ')"
-          fi
+
+      - name: Count status and race output independently
+        id: publish
+        shell: bash
+        env:
+          OUTPUT_ROOT: ${{ runner.temp }}/chass-chat-mirror
+        run: |
+          set -euo pipefail
+          SNAPSHOT_ROOT="$OUTPUT_ROOT/chat-snapshot"
+          test -d "$SNAPSHOT_ROOT"
+          COUNT="$(find "$SNAPSHOT_ROOT" -type f -name 'day.json' | wc -l | tr -d ' ')"
+          JSON_COUNT="$(find "$SNAPSHOT_ROOT" -type f -name '*.json' | wc -l | tr -d ' ')"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -gt 0 ]; then
+          if [ "$JSON_COUNT" -gt 0 ]; then
             echo "has_data=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_data=false" >> "$GITHUB_OUTPUT"
@@ -104,7 +130,9 @@ jobs:
           - Source of truth: CHASS Cloudflare D1
           - Branch: `chass-data`
           - App code is not stored on this branch.
-          - Files are updated only when snapshot data actually changes.
+          - Status captures/failures update timestamps even if the payload is unchanged.
+          - Read `chat-snapshot/status/latest-attempt.json` before using status snapshots.
+          - Failed captures retain the previous validated status snapshot.
           - `day.json` is for whole-day screening.
           - `race-XX.json` is for focused race analysis.
           TXT
@@ -134,7 +162,9 @@ jobs:
             });
           }
           snapshots.sort((a,b)=>String(b.date).localeCompare(String(a.date))||String(a.trackSlug).localeCompare(String(b.trackSlug)));
-          const manifest={ok:true,schemaVersion:'chass-chat-mirror-manifest-v1',sourceOfTruth:'Cloudflare D1',branch:'chass-data',snapshots};
+          const latestAttempt=JSON.parse(await readFile('chat-snapshot/status/latest-attempt.json','utf8'));
+          const statusMirror={latestAttemptPath:'chat-snapshot/status/latest-attempt.json',latestAttempt};
+          const manifest={ok:true,schemaVersion:'chass-chat-mirror-manifest-v1',sourceOfTruth:'Cloudflare D1',branch:'chass-data',snapshots,statusMirror};
           await writeFile('manifest.json',`${JSON.stringify(manifest,null,2)}\n`,'utf8');
           NODE
 
@@ -185,8 +215,17 @@ jobs:
             echo
             echo "- Published track files: ${{ steps.publish.outputs.count || '0' }}"
             echo "- Data branch: \`chass-data\`"
+            echo "- NAR status captured: ${{ steps.status_capture.outputs.capture_ok || 'false' }}"
+            echo "- Race mirror outcome: ${{ steps.races.outcome }}"
             echo "- main direct push: NO"
             echo "- production deploy: NO"
             echo "- D1 mutation: NO"
             echo "- changed: ${{ steps.diff.outputs.changed || 'false' }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail visibly after persisting unavailable-source records
+        if: ${{ steps.status_capture.outputs.capture_ok != 'true' || steps.races.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "::error::Status capture or race mirror was unavailable. Check the published latest-attempt record and the run logs; retained snapshots may be stale."
+          exit 1
