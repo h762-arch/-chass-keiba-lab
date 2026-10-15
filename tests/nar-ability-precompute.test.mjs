@@ -278,3 +278,23 @@ test('Phase140.6 twelve-race mixed version readback preserves frozen legacy row 
  for(const r of qualityDiagnostics.races){const h=r.diagnostics.horses[1];if(r.raceId!==legacy.race_id){assert.equal(h.history.heldReferenceCount,0);continue;}assert.equal(h.history.heldReferenceCount,2);assert.equal(h.conditions.history.references.length,2);for(const ref of h.conditions.history.references){assert.equal(ref.eligibleCandidateCount,0);assert.equal(ref.venueCodeComparison.baselineDateVenueCandidateCount,0);assert.equal(ref.venueCodeComparison.verifiedDateVenueCandidateCount,1);assert.equal(ref.venueCodeComparison.factVenue,'金沢');}}
  const url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13&diagnostics=1&format=compact&race=3',response=await handlePublicApi(new Request(url),f.env),text=await response.text(),body=JSON.parse(text);assert.equal(response.status,200);assert.ok(new TextEncoder().encode(text).length<100000);assert.equal(body.savedRaceCount,12);assert.equal(body.rejectedRowCount,0);assert.equal(body.qualityDiagnostics.races[0].diagnostics.horses[0].conditions.history.references[0].venueCodeComparison.references[0].comparisonVenue,'金沢');assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await(await api(req(),f.env)).json()).count,12);
 });
+
+test('Phase140.7 mixed legacy/current 22/23 snapshots read without rewriting frozen rows',async()=>{
+ const f=fixture(),legacy=JSON.parse(await readFile(new URL('./fixtures/nar-legacy-routing-rows.json',import.meta.url),'utf8'));
+ f.DB.rows.push(...structuredClone(legacy));f.env.NAR_PRECOMPUTE_TRACK_CODES='22,23';
+ const out=await f.run({meeting:async({code,date})=>({status:'meeting',track:code==='22'?'金沢':'笠松',date,raceNumbers:[2]})});assert.equal(out.saved,2);
+ const before=JSON.stringify(f.DB.rows),status=await statusWithDiagnostics(f);assert.equal(status.savedRaceCount,4);assert.equal(status.rejectedRowCount,0);
+ for(const code of ['22','23']){const row=f.DB.rows.find(r=>r.race_id===`20261013-NAR-${code}-02`),d=JSON.parse(row.data_json);assert.equal(d.venueRoutingVersion,'NAR_VENUE_ROUTING_22_23_V1');assert.equal(d.race.track,code==='22'?'金沢':'笠松');}
+ const all=await(await api(req('day-ai',''),f.env)).json();assert.equal(all.count,4);
+ for(const track of ['金沢','笠松']){const body=await(await api(req('day-ai',track),f.env)).json();assert.equal(body.count,2);assert.ok(body.races.every(r=>r.track===track));}
+ assert.equal(JSON.stringify(f.DB.rows),before);assert.deepEqual(f.DB.rows.slice(0,2),legacy);
+});
+test('Phase140.7 unsupported, null and stripped routing versions reject even after outer hash recomputation',async()=>{
+ for(const version of [null,'FUTURE',undefined]){const f=fixture();f.env.NAR_PRECOMPUTE_TRACK_CODES='22';await f.run({meeting:async({date})=>({status:'meeting',track:'金沢',date,raceNumbers:[1]})});
+  const row=f.DB.rows[0],d=JSON.parse(row.data_json);if(version===undefined)delete d.venueRoutingVersion;else d.venueRoutingVersion=version;row.data_json=JSON.stringify(d);row.snapshot_hash=await createSnapshotHash(d1RowToSnapshot(row));
+  const status=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()});assert.equal(status.savedRaceCount,0);assert.equal(status.rejectedRowCount,1);assert.equal(await api(req('day-ai','金沢'),f.env),null);
+ }
+});
+test('Phase140.7 swapped venue card cannot be saved under corrected code',async()=>{
+ const f=fixture();f.env.NAR_PRECOMPUTE_TRACK_CODES='22';const out=await f.run({meeting:async({date})=>({status:'meeting',track:'金沢',date,raceNumbers:[1]}),card:async j=>({...await f.card(j),track:'笠松'})});assert.equal(out.saved,0);assert.equal(out.events[0].reason,'CARD_IDENTITY');assert.equal(f.DB.rows.length,0);
+});

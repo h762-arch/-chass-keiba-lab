@@ -1,3 +1,4 @@
+import {NAR_VENUE_ROUTING_VERSION,snapshotNarTrackCode} from '../nar/nar-venue-routing.mjs';
 import {diagnoseNarRaceQuality,diagnoseNarRestoredRaceBatch} from './nar-quality-diagnostics.mjs';
 import {materializeNarSharedHistory,narSharedHistorySchemaReady,verifyNarRollingHistory} from './nar-shared-history-store.mjs';
 import {attachNarHistoryIdentity,verifyNarHistoryIdentity} from './nar-history-identity-bridge.mjs';
@@ -10,7 +11,7 @@ import {createPrecomputedSnapshot,createSnapshotHash} from './precomputed-snapsh
 import {snapshotToD1Values,readLatestPrecomputedSnapshot,d1RowToSnapshot} from './precomputed-store.mjs';
 export const NAR_ABILITY_VERSION='NAR_ABILITY_PRECOMPUTE_V1';
 export const NAR_ABILITY_VIEWER_MODE='nar-precomputed-ability-research';
-const TRACKS={10:'盛岡',11:'水沢',18:'浦和',19:'船橋',20:'大井',21:'川崎',22:'笠松',23:'金沢',24:'名古屋',27:'園田',28:'姫路',31:'高知',32:'佐賀',36:'門別'};
+const TRACKS={10:'盛岡',11:'水沢',18:'浦和',19:'船橋',20:'大井',21:'川崎',22:'金沢',23:'笠松',24:'名古屋',27:'園田',28:'姫路',31:'高知',32:'佐賀',36:'門別'};
 const respond=(body,options={})=>Response.json(body,{...options,headers:{'access-control-allow-origin':'*','cache-control':'no-store'}});
 const flags={researchOnly:true,formalKpiEligible:false,productionActivationReady:false};
 const validDate=d=>/^\d{4}-\d{2}-\d{2}$/.test(d||'')&&Number.isFinite(Date.parse(d))&&new Date(d).toISOString().slice(0,10)===d;
@@ -103,7 +104,7 @@ export function createNarAbilityPrecomputeRunner(env,{meeting,card,historyLinks,
      else if(remaining()>0){try{links=await historyLinks({...job,expectedHorses:p.horses,timeoutMs:Math.min(2000,remaining())});if(!links)throw Error('LINKS_UNAVAILABLE');linkAudit={status:'RESOLVED',reasonCode:null};}catch{links=null;linkAudit={status:'HOLD',reasonCode:'HISTORY_SOURCE_OR_IDENTITY_FAILED'};}}
     }
     if(wallNow()>=post||!remaining())fail('DEADLINE');
-    const data={race:{date,track:job.track,raceNo:job.race,raceName:p.raceName||'',postTime:p.postTime,surface:p.surface,distance:p.distance},horses:p.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,abilityScore:number(h.abilityScore),abilityRank:ranks.get(Number(h.horseNo))??null,predictedTime:h.predictedTime||null,runnerStatus:h.horseStatus||h.runnerStatus||'active',evidence:retainNarAbilityEvidence(h)})),...flags};
+    const data={venueRoutingVersion:NAR_VENUE_ROUTING_VERSION,race:{date,track:job.track,raceNo:job.race,raceName:p.raceName||'',postTime:p.postTime,surface:p.surface,distance:p.distance},horses:p.horses.map(h=>({horseNo:Number(h.horseNo),horseName:h.horseName,abilityScore:number(h.abilityScore),abilityRank:ranks.get(Number(h.horseNo))??null,predictedTime:h.predictedTime||null,runnerStatus:h.horseStatus||h.runnerStatus||'active',evidence:retainNarAbilityEvidence(h)})),...flags};
     const iso=new Date(at).toISOString();data.horses=await Promise.all(data.horses.map(async(h,i)=>({...h,history:await retainNarCardHistory({raceId:job.raceId,horseNo:h.horseNo,sourceAcquiredAt:iso,runs:p.horses[i].runs})})));if(links){try{const enriched=await Promise.all(data.horses.map(h=>attachNarHistoryIdentity(h.history,links,{raceId:job.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:iso})));data.horses=data.horses.map((h,i)=>({...h,history:enriched[i]}));data.historyLinks=links;linkAudit={status:'RESOLVED',reasonCode:null,providerHorseCount:enriched.length,resolvedEpisodeCount:enriched.reduce((n,h)=>n+h.body.identity.resolvedEpisodeCount,0),heldEpisodeCount:enriched.reduce((n,h)=>n+h.body.identity.references.filter(r=>r.status==='HOLD').length,0)};}catch{linkAudit={status:'HOLD',reasonCode:'HISTORY_FACT_JOIN_FAILED'};}}data.historyLinkAudit={...linkAudit,recoveryAction:linkAudit.status==='RESOLVED'?'Connect canonical episodes to the shared history store.':'Retry only in a new eligible run; preserve frozen DATA.'};data.historyStoreAudit={status:'DISABLED',reasonCode:'SHARED_HISTORY_STORE_DISABLED'};
     if(String(env.ENABLE_NAR_SHARED_HISTORY||'false')==='true'){
      if(!data.historyLinks)data.historyStoreAudit={status:'HOLD',reasonCode:'HISTORY_IDENTITY_UNAVAILABLE'};
@@ -125,7 +126,7 @@ export async function handleNarAbilityViewer(request,env){
  const date=url.searchParams.get('date'),track=url.searchParams.get('track')||'';if(!validDate(date)||track&&!Object.values(TRACKS).includes(track))return respond({ok:false,error:'INVALID_PARAMETER'},{status:400});
  const prefix=`${date.replaceAll('-','')}-NAR-`,rows=await env.DB.prepare('SELECT * FROM precomputed_race_snapshots WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=? ORDER BY race_id,revision ASC LIMIT 500').bind('NAR',prefix,prefix+'\uffff',NAR_ABILITY_VERSION,NAR_ABILITY_VERSION).all(),seen=new Set(),races=[];
  for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA;if(seen.has(s.raceId)||d.race.date!==date||d.formalKpiEligible!==false||s.layers.MARKET||s.layers.FINAL||s.layers.RESULT)continue;if(track&&d.race.track!==track)continue;
-  const code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
+  const code=snapshotNarTrackCode(d);
   if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||!Number.isFinite(Date.parse(s.sourceAcquiredAt)))continue;
   if(!Object.values(TRACKS).includes(d.race.track)||!s.raceId.startsWith(prefix)||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))continue;
   if((await Promise.all(d.horses.map(h=>h.history?verifyNarHistoryIdentity(h.history,d.historyLinks,{raceId:s.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))continue;
@@ -148,7 +149,7 @@ export async function readNarAbilityCanaryStatus(env,{date,now=Date.now(),includ
  try{
   const prefix=`${date.replaceAll('-','')}-NAR-`,rows=await env.DB.prepare('SELECT * FROM precomputed_race_snapshots WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=? ORDER BY race_id,revision ASC LIMIT 500').bind('NAR',prefix,prefix+'\uffff',NAR_ABILITY_VERSION,NAR_ABILITY_VERSION).all();
   const races=[],seen=new Set();let rejected=0;
-  for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA,code=Object.keys(TRACKS).find(k=>TRACKS[k]===d.race.track);
+  for(const row of rows.results||[]){try{const s=d1RowToSnapshot(row),d=s.layers.DATA,code=snapshotNarTrackCode(d);
    if(s.raceId!==id(date,code,d.race.raceNo)||await createSnapshotHash({...s,layers:s.layers})!==s.snapshotHash||d.formalKpiEligible!==false||s.layers.MARKET||s.layers.FINAL||s.layers.RESULT||!Number.isFinite(Date.parse(s.sourceAcquiredAt))||!Number.isFinite(off(date,d.race.postTime))||Date.parse(s.sourceAcquiredAt)>=off(date,d.race.postTime))throw Error('invalid');
    if((await Promise.all(d.horses.map(h=>h.history?verifyNarHistoryIdentity(h.history,d.historyLinks,{raceId:s.raceId,horseNo:h.horseNo,horseName:h.horseName,sourceAcquiredAt:s.sourceAcquiredAt}):true))).some(valid=>!valid))throw Error('invalid history');
    if((await Promise.all(d.horses.map(h=>h.rollingHistory?verifyNarRollingHistory(h.rollingHistory,{horseKey:h.history?.body.globalHorseIdentity,targetDate:date,sourceAcquiredAt:s.sourceAcquiredAt,postTime:d.race.postTime,calculatedAt:s.dataCalculatedAt}):true))).some(valid=>!valid))throw Error('invalid rolling history');

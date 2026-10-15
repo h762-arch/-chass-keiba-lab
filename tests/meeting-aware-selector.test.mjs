@@ -95,3 +95,13 @@ test('core NAR and background collector routes remain present and separate',asyn
   for(const route of ['/api/nar/race','/api/nar/sync','/api/nar/odds'])assert.ok(source.includes(route));
   assert.match(source,/runScheduledTasks/);assert.match(source,/runBackgroundHistoricalCollector/);assert.match(source,/api\/db\/historical-job/);
 });
+
+test('Phase140.7 meeting cache omits unversioned 22/23 venue entries without changing stored rows',async()=>{
+ const marker='NAR_VENUE_ROUTING_22_23_V1',input=[...rows,{...rows[0],track:'金沢'},{...rows[0],track:'笠松',race_numbers_json:JSON.stringify({raceNumbers:[2],changes:[],venueRoutingVersion:marker})}],before=JSON.stringify(input);
+ const result=await readMeetingCalendarForDate(new MeetingReadDb(input),'2026-09-01');assert.deepEqual(result.map(r=>r.track),['大井','船橋','笠松']);assert.equal(result[2].venueRoutingVersion,marker);assert.equal(JSON.stringify(input),before);
+});
+test('Phase140.7 browser selector requires verified routing for affected venue cache only',async()=>{
+ const core=await loadCore(),base={status:'meeting',raceNumbers:[1],checkedAt:new Date().toISOString()};
+ for(const track of ['金沢','笠松']){assert.equal(core.meetingEntryFresh({...base,track},'2026-01-01'),false);assert.equal(core.meetingEntryFresh({...base,track,venueRoutingVersion:'FUTURE'},'2026-01-01'),false);assert.equal(core.meetingEntryFresh({...base,track,venueRoutingVersion:'NAR_VENUE_ROUTING_22_23_V1'},'2026-01-01'),true);}
+ assert.equal(core.meetingEntryFresh({...base,track:'川崎'},'2026-01-01'),true);
+});

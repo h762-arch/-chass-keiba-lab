@@ -1,7 +1,7 @@
 const TRACKS=[
   {track:'帯広',code:'3'},{track:'盛岡',code:'10'},{track:'水沢',code:'11'},
   {track:'浦和',code:'18'},{track:'船橋',code:'19'},{track:'大井',code:'20'},
-  {track:'川崎',code:'21'},{track:'笠松',code:'22'},{track:'金沢',code:'23'},
+  {track:'川崎',code:'21'},{track:'笠松',code:'23'},{track:'金沢',code:'22'},
   {track:'名古屋',code:'24'},{track:'園田',code:'27'},{track:'姫路',code:'28'},
   {track:'高知',code:'31'},{track:'佐賀',code:'32'},{track:'門別',code:'36'}
 ];
@@ -188,6 +188,7 @@ export function enforceDiscoveredRaceHistory(input=[]){
 }
 
 async function runTrack(origin,{date,track,code,maxAgeHours=24}){
+  if(!TRACKS.some(t=>t.track===track&&t.code===String(code)))return json({ok:false,error:'NAR_TRACK_CODE_MISMATCH',status:400},400);
   const startedAt=Date.now();
 
   // v3.4: discover the actual meeting and exact race numbers from NAR RaceList.
