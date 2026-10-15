@@ -1,3 +1,4 @@
+import {auditNarStoredVersions} from './nar-stored-version-audit.mjs';
 import {auditNarTimeInputConditions,auditNarHistoryMatchConditions} from './nar-quality-condition-audit.mjs';
 // Pure diagnostics: only pure helper imports; no IO, hashing or model calls.
 // Phase140.3: optional status sidecar after row restoration; never in Viewer/writer.
@@ -73,7 +74,7 @@ function diagnose(race) {
   const historyStatus = observedHistory.length === horses.length ? 'OBSERVED' : observedHistory.length ? 'PARTIAL' : 'UNAVAILABLE';
   const partial = unavailableTimeCount > 0 || historyStatus !== 'OBSERVED';
   return {schemaVersion: 1, status: partial ? 'PARTIAL' : 'OBSERVED', researchOnly: true, formalKpiEligible: false, productionActivationReady: false,
-    probabilityStatus: 'MODEL_HOLD', horseCount: horses.length, activeHorseCount: active.length,
+    probabilityStatus: 'MODEL_HOLD', versions: auditNarStoredVersions(race), horseCount: horses.length, activeHorseCount: active.length,
     time: {status: unavailableTimeCount ? 'PARTIAL' : 'OBSERVED', observedMissingActiveCount: missing.length,
       missingActiveCount: unavailableTimeCount ? null : missing.length, unavailableActiveCount: unavailableTimeCount, observations},
     history: {status: historyStatus, unavailableHorseCount: horses.length - observedHistory.length,

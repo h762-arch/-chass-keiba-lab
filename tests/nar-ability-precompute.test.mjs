@@ -275,7 +275,7 @@ test('Phase140.6 twelve-race mixed version readback preserves frozen legacy row 
  const legacy=JSON.parse(await readFile(new URL('./fixtures/nar-legacy-venue-row.json',import.meta.url),'utf8'));
  f.DB.rows.splice(f.DB.rows.findIndex(r=>r.race_id===legacy.race_id),1,legacy);
  const before=JSON.stringify(f.DB.rows),normal=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()}),out=await statusWithDiagnostics(f),{qualityDiagnostics,...rest}=out;assert.deepEqual(rest,normal);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);
- for(const r of qualityDiagnostics.races){const h=r.diagnostics.horses[1];if(r.raceId!==legacy.race_id){assert.equal(h.history.heldReferenceCount,0);continue;}assert.equal(h.history.heldReferenceCount,2);assert.equal(h.conditions.history.references.length,2);for(const ref of h.conditions.history.references){assert.equal(ref.eligibleCandidateCount,0);assert.equal(ref.venueCodeComparison.baselineDateVenueCandidateCount,0);assert.equal(ref.venueCodeComparison.verifiedDateVenueCandidateCount,1);assert.equal(ref.venueCodeComparison.factVenue,'金沢');}}
+ for(const r of qualityDiagnostics.races){const v=r.diagnostics.versions;assert.equal(v.routing.status,r.raceId===legacy.race_id?'LEGACY_UNVERSIONED':'VERSIONED');assert.equal(v.history.legacyUnversionedHorseCount,r.raceId===legacy.race_id?2:0);assert.equal(v.history.versionedHorseCount,r.raceId===legacy.race_id?0:2);const h=r.diagnostics.horses[1];if(r.raceId!==legacy.race_id){assert.equal(h.history.heldReferenceCount,0);continue;}assert.equal(h.history.heldReferenceCount,2);assert.equal(h.conditions.history.references.length,2);for(const ref of h.conditions.history.references){assert.equal(ref.eligibleCandidateCount,0);assert.equal(ref.venueCodeComparison.baselineDateVenueCandidateCount,0);assert.equal(ref.venueCodeComparison.verifiedDateVenueCandidateCount,1);assert.equal(ref.venueCodeComparison.factVenue,'金沢');}}
  const url='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13&diagnostics=1&format=compact&race=3',response=await handlePublicApi(new Request(url),f.env),text=await response.text(),body=JSON.parse(text);assert.equal(response.status,200);assert.ok(new TextEncoder().encode(text).length<100000);assert.equal(body.savedRaceCount,12);assert.equal(body.rejectedRowCount,0);assert.equal(body.qualityDiagnostics.races[0].diagnostics.horses[0].conditions.history.references[0].venueCodeComparison.references[0].comparisonVenue,'金沢');assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await(await api(req(),f.env)).json()).count,12);
 });
 
@@ -297,4 +297,23 @@ test('Phase140.7 unsupported, null and stripped routing versions reject even aft
 });
 test('Phase140.7 swapped venue card cannot be saved under corrected code',async()=>{
  const f=fixture();f.env.NAR_PRECOMPUTE_TRACK_CODES='22';const out=await f.run({meeting:async({date})=>({status:'meeting',track:'金沢',date,raceNumbers:[1]}),card:async j=>({...await f.card(j),track:'笠松'})});assert.equal(out.saved,0);assert.equal(out.events[0].reason,'CARD_IDENTITY');assert.equal(f.DB.rows.length,0);
+});
+
+test('Phase140.8 twelve-race version summaries are SELECT-only and never change counts, hashes or flags',async()=>{
+ const f=await twelveRaceFixture(),legacy=JSON.parse(await readFile(new URL('./fixtures/nar-legacy-venue-row.json',import.meta.url),'utf8'));
+ f.DB.rows.splice(f.DB.rows.findIndex(r=>r.race_id===legacy.race_id),1,legacy);
+ const before=JSON.stringify(f.DB.rows),normal=await readNarAbilityCanaryStatus(f.env,{date:'2026-10-13',now:f.clock()}),prepare=f.DB.prepare.bind(f.DB);let reads=0;
+ f.DB.prepare=sql=>{assert.match(sql,/^SELECT /);reads++;return prepare(sql);};
+ const out=await statusWithDiagnostics(f),{qualityDiagnostics,...rest}=out;assert.deepEqual(rest,normal);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);assert.equal(qualityDiagnostics.races.length,12);assert.ok(reads>0);
+ for(const item of qualityDiagnostics.races){const v=item.diagnostics.versions;assert.equal(v.status,'OBSERVED');assert.equal(v.routing.status,item.raceId===legacy.race_id?'LEGACY_UNVERSIONED':'VERSIONED');assert.equal(v.history.horseCount,2);assert.equal(v.history.legacyUnversionedHorseCount,item.raceId===legacy.race_id?2:0);assert.equal(v.history.notRetainedHorseCount,item.raceId===legacy.race_id?0:2);}
+ const prefix='https://example.test/api/chass/v1/public/nar-precompute-status?date=2026-10-13';
+ for(const [suffix,count] of [['&diagnostics=1&format=compact',12],['&diagnostics=1&format=compact&race=3',1],['&diagnostics=1&format=full',12]]){const response=await handlePublicApi(new Request(prefix+suffix),f.env),body=await response.json();assert.equal(response.status,200);assert.equal(body.savedRaceCount,12);assert.equal(body.rejectedRowCount,0);assert.equal(body.qualityDiagnostics.races.length,count);assert.ok(body.qualityDiagnostics.races.every(x=>x.diagnostics.versions.scope==='STORED_VERSION_FIELDS_ONLY'));assert.equal(body.researchOnly,true);assert.equal(body.formalKpiEligible,false);assert.equal(body.productionActivationReady,false);}
+ assert.equal(JSON.stringify(f.DB.rows),before);assert.equal((await(await api(req(),f.env)).json()).count,12);
+});
+test('Phase140.8 stored-version diagnostic accessor failure cannot reject any restored race',async()=>{
+ const {diagnoseNarRaceQuality}=await import('../src/prediction/nar-quality-diagnostics.mjs'),f=await twelveRaceFixture(),before=JSON.stringify(f.DB.rows),normal=await statusWithDiagnostics(f);
+ const out=await statusWithDiagnostics(f,{diagnoseRace(data){const shadow=Object.create(data);Object.defineProperty(shadow,'venueRoutingVersion',{get(){throw Error('PRIVATE_VERSION');}});return {race:data,diagnostics:diagnoseNarRaceQuality(shadow).diagnostics};}});
+ const {qualityDiagnostics,...rest}=out,{qualityDiagnostics:baseline,...base}=normal;assert.deepEqual(rest,base);assert.equal(out.savedRaceCount,12);assert.equal(out.rejectedRowCount,0);
+ for(let i=0;i<12;i++){const {versions,...d}=qualityDiagnostics.races[i].diagnostics,{versions:old,...b}=baseline.races[i].diagnostics;assert.deepEqual(d,b);assert.equal(versions.routing.status,'UNAVAILABLE');assert.equal(versions.status,'PARTIAL');}
+ assert.equal(JSON.stringify(out).includes('PRIVATE_VERSION'),false);assert.equal(JSON.stringify(f.DB.rows),before);
 });
