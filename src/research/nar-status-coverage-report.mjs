@@ -8,13 +8,18 @@ const aggregate=values=>{const known=values.filter(v=>v!==null),unknownRaceCount
 
 // This projection audits counts already present in a captured status response.
 // It never infers full History, a missing TIME cause, odds or a horse decision.
-export function reportNarStatusCoverage(bundle,{expectedDate,now=Date.now()}={}){
- const hold=(reasonCodes,mirrorAudit=null)=>({...flags,status:'HOLD',reasonCodes,mirrorAudit,rows:[],totals:null});
+export function reportNarStatusCoverage(bundle,{expectedDate,now=Date.now(),mode='CURRENT'}={}){
+ const historical=mode==='HISTORICAL';
+ const hold=(reasonCodes,mirrorAudit=null)=>({...flags,status:'HOLD',usageMode:['CURRENT','HISTORICAL'].includes(mode)?mode:'INVALID',currentStatusEligible:false,reasonCodes,mirrorAudit,rows:[],totals:null});
  try{
+  if(!['CURRENT','HISTORICAL'].includes(mode))return hold(['COVERAGE_MODE_INVALID']);
   const mirrorAudit=auditNarStatusMirror({expectedDate,now,commitSha:bundle?.commitSha,attempt:bundle?.attempt,manifest:bundle?.manifest,snapshot:bundle?.snapshot});
   // The SHA is declared by the local caller, never certified by this function.
   mirrorAudit.sourceReferenceBasis='DECLARED_LOCAL_BUNDLE';
-  if(mirrorAudit.status!=='VERIFIED')return hold(['MIRROR_AUDIT_HOLD'],mirrorAudit);
+  // Explicit archival research can inspect a structurally validated stale capture.
+  // The actual clock, default 30-minute policy and original HOLD stay visible.
+  const staleOnly=mirrorAudit.status==='HOLD'&&mirrorAudit.reasonCodes.length===1&&mirrorAudit.reasonCodes[0]==='SNAPSHOT_STALE'&&mirrorAudit.observed;
+  if(mirrorAudit.status!=='VERIFIED'&&!(historical&&staleOnly))return hold(['MIRROR_AUDIT_HOLD'],mirrorAudit);
   const seen=new Set(),rows=[];
   for(const r of bundle.snapshot.payload.races){
    const match=typeof r?.raceId==='string'?r.raceId.match(/^(\d{8})-NAR-(\d{2})-(\d{2})$/):null;
@@ -44,6 +49,6 @@ export function reportNarStatusCoverage(bundle,{expectedDate,now=Date.now()}={})
   }
   rows.sort((a,b)=>a.raceId.localeCompare(b.raceId));
   const metrics=['horseCount','activeHorseCount','activeAbilityMissing','activeTimeMissing','linkHeldReferences','storeHeldEpisodes','storeUnresolvedObservations'];
-  return {...flags,status:'OBSERVED',reasonCodes:[],mirrorAudit,rows,totals:Object.fromEntries(metrics.map(k=>[k,aggregate(rows.map(r=>r[k]))])),raceCount:rows.length,reviewRaceCount:rows.filter(r=>r.review.length>0).length,historyCounterOverlap:'UNKNOWN_DO_NOT_ADD',formalReadiness:'NOT_EVALUATED',coverageBasis:'SAVED_RACES_ONLY_NOT_EXPECTED_MEETING_COVERAGE'};
+  return {...flags,status:historical?'HISTORICAL_OBSERVED':'OBSERVED',usageMode:mode,currentStatusEligible:!historical,freshnessStatus:staleOnly?'STALE':'WITHIN_30_MINUTES',reasonCodes:[...mirrorAudit.reasonCodes],mirrorAudit,rows,totals:Object.fromEntries(metrics.map(k=>[k,aggregate(rows.map(r=>r[k]))])),raceCount:rows.length,reviewRaceCount:rows.filter(r=>r.review.length>0).length,historyCounterOverlap:'UNKNOWN_DO_NOT_ADD',formalReadiness:'NOT_EVALUATED',coverageBasis:'SAVED_RACES_ONLY_NOT_EXPECTED_MEETING_COVERAGE'};
  }catch{return hold(['COVERAGE_INPUT_UNREADABLE']);}
 }
