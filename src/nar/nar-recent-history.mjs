@@ -2,7 +2,7 @@ const NAR_BASE='https://www.keiba.go.jp';
 const DEFAULT_LIMIT=10;
 const DEFAULT_MAX_AGE_MS=24*60*60*1000;
 const HISTORY_SCHEMA_READY=new WeakSet();
-const TRACK_NAMES={3:'帯広',10:'盛岡',11:'水沢',18:'浦和',19:'船橋',20:'大井',21:'川崎',22:'笠松',23:'金沢',24:'名古屋',27:'園田',28:'姫路',31:'高知',32:'佐賀',36:'門別'};
+const TRACK_NAMES={3:'帯広',10:'盛岡',11:'水沢',18:'浦和',19:'船橋',20:'大井',21:'川崎',22:'金沢',23:'笠松',24:'名古屋',27:'園田',28:'姫路',31:'高知',32:'佐賀',36:'門別'};
 
 function decodeHtml(value=''){
   return String(value)

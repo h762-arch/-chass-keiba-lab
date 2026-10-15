@@ -2,7 +2,7 @@ import {handleNarRecentHistoryRequest} from './nar-recent-history.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
-  '川崎':'21','笠松':'22','金沢':'23','名古屋':'24','園田':'27','姫路':'28',
+  '川崎':'21','笠松':'23','金沢':'22','名古屋':'24','園田':'27','姫路':'28',
   '高知':'31','佐賀':'32','門別':'36'
 };
 
@@ -285,6 +285,7 @@ export async function handleNarDayPrefetchRequest(request,env,{raceCardParser=nu
   const refresh=u.searchParams.get('refresh')==='1';
   const chunkSize=clampInt(u.searchParams.get('chunkSize'),1,2,2);
 
+  if(track&&code&&NAR_TRACK_CODES[track]!==String(code))return json({ok:false,error:'NAR_TRACK_CODE_MISMATCH',status:400},400);
   if(!date||!code){
     return json({
       ok:false,

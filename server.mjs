@@ -1,3 +1,4 @@
+import {NAR_VENUE_ROUTING_VERSION} from './src/nar/nar-venue-routing.mjs';
 import {parseTanFuku} from './worker.js';
 import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
 import {handleJraRaceRequest} from './jra-race-fetch.mjs';
@@ -18,7 +19,7 @@ const PORT=Number(process.env.PORT||3000);
 
 const TRACK_NAMES={
   "3":"帯広","10":"盛岡","11":"水沢","18":"浦和","19":"船橋","20":"大井","21":"川崎",
-  "22":"笠松","23":"金沢","24":"名古屋","27":"園田","28":"姫路","31":"高知","32":"佐賀","36":"門別"
+  "22":"金沢","23":"笠松","24":"名古屋","27":"園田","28":"姫路","31":"高知","32":"佐賀","36":"門別"
 };
 const MIME={
   ".html":"text/html; charset=utf-8",".js":"text/javascript; charset=utf-8",".mjs":"text/javascript; charset=utf-8",".css":"text/css; charset=utf-8",
@@ -67,7 +68,7 @@ async function fetchText(url,{timeoutMs=15000}={}){
 async function apiMeeting(u,res){
  const code=u.searchParams.get('code'),date=u.searchParams.get('date');if(!code||!date)return sendJson(res,400,{ok:false,errorCode:'invalid_request',error:'code,date are required'});
  const track=TRACK_NAMES[String(code)]||'',q=`k_babaCode=${encodeURIComponent(code)}&k_raceDate=${encodeURIComponent(String(date).replaceAll('-','/'))}`,url=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?${q}`,started=Date.now();
- try{const html=await fetchText(url,{timeoutMs:8000}),parsed=parseNarRaceList(html,{track,date});return sendJson(res,200,{ok:true,...parsed,code:String(code),checkedAt:new Date().toISOString(),elapsedMs:Date.now()-started})}catch(e){return sendJson(res,e?.status===404?404:502,{ok:false,status:'meeting_unknown',meeting:false,code,date,errorCode:e?.code||(e?.status?'http_error':'network_error'),error:String(e?.message||e),checkedAt:new Date().toISOString()})}
+ try{const html=await fetchText(url,{timeoutMs:8000}),parsed=parseNarRaceList(html,{track,date});return sendJson(res,200,{ok:true,...parsed,venueRoutingVersion:NAR_VENUE_ROUTING_VERSION,code:String(code),checkedAt:new Date().toISOString(),elapsedMs:Date.now()-started})}catch(e){return sendJson(res,e?.status===404?404:502,{ok:false,status:'meeting_unknown',meeting:false,code,date,errorCode:e?.code||(e?.status?'http_error':'network_error'),error:String(e?.message||e),checkedAt:new Date().toISOString()})}
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function fetchRetry(url,{attempts=2,timeoutMs=8000}={}){let last;for(let i=1;i<=attempts;i++){try{return {html:await fetchText(url,{timeoutMs}),attemptCount:i}}catch(e){last=e;e.attemptCount=i;if(!(['network_error','timeout'].includes(e.code)||[429,500,502,503,504].includes(Number(e.status)))||i===attempts)throw e;await sleep(800)}}throw last}
