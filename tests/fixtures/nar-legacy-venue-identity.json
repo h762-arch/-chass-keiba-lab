@@ -1,0 +1,178 @@
+{
+  "context": {
+    "raceId": "20261014-NAR-21-01",
+    "horseNo": 1,
+    "horseName": "試験",
+    "sourceAcquiredAt": "2026-10-14T00:00:00Z"
+  },
+  "original": {
+    "body": {
+      "schemaVersion": 1,
+      "scope": "RACE_LOCAL_CARD_HISTORY",
+      "runnerKey": "20261014-NAR-21-01:1",
+      "sourceReference": "20261014-NAR-21-01",
+      "source": "NAR_OFFICIAL_CARD",
+      "sourceAcquiredAt": "2026-10-14T00:00:00Z",
+      "status": "RETAINED",
+      "parsedCount": 2,
+      "retainedCount": 2,
+      "capacity": 5,
+      "tenRunCoverage": "NOT_CONFIRMED",
+      "globalHorseIdentity": null,
+      "reuseStatus": "HOLD",
+      "reasonCode": "CANONICAL_HORSE_AND_EPISODE_ID_UNRESOLVED",
+      "recoveryAction": "Resolve official horse identity and full episode date before cross-race merge or Rolling10 reuse.",
+      "episodes": [
+        {
+          "observationKey": "20261014-NAR-21-01:1:card:1",
+          "contentHash": "fc5f70ce26fbb837bac9b3414b7e475d52e2324162ec4ceac11ac31d3a8ab6c4",
+          "facts": {
+            "dateText": "09.30",
+            "dateStatus": "YEAR_UNRESOLVED",
+            "canonicalDate": null,
+            "venue": "笠松",
+            "originCircuit": "NAR",
+            "distance": null,
+            "condition": "",
+            "direction": "",
+            "finish": null,
+            "fieldSize": null,
+            "timeSec": 91.2,
+            "last3f": null,
+            "cornerPositions": []
+          }
+        },
+        {
+          "observationKey": "20261014-NAR-21-01:1:card:2",
+          "contentHash": "08a9f6b9e6e1c1a80cf10032d62c02d5725a9d6a375b281aa5292ab791a5fbfe",
+          "facts": {
+            "dateText": "09.29",
+            "dateStatus": "YEAR_UNRESOLVED",
+            "canonicalDate": null,
+            "venue": "金沢",
+            "originCircuit": "NAR",
+            "distance": null,
+            "condition": "",
+            "direction": "",
+            "finish": null,
+            "fieldSize": null,
+            "timeSec": 90,
+            "last3f": null,
+            "cornerPositions": []
+          }
+        }
+      ]
+    },
+    "historyHash": "23bdf422ba1febe79db1aac91d4a738ee2453109fc76ead887e02418ec99dbfa"
+  },
+  "links": {
+    "body": {
+      "status": "IDENTITY_LINKS_RESOLVED",
+      "date": "2026-10-14",
+      "postTime": "15:00",
+      "code": "21",
+      "raceNo": 1,
+      "observedAt": "2026-10-14T00:00:00Z",
+      "rows": [
+        {
+          "horseNo": 1,
+          "horseName": "試験",
+          "providerHorseKey": "NAR_LINEAGE:30012403217",
+          "pastRaceReferences": [
+            {
+              "date": "2026-09-30",
+              "code": "23"
+            },
+            {
+              "date": "2026-09-29",
+              "code": "22"
+            }
+          ]
+        }
+      ]
+    },
+    "linksHash": "b6b907f98cb12bf0fb22a0f01274fa360f7000a0e1f447bb36db85f3d35c6142"
+  },
+  "history": {
+    "body": {
+      "schemaVersion": 2,
+      "scope": "RACE_LOCAL_CARD_HISTORY",
+      "runnerKey": "20261014-NAR-21-01:1",
+      "sourceReference": "20261014-NAR-21-01",
+      "source": "NAR_OFFICIAL_CARD",
+      "sourceAcquiredAt": "2026-10-14T00:00:00Z",
+      "status": "RETAINED",
+      "parsedCount": 2,
+      "retainedCount": 2,
+      "capacity": 5,
+      "tenRunCoverage": "NOT_CONFIRMED",
+      "globalHorseIdentity": "NAR_LINEAGE:30012403217",
+      "reuseStatus": "HOLD",
+      "reasonCode": "SHARED_HISTORY_CACHE_NOT_CONNECTED",
+      "recoveryAction": "Connect verified episode identities to a versioned shared history store; preserve original observations.",
+      "episodes": [
+        {
+          "observationKey": "20261014-NAR-21-01:1:card:1",
+          "contentHash": "fc5f70ce26fbb837bac9b3414b7e475d52e2324162ec4ceac11ac31d3a8ab6c4",
+          "facts": {
+            "dateText": "09.30",
+            "dateStatus": "YEAR_UNRESOLVED",
+            "canonicalDate": null,
+            "venue": "笠松",
+            "originCircuit": "NAR",
+            "distance": null,
+            "condition": "",
+            "direction": "",
+            "finish": null,
+            "fieldSize": null,
+            "timeSec": 91.2,
+            "last3f": null,
+            "cornerPositions": []
+          }
+        },
+        {
+          "observationKey": "20261014-NAR-21-01:1:card:2",
+          "contentHash": "08a9f6b9e6e1c1a80cf10032d62c02d5725a9d6a375b281aa5292ab791a5fbfe",
+          "facts": {
+            "dateText": "09.29",
+            "dateStatus": "YEAR_UNRESOLVED",
+            "canonicalDate": null,
+            "venue": "金沢",
+            "originCircuit": "NAR",
+            "distance": null,
+            "condition": "",
+            "direction": "",
+            "finish": null,
+            "fieldSize": null,
+            "timeSec": 90,
+            "last3f": null,
+            "cornerPositions": []
+          }
+        }
+      ],
+      "identity": {
+        "originalHistoryHash": "23bdf422ba1febe79db1aac91d4a738ee2453109fc76ead887e02418ec99dbfa",
+        "linksHash": "b6b907f98cb12bf0fb22a0f01274fa360f7000a0e1f447bb36db85f3d35c6142",
+        "observedAt": "2026-10-14T00:00:00Z",
+        "resolvedEpisodeCount": 0,
+        "references": [
+          {
+            "observationKey": "20261014-NAR-21-01:1:card:1",
+            "contentHash": "fc5f70ce26fbb837bac9b3414b7e475d52e2324162ec4ceac11ac31d3a8ab6c4",
+            "status": "HOLD",
+            "reasonCode": "EPISODE_LINK_UNMATCHED",
+            "raceReference": null
+          },
+          {
+            "observationKey": "20261014-NAR-21-01:1:card:2",
+            "contentHash": "08a9f6b9e6e1c1a80cf10032d62c02d5725a9d6a375b281aa5292ab791a5fbfe",
+            "status": "HOLD",
+            "reasonCode": "EPISODE_LINK_UNMATCHED",
+            "raceReference": null
+          }
+        ]
+      }
+    },
+    "historyHash": "23ee3c1d35d7d7da1ae2f411f28aeac7ec22ead358c1b7db6a822d7fa6e6a2b6"
+  }
+}

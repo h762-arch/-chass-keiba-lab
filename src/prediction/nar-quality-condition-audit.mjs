@@ -1,8 +1,8 @@
+import {narHistoryVenues} from './nar-history-venue-mapping.mjs';
 import {compareNarVenueCodes} from './nar-venue-code-comparison.mjs';
 // Pure condition observations over retained DATA. No prediction or identity repair.
 const unavailable = reasonCode => ({status: 'UNAVAILABLE', reasonCode});
 const count = n => Number.isSafeInteger(n) && n >= 0 && n <= 1000;
-const venues = {3:'帯広',10:'盛岡',11:'水沢',18:'浦和',19:'船橋',20:'大井',21:'川崎',22:'笠松',23:'金沢',24:'名古屋',27:'園田',28:'姫路',31:'高知',32:'佐賀',36:'門別'};
 const dateText = v => typeof v === 'string' && /^(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])$/.test(v);
 
 export function auditNarTimeInputConditions(horse, race) {
@@ -33,6 +33,8 @@ export function auditNarHistoryMatchConditions(horse, race) {
   try {
     const b = horse.history?.body, episodes = b?.episodes, refs = b?.identity?.references;
     if (b?.schemaVersion !== 2 || !Array.isArray(episodes) || episodes.length > 5 || !Array.isArray(refs) || refs.length > 5) return unavailable('IDENTITY_EPISODES_UNAVAILABLE');
+    const venues=narHistoryVenues(b.identity?.venueMappingVersion);
+    if(!venues)return unavailable('IDENTITY_VENUE_VERSION_UNSUPPORTED');
     const rows = race?.historyLinks?.body?.rows;
     if (!Array.isArray(rows) || rows.length > 30) return unavailable('OFFICIAL_LINK_ROWS_UNAVAILABLE');
     const matchedRows = rows.filter(r => r?.horseNo === horse.horseNo && r?.horseName === horse.horseName);

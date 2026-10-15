@@ -72,3 +72,17 @@ test('disabled or missing shared schema preserves ability DATA with explicit rea
 test('V1/V2/V3 packs remain verifiable alongside new V4 projections',async()=>{
  const f=await fixture(),input={raceId:f.raceId,race:{date:'2026-10-14',track:'川崎',raceNo:1,postTime:'15:00'},sourceAcquiredAt:f.sourceAcquiredAt,horses:f.horses};for(const contractVersion of ['CHASS_PRE_ANALYSIS_PACK_V1','CHASS_PRE_ANALYSIS_PACK_V2','CHASS_PRE_ANALYSIS_PACK_V3','CHASS_PRE_ANALYSIS_PACK_V4']){const p=await buildNarPreAnalysisPack({...input,contractVersion});assert.equal(await verifyNarPreAnalysisPack(p,input),true);assert.equal('rollingHistoryPacks' in p.body,contractVersion==='CHASS_PRE_ANALYSIS_PACK_V4');}
 });
+
+test('Phase140.6 versioned corrected identities materialize without changing old observations or source history',async()=>{
+ const DB=db(),old=await fixture();delete old.horses[0].history.body.identity.venueMappingVersion;
+ old.horses[0].history.historyHash=await stableHash(old.horses[0].history.body);
+ await save(DB,old);const prior=JSON.stringify(DB.sql.prepare('SELECT * FROM nar_shared_history_observations').all());
+ const f=JSON.parse(readFileSync(new URL('./fixtures/nar-legacy-venue-identity.json',import.meta.url),'utf8'));
+ f.context.sourceAcquiredAt=new Date(f.context.sourceAcquiredAt).toISOString();f.links.body.observedAt=f.context.sourceAcquiredAt;for(const ref of f.links.body.rows[0].pastRaceReferences){ref.raceNo=1;ref.raceId=ref.date.replaceAll('-','')+'-NAR-'+ref.code+'-01';}f.links.linksHash=await stableHash(f.links.body);
+ const original=await retainNarCardHistory({...f.context,runs:[{date:'09.30',venue:'笠松',runOrganization:'NAR',timeSec:91.2},{date:'09.29',venue:'金沢',runOrganization:'NAR',timeSec:90}]}),history=await attachNarHistoryIdentity(original,f.links,f.context),before=JSON.stringify(history);
+ const out=await save(DB,{raceId:f.context.raceId,sourceAcquiredAt:f.context.sourceAcquiredAt,cutoffAt:f.context.sourceAcquiredAt,links:f.links,horses:[{horseNo:1,horseName:f.context.horseName,history}]});
+ assert.equal(out.audit.insertedObservationCount,2);assert.equal(out.audit.unresolvedObservationCount,0);assert.equal(JSON.stringify(history),before);
+ const rows=DB.sql.prepare('SELECT * FROM nar_shared_history_observations').all();assert.equal(rows.length,3);assert.equal(JSON.stringify(rows.slice(0,1)),prior);
+ const bad=structuredClone(history);bad.body.identity.venueMappingVersion='FUTURE';bad.historyHash=await stableHash(bad.body);
+ await assert.rejects(save(DB,{raceId:f.context.raceId,sourceAcquiredAt:f.context.sourceAcquiredAt,cutoffAt:f.context.sourceAcquiredAt,links:f.links,horses:[{horseNo:1,horseName:f.context.horseName,history:bad}]}),/IDENTITY_UNVERIFIED/);assert.equal(DB.sql.prepare('SELECT COUNT(*) n FROM nar_shared_history_observations').get().n,3);
+});
