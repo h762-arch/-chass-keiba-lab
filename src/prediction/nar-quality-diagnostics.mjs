@@ -1,4 +1,5 @@
-// Phase140.2: offline/test-only. No imports, IO, hashing or runtime wiring.
+// Pure diagnostics: no imports, IO, hashing or model calls.
+// Phase140.3: optional status sidecar after row restoration; never in Viewer/writer.
 // Input is restored DATA (predictedTime is string|null), not Viewer horses.
 const timeReasons = new Map([
   ['time_missing_no_history', 'UPSTREAM_NO_HISTORY'],
@@ -79,4 +80,25 @@ function diagnose(race) {
 export function diagnoseNarRaceQuality(race) {
   try { return {race, diagnostics: diagnose(race)}; }
   catch { return {race, diagnostics: unavailable('DIAGNOSTIC_ERROR')}; }
+}
+
+// Inputs are already restored/verified DATA. This helper does not validate rows.
+// Only bounded diagnostic projections leave this function, never DATA references.
+export function diagnoseNarRestoredRaceBatch(restoredRaces, {diagnoseRace = diagnoseNarRaceQuality} = {}) {
+  try {
+    if (!Array.isArray(restoredRaces) || restoredRaces.length > 500) return {schemaVersion: 1, status: 'UNAVAILABLE', reasonCode: 'DIAGNOSTIC_INPUT_INVALID', races: []};
+    const races = [];
+    for (const entry of restoredRaces) {
+      const raceId = entry?.raceId;
+      if (typeof raceId !== 'string' || !/^\d{8}-NAR-\d{2}-\d{2}$/.test(raceId)) return {schemaVersion: 1, status: 'UNAVAILABLE', reasonCode: 'DIAGNOSTIC_INPUT_INVALID', races: []};
+      let diagnostics;
+      try {
+        const result = diagnoseRace(entry.data);
+        if (result?.race !== entry.data || !['OBSERVED', 'PARTIAL', 'UNAVAILABLE'].includes(result?.diagnostics?.status)) throw Error();
+        diagnostics = result.diagnostics;
+      } catch { diagnostics = unavailable('DIAGNOSTIC_ERROR'); }
+      races.push({raceId, diagnostics});
+    }
+    return {schemaVersion: 1, status: races.length === 0 ? 'EMPTY' : races.every(r => r.diagnostics.status === 'OBSERVED') ? 'OBSERVED' : 'PARTIAL', races};
+  } catch { return {schemaVersion: 1, status: 'UNAVAILABLE', reasonCode: 'DIAGNOSTIC_ERROR', races: []}; }
 }

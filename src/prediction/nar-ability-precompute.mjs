@@ -1,3 +1,4 @@
+import {diagnoseNarRaceQuality,diagnoseNarRestoredRaceBatch} from './nar-quality-diagnostics.mjs';
 import {materializeNarSharedHistory,narSharedHistorySchemaReady,verifyNarRollingHistory} from './nar-shared-history-store.mjs';
 import {attachNarHistoryIdentity,verifyNarHistoryIdentity} from './nar-history-identity-bridge.mjs';
 import {retainNarCardHistory} from './nar-history-pack.mjs';
@@ -139,10 +140,11 @@ export async function handleNarAbilityViewer(request,env){
  return respond({ok:true,date,track,organization:'NAR',count:selected.length,races:selected,viewerMode:NAR_ABILITY_VIEWER_MODE,marketEvaluation:'disabled',...flags});
 }
 
-export async function readNarAbilityCanaryStatus(env,{date,now=Date.now()}={}){
+export async function readNarAbilityCanaryStatus(env,{date,now=Date.now(),includeDiagnostics=false,diagnoseRace=diagnoseNarRaceQuality}={}){
  if(!validDate(date))return {ok:false,error:'INVALID_DATE'};
  const enabled=String(env.ENABLE_NAR_ABILITY_PRECOMPUTE||'false')==='true',window=narAbilityRunWindow(env,now);
  const base={ok:true,date,enabled,viewerEnabled:String(env.ENABLE_NAR_ABILITY_VIEWER||'false')==='true',historyStoreEnabled:String(env.ENABLE_NAR_SHARED_HISTORY||'false')==='true',canaryDate:env.NAR_PRECOMPUTE_CANARY_DATE||null,stopAt:window.stop?new Date(window.stop).toISOString():env.NAR_PRECOMPUTE_STOP_AT||null,active:enabled&&window.active&&window.date===date,scheduleMode:window.mode,scheduleStatus:window.status,scheduleReason:window.reason||null,dailyFrom:env.NAR_PRECOMPUTE_DAILY_FROM||null,dailyUntil:env.NAR_PRECOMPUTE_DAILY_UNTIL||null,dailyStartJst:env.NAR_PRECOMPUTE_DAILY_START_JST||null,dailyStopJst:env.NAR_PRECOMPUTE_DAILY_STOP_JST||null,trackCodes:String(env.NAR_PRECOMPUTE_TRACK_CODES||'').split(',').filter(Boolean),...flags};
+ const diagnosticInputs=[];let restoredStatus;
  try{
   const prefix=`${date.replaceAll('-','')}-NAR-`,rows=await env.DB.prepare('SELECT * FROM precomputed_race_snapshots WHERE organization=? AND race_id>=? AND race_id<? AND calculation_version=? AND model_version=? ORDER BY race_id,revision ASC LIMIT 500').bind('NAR',prefix,prefix+'\uffff',NAR_ABILITY_VERSION,NAR_ABILITY_VERSION).all();
   const races=[],seen=new Set();let rejected=0;
@@ -152,7 +154,15 @@ export async function readNarAbilityCanaryStatus(env,{date,now=Date.now()}={}){
    if((await Promise.all(d.horses.map(h=>h.rollingHistory?verifyNarRollingHistory(h.rollingHistory,{horseKey:h.history?.body.globalHorseIdentity,targetDate:date,sourceAcquiredAt:s.sourceAcquiredAt,postTime:d.race.postTime,calculatedAt:s.dataCalculatedAt}):true))).some(valid=>!valid))throw Error('invalid rolling history');
    if(d.preAnalysisPack&&!await verifyNarPreAnalysisPack(d.preAnalysisPack,{raceId:s.raceId,race:d.race,sourceAcquiredAt:s.sourceAcquiredAt,horses:d.horses}))throw Error('invalid pack');
    if(seen.has(s.raceId))continue;seen.add(s.raceId);races.push({historyStoreAudit:d.historyStoreAudit||null,historyLinkAudit:d.historyLinkAudit||null,preAnalysisStatus:d.preAnalysisPack?'PARTIAL':'NOT_MATERIALIZED',preAnalysisPackHash:d.preAnalysisPack?.packHash||null,raceId:s.raceId,track:d.race.track,raceNo:d.race.raceNo,horseCount:d.horses.length,abilityCount:d.horses.filter(h=>number(h.abilityScore)!=null).length,timeCount:d.horses.filter(h=>h.predictedTime!=null).length,quality:auditNarAbilityEvidence(d.horses)});
+   if(includeDiagnostics===true)diagnosticInputs.push({raceId:s.raceId,data:d});
   }catch{rejected++;}}
-  return {...base,historyStoreSchemaReady:await narSharedHistorySchemaReady(env.DB),schemaReady:true,savedRaceCount:races.length,rejectedRowCount:rejected,races};
+  restoredStatus={...base,historyStoreSchemaReady:await narSharedHistorySchemaReady(env.DB),schemaReady:true,savedRaceCount:races.length,rejectedRowCount:rejected,races};
  }catch{return {...base,schemaReady:false,status:'BLOCKED',reason:'SCHEMA_OR_READ_UNAVAILABLE',savedRaceCount:null,races:[]};}
+ // Diagnostics execute only after all row restoration/rejection and schema reads.
+ // They never control races, counts, quality, Pack verification or DATA hashes.
+ if(includeDiagnostics!==true)return restoredStatus;
+ let qualityDiagnostics;
+ try{qualityDiagnostics=diagnoseNarRestoredRaceBatch(diagnosticInputs,{diagnoseRace});}
+ catch{qualityDiagnostics={schemaVersion:1,status:'UNAVAILABLE',reasonCode:'DIAGNOSTIC_ERROR',races:[]};}
+ return {...restoredStatus,qualityDiagnostics};
 }
