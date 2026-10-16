@@ -3,6 +3,7 @@ import {parseNarRaceList} from '../../meeting-discovery.mjs';
 import {buildNarRacePayloadStable} from '../../worker.js';
 import {fetchNarPrecomputeHtml,assertNarAbilityCardIdentity} from '../prediction/nar-ability-precompute.mjs';
 import {validMirrorDate} from './nar-status-mirror-audit.mjs';
+import {auditNarMeetingLinks} from './nar-meeting-link-audit.mjs';
 
 const flags={scope:'CANDIDATE_MEETING_TO_CARD_READ_ONLY',researchOnly:true,formalKpiEligible:false,
   acquisitionCertified:false,currentStatusEligible:false,probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO',
@@ -12,16 +13,6 @@ const tracks={'10':'盛岡','11':'水沢','18':'浦和','19':'船橋','20':'大�
 const jstDate=ms=>new Date(ms+9*3600000).toISOString().slice(0,10);
 const fail=reason=>{throw Error(reason);};
 const fingerprint=text=>({fingerprintBasis:'DECODED_HTML_UTF8_REENCODED',decodedUtf8Bytes:Buffer.byteLength(text,'utf8'),decodedHtmlSha256:createHash('sha256').update(text,'utf8').digest('hex')});
-function selectedRaceLink(html,base,{date,code,race}){
-  for(const match of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)){
-    try{const u=new URL(match[1].replaceAll('&amp;','&').replaceAll('&#38;','&'),base);
-      if(u.origin!=='https://www.keiba.go.jp'||u.username||u.password||!['/KeibaWeb/TodayRaceInfo/DebaTableSmall','/KeibaWeb/TodayRaceInfo/DebaTable','/KeibaWeb/TodayRaceInfo/RaceMarkTable'].includes(u.pathname))continue;
-      if(['k_babaCode','k_raceDate','k_raceNo'].some(k=>u.searchParams.getAll(k).length!==1))continue;
-      if(u.searchParams.get('k_babaCode')===code&&u.searchParams.get('k_raceDate')===date.replaceAll('-','/')&&/^(0?[1-9]|1\d|20)$/.test(u.searchParams.get('k_raceNo')||'')&&Number(u.searchParams.get('k_raceNo'))===race)return true;
-    }catch{}
-  }
-  return false;
-}
 const runnerNo=h=>typeof h.horseNo==='number'?h.horseNo:typeof h.horseNo==='string'&&/^([1-9]|[12]\d|30)$/.test(h.horseNo)?Number(h.horseNo):NaN;
 
 // A new direct public-page inspection, never a refresh of an existing mirror.
@@ -62,7 +53,8 @@ export async function preflightNarCandidateCard({date,code,race,fetchImpl=global
     if(parsed.status!=='meeting'||parsed.track!==track||parsed.date!==date||!Array.isArray(parsed.raceNumbers)||!parsed.raceNumbers.length||parsed.raceNumbers.length>20||parsed.raceNumbers.some(n=>!Number.isInteger(n)||n<1||n>20)||new Set(parsed.raceNumbers).size!==parsed.raceNumbers.length)fail('MEETING_NOT_CONFIRMED');
     meeting={date,code,track,raceNumbers:[...parsed.raceNumbers]};
     if(!parsed.raceNumbers.includes(race))fail('RACE_NOT_IN_MEETING');
-    if(!selectedRaceLink(meetingHtml,meetingUrl,{date,code,race}))fail('RACE_LINK_IDENTITY_INVALID');
+    meeting.selectedRaceLinkAudit=auditNarMeetingLinks({html:meetingHtml,date,code,race});
+    if(!meeting.selectedRaceLinkAudit.matched)fail('RACE_LINK_IDENTITY_INVALID');
     meeting.selectedRaceLinkMatched=true;
     const cardHtml=await read(cardUrl,'DebaTableSmall_raw_slash_candidate');
     try{assertNarAbilityCardIdentity(cardHtml,{date,track,race});}catch{fail('CARD_IDENTITY_INVALID');}
