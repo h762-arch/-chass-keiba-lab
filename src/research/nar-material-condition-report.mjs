@@ -1,5 +1,6 @@
 import {acceptNarMaterialDiagnostics} from './nar-material-diagnostic-acceptance.mjs';
 import {buildNarMaterialInvestigationPlan} from './nar-material-investigation-plan.mjs';
+import {auditNarVenueCodeComparison} from './nar-venue-comparison-acceptance.mjs';
 
 const flags = {
   schemaVersion: 1, scope: 'ACCEPTED_RETAINED_CONDITIONS_ONLY', researchOnly: true,
@@ -59,14 +60,21 @@ export function reportNarMaterialConditions(bundle, response, options = {}) {
         if (h.time) time.push({horseNo: h.horseNo, sourceObservation: h.time.sourceObservation,
           observation: h.time.observation, ...pick(raw.conditions.time, timeFields)});
         if (h.history) for (const ref of [...raw.conditions.history.references].sort((a, b) => a.episodeIndex - b.episodeIndex)) {
-          history.push({horseNo: h.horseNo, active: h.active, ...pick(ref, historyFields)});
+          const detail = {horseNo: h.horseNo, active: h.active, ...pick(ref, historyFields)};
+          if (ref.origin === 'NAR' && ['NO_VENUE_MATCH', 'DATE_VENUE_COMBINATION_UNMATCHED'].includes(ref.observation)) {
+            const audit = auditNarVenueCodeComparison(ref);
+            if (audit.status !== 'CONSISTENT') throw Error(audit.reasonCodes[0]);
+            detail.venueCodeComparison = audit;
+          }
+          history.push(detail);
         }
       }
       return {raceId: r.raceId, time, history};
     });
     const time = races.flatMap(r => r.time), history = races.flatMap(r => r.history);
+    const comparisons = history.filter(h => h.venueCodeComparison).map(h => h.venueCodeComparison.comparison);
     return {
-      ...flags, ...reference,
+      ...flags, ...reference, venueCodeComparison: comparisons.length ? 'CONSISTENCY_CHECKED' : 'NOT_EVALUATED',
       status: accepted.status === 'HISTORICAL_INSPECTION_READY' ? 'HISTORICAL_CONDITION_REPORT_READY' : 'CONDITION_REPORT_READY',
       reasonCodes: [...accepted.reasonCodes], responseSha256: accepted.responseSha256,
       countScope: 'ACCEPTED_DIAGNOSTIC_RACES_ONLY', acceptedRaceCount: races.length,
@@ -76,8 +84,15 @@ export function reportNarMaterialConditions(bundle, response, options = {}) {
         heldHistoryReferenceCount: history.length,
         historyOrigins: Object.fromEntries(origins.map(origin => [origin, history.filter(h => h.origin === origin).length])),
         historyObservations: tally(history.map(h => h.observation)),
-        historyOriginObservations: origins.flatMap(origin => Object.entries(tally(history.filter(h => h.origin === origin).map(h => h.observation))).map(([observation, count]) => ({origin, observation, count})))
+        historyOriginObservations: origins.flatMap(origin => Object.entries(tally(history.filter(h => h.origin === origin).map(h => h.observation))).map(([observation, count]) => ({origin, observation, count}))),
+        ...(comparisons.length ? {venueCodeComparisons: {
+          heldReferenceCount: comparisons.length,
+          observations: tally(comparisons.map(c => c.observation))
+        }} : {})
       }, remainingTasks, formalReadiness: 'NOT_EVALUATED'
     };
-  } catch { return hold(['CONDITION_REPORT_INPUT_UNREADABLE']); }
+  } catch (e) {
+    const reason = ['VENUE_COMPARISON_UNAVAILABLE', 'VENUE_COMPARISON_INVALID'].includes(e?.message) ? e.message : 'CONDITION_REPORT_INPUT_UNREADABLE';
+    return hold([reason]);
+  }
 }
