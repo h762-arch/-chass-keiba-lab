@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {validMirrorDate} from '../src/research/nar-status-mirror-audit.mjs';
 import {preflightNarCandidateCard} from '../src/research/nar-candidate-card-preflight.mjs';
 import {inspectNarDirectCard} from '../src/research/nar-direct-card-inspection.mjs';
+import {observeNarProductionMeetingControl} from '../src/research/nar-production-meeting-control.mjs';
 
 const repo='h762-arch/-chass-keiba-lab';
 const tracks=['10','11','18','19','20','21','22','23','24','27','28','31','32','36'];
@@ -46,11 +47,19 @@ export async function runNarReadOnlySourceProbe(args,{fetchImpl=globalThis.fetch
     return finish('HOLD',['NO_CARD_PARSE_OBSERVED'],timing);
   }catch{return finish('HOLD',[clockFault?'CLOCK_INVALID':'PROBE_EXECUTION_UNAVAILABLE']);}
 }
+export async function runNarReadOnlySourceProbeWithControl(args,options={}){
+  const candidate=await runNarReadOnlySourceProbe(args,options);
+  if(candidate.status!=='MEETING_TO_CARD_OBSERVED')return {...candidate,candidateRequestCount:candidate.requestCount,productionMeetingControl:null,comparisonStatus:'NOT_PERFORMED_CANDIDATE_NOT_OBSERVED'};
+  const control=await observeNarProductionMeetingControl({date:candidate.date,code:candidate.code,race:candidate.race,postTime:candidate.preflight.card.postTime,
+    notBeforeMs:Date.parse(candidate.finishedAt),fetchImpl:options.fetchImpl??globalThis.fetch,wallNow:options.wallNow??Date.now});
+  return {...candidate,candidateRequestCount:candidate.requestCount,candidateFinishedAt:candidate.finishedAt,finishedAt:control.finishedAt??null,productionMeetingControl:control,requestCount:candidate.requestCount+control.requestCount,
+    comparisonStatus:control.status==='PRODUCTION_HELPER_MEETING_OBSERVED'?'BOTH_MEETING_PATHS_OBSERVED':'CANDIDATE_ONLY_CONTROL_HOLD'};
+}
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
-  const report=await runNarReadOnlySourceProbe(process.argv.slice(2),{env:process.env});
+  const report=await runNarReadOnlySourceProbeWithControl(process.argv.slice(2),{env:process.env});
   const json=JSON.stringify(report,null,2)+'\n',digest=createHash('sha256').update(json).digest('hex');
   await mkdir('artifacts',{recursive:true});
   await writeFile('artifacts/nar-readonly-source-probe.json',json);
   await writeFile('artifacts/nar-readonly-source-probe.sha256',`${digest}  nar-readonly-source-probe.json\n`);
-  process.stdout.write(json);process.exitCode=report.status==='MEETING_TO_CARD_OBSERVED'?0:1;
+  process.stdout.write(json);process.exitCode=report.comparisonStatus==='BOTH_MEETING_PATHS_OBSERVED'?0:1;
 }
