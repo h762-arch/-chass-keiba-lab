@@ -3,9 +3,9 @@
   "status": "CAPTURED",
   "date": "2026-10-16",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-16&format=compact",
-  "attemptedAt": "2026-10-16T00:51:24.188Z",
-  "capturedAt": "2026-10-16T00:51:24.947Z",
-  "payloadSha256": "b7d43ed1a65268a442e15fd400094179c36b96ecda9d4d062b972e9d7b32641d",
+  "attemptedAt": "2026-10-16T03:08:22.936Z",
+  "capturedAt": "2026-10-16T03:08:24.088Z",
+  "payloadSha256": "b9844bc202d9180ddd2771b770ee23bad40cb012ceb4c67d7dbe2eb4f821d737",
   "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
   "readOnlyCapture": true,
   "payload": {
@@ -41,72 +41,209 @@
     },
     "historyStoreSchemaReady": true,
     "schemaReady": true,
-    "savedRaceCount": 0,
+    "savedRaceCount": 2,
     "rejectedRowCount": 0,
-    "races": [],
+    "races": [
+      {
+        "historyStoreAudit": {
+          "status": "PARTIAL",
+          "reasonCode": "ROLLING_HISTORY_RESEARCH_ONLY",
+          "insertedObservationCount": 40,
+          "existingObservationCount": 0,
+          "unresolvedObservationCount": 0,
+          "availableEpisodeCount": 40,
+          "heldEpisodeCount": 0,
+          "elapsedMs": 16567,
+          "cutoffAt": "2026-10-16T02:50:24.189Z",
+          "recoveryAction": "Accumulate identified observations in new eligible runs; resolve conflicts before model use."
+        },
+        "historyLinkAudit": {
+          "status": "RESOLVED",
+          "reasonCode": null,
+          "providerHorseCount": 10,
+          "resolvedEpisodeCount": 40,
+          "heldEpisodeCount": 0,
+          "recoveryAction": "Review shared research projection; resolve held episodes before model use."
+        },
+        "preAnalysisStatus": "PARTIAL",
+        "preAnalysisPackHash": "29c841f1ba13f638477d23e3134b72d4802e7567595eb334ca6bf0a30d9c1c66",
+        "raceId": "20261016-NAR-21-07",
+        "track": "川崎",
+        "raceNo": 7,
+        "horseCount": 10,
+        "abilityCount": 10,
+        "timeCount": 9,
+        "quality": {
+          "schemaVersion": 1,
+          "horseCount": 10,
+          "activeHorseCount": 10,
+          "activeAbilityCount": 10,
+          "activeTimeCount": 9,
+          "retainedEvidenceCount": 10,
+          "abilityComplete": true,
+          "probabilityStatus": "MODEL_HOLD",
+          "probabilityReason": "PROBABILITY_MODEL_NOT_CONNECTED"
+        }
+      },
+      {
+        "historyStoreAudit": {
+          "status": "PARTIAL",
+          "reasonCode": "ROLLING_HISTORY_RESEARCH_ONLY",
+          "insertedObservationCount": 32,
+          "existingObservationCount": 0,
+          "unresolvedObservationCount": 8,
+          "availableEpisodeCount": 32,
+          "heldEpisodeCount": 0,
+          "elapsedMs": 13393,
+          "cutoffAt": "2026-10-16T03:00:25.659Z",
+          "recoveryAction": "Accumulate identified observations in new eligible runs; resolve conflicts before model use."
+        },
+        "historyLinkAudit": {
+          "status": "RESOLVED",
+          "reasonCode": null,
+          "providerHorseCount": 10,
+          "resolvedEpisodeCount": 32,
+          "heldEpisodeCount": 8,
+          "recoveryAction": "Review shared research projection; resolve held episodes before model use."
+        },
+        "preAnalysisStatus": "PARTIAL",
+        "preAnalysisPackHash": "ce723653ecb1929ad456be510253d8a57937990cd1a9a687c374edf50dea95d8",
+        "raceId": "20261016-NAR-21-09",
+        "track": "川崎",
+        "raceNo": 9,
+        "horseCount": 10,
+        "abilityCount": 10,
+        "timeCount": 10,
+        "quality": {
+          "schemaVersion": 1,
+          "horseCount": 10,
+          "activeHorseCount": 10,
+          "activeAbilityCount": 10,
+          "activeTimeCount": 10,
+          "retainedEvidenceCount": 10,
+          "abilityComplete": true,
+          "probabilityStatus": "MODEL_HOLD",
+          "probabilityReason": "PROBABILITY_MODEL_NOT_CONNECTED"
+        }
+      }
+    ],
     "format": "compact",
     "countScope": "DATE",
     "raceDetailScope": "ALL_RESTORED_RACES",
     "selectedRaceNo": null,
     "narRunAudit": {
       "status": "RECORDED",
-      "scheduledAt": "2026-10-16T00:50:18.556Z",
+      "scheduledAt": "2026-10-16T03:05:18.556Z",
       "runDate": "2026-10-16",
       "runStatus": "COMPLETED",
       "reason": null,
-      "attempted": 0,
+      "attempted": 1,
       "saved": 0,
       "autoResultProcessed": 0,
       "events": [
         {
-          "track": "川崎",
-          "reason": "MEETING_SOURCE_UNAVAILABLE",
-          "meetingAttempts": [
-            {
-              "route": "RaceList",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
-            },
-            {
-              "route": "RaceList_ipat",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
-            },
-            {
-              "route": "RaceList_mobile",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
-            }
-          ]
+          "raceId": "20261016-NAR-21-07",
+          "reason": "ALREADY_SAVED"
+        },
+        {
+          "raceId": "20261016-NAR-21-09",
+          "reason": "ALREADY_SAVED"
+        },
+        {
+          "raceId": "20261016-NAR-21-12",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-01",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-02",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-03",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-04",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-05",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-06",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-08",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-10",
+          "reason": "DEADLINE"
+        },
+        {
+          "raceId": "20261016-NAR-21-11",
+          "reason": "DEADLINE"
         }
       ]
     },
-    "lastNarRunAt": "2026-10-16T00:50:18.556Z",
+    "lastNarRunAt": "2026-10-16T03:05:18.556Z",
     "lastNarStatus": "COMPLETED",
     "lastNarReason": null,
-    "lastNarAttempted": 0,
+    "lastNarAttempted": 1,
     "lastNarSaved": 0,
     "lastNarEvents": [
       {
-        "track": "川崎",
-        "reason": "MEETING_SOURCE_UNAVAILABLE",
-        "meetingAttempts": [
-          {
-            "route": "RaceList",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
-          },
-          {
-            "route": "RaceList_ipat",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
-          },
-          {
-            "route": "RaceList_mobile",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
-          }
-        ]
+        "raceId": "20261016-NAR-21-07",
+        "reason": "ALREADY_SAVED"
+      },
+      {
+        "raceId": "20261016-NAR-21-09",
+        "reason": "ALREADY_SAVED"
+      },
+      {
+        "raceId": "20261016-NAR-21-12",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-01",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-02",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-03",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-04",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-05",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-06",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-08",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-10",
+        "reason": "DEADLINE"
+      },
+      {
+        "raceId": "20261016-NAR-21-11",
+        "reason": "DEADLINE"
       }
     ]
   }
