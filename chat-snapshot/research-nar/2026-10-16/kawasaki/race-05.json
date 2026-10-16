@@ -12,7 +12,7 @@
   "organization": "NAR",
   "scope": "RESEARCH_ABILITY_TIME_ONLY_NOT_EARLY_PREDICTION",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/day?date=2026-10-16&track=%E5%B7%9D%E5%B4%8E&organization=NAR",
-  "capturedAt": "2026-10-16T11:49:33.551Z",
+  "capturedAt": "2026-10-16T13:15:05.561Z",
   "sourceTimingVerification": "NOT_EXPOSED_BY_VIEWER",
   "sourcePayloadSha256": "677ffb38191c25a85c7a391ba0aa523a1573099f77d782433be88b5701cfab27",
   "hashBasis": "UTF8_JSON_STRINGIFY_VIEWER_PAYLOAD",
