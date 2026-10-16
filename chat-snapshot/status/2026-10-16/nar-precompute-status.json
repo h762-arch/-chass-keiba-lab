@@ -3,9 +3,9 @@
   "status": "CAPTURED",
   "date": "2026-10-16",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-16&format=compact",
-  "attemptedAt": "2026-10-16T13:14:59.090Z",
-  "capturedAt": "2026-10-16T13:15:00.612Z",
-  "payloadSha256": "96551f392f3282c84ef2cef1ccbee6bb42a121a5a75d01a5c26dc8d0c469c735",
+  "attemptedAt": "2026-10-16T14:32:57.007Z",
+  "capturedAt": "2026-10-16T14:32:58.944Z",
+  "payloadSha256": "65af163b77578df9eb053d7398463a0ad8d03fa84d2cbbb71f2ce310bf818bce",
   "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
   "readOnlyCapture": true,
   "payload": {
@@ -256,7 +256,7 @@
     "selectedRaceNo": null,
     "narRunAudit": {
       "status": "RECORDED",
-      "scheduledAt": "2026-10-16T13:10:18.556Z",
+      "scheduledAt": "2026-10-16T14:30:18.556Z",
       "runDate": "2026-10-16",
       "runStatus": "SKIPPED",
       "reason": "DAILY_WINDOW_CLOSED",
@@ -265,7 +265,7 @@
       "autoResultProcessed": 0,
       "events": []
     },
-    "lastNarRunAt": "2026-10-16T13:10:18.556Z",
+    "lastNarRunAt": "2026-10-16T14:30:18.556Z",
     "lastNarStatus": "SKIPPED",
     "lastNarReason": "DAILY_WINDOW_CLOSED",
     "lastNarAttempted": 0,
