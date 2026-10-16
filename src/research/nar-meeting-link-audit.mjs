@@ -1,4 +1,5 @@
 import {validMirrorDate} from './nar-status-mirror-audit.mjs';
+import {extractNarUnquotedAnchorHrefs} from './nar-unquoted-anchor-hrefs.mjs';
 
 const routes={'/KeibaWeb/TodayRaceInfo/DebaTableSmall':'DEBA_TABLE_SMALL','/KeibaWeb/TodayRaceInfo/DebaTable':'DEBA_TABLE','/KeibaWeb/TodayRaceInfo/RaceMarkTable':'RACE_MARK_TABLE'};
 const keys=['k_babaCode','k_raceDate','k_raceNo'];
@@ -22,7 +23,7 @@ const attribute=tag=>tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]
 
 // Syntactic evidence, not a browser DOM parser and never a link follower.
 export function auditNarMeetingLinks({html,date,code,race}={}){
-  const flags={scope:'MEETING_LINK_SYNTAX_ONLY',acceptancePolicy:'UNCHANGED_PHASE14024',networkReads:0,productionSourceChanged:false,acquisitionCertified:false,probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO'};
+  const flags={scope:'MEETING_LINK_SYNTAX_ONLY',acceptancePolicy:'PHASE14028_UNQUOTED_ANCHOR_EXTENSION',identityPolicy:'UNCHANGED_PHASE14024',networkReads:0,productionSourceChanged:false,acquisitionCertified:false,probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO'};
   if(typeof html!=='string'||Buffer.byteLength(html,'utf8')>1000000||!validMirrorDate(date)||typeof code!=='string'||!/^\d{2}$/.test(code)||!Number.isInteger(race)||race<1||race>20)return {...flags,status:'HOLD',reasonCodes:['LINK_AUDIT_CONFIGURATION_INVALID'],matched:false};
   const base=`https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_babaCode=${code}&k_raceDate=${date.replaceAll('-','/')}`;
   const baseTags=[...html.matchAll(/<base\b[^>]*>/gi)],firstBase=baseTags[0]?attribute(baseTags[0][0]):null;
@@ -42,9 +43,18 @@ export function auditNarMeetingLinks({html,date,code,race}={}){
     if(s.raceMatched&&selectedRaceSamples.length<8)selectedRaceSamples.push(s);
     else if((s.route!=='OTHER'||/DebaTable|RaceMarkTable/.test(m[1]))&&otherCardSamples.length<4)otherCardSamples.push(s);
   }
+  const quotedMatchedCount=matchedCount,unquoted=extractNarUnquotedAnchorHrefs(html),unquotedRejectionCounts={};let unquotedMatchedCount=0;
+  for(const value of unquoted.hrefs){
+    const s={...inspect(value,base,{date,code,race}),attributeForm:'UNQUOTED_ANCHOR'};
+    unquotedRejectionCounts[s.reason]=(unquotedRejectionCounts[s.reason]||0)+1;
+    if(s.reason==='MATCHED'){unquotedMatchedCount++;matchedCount++;}
+    if(s.raceMatched&&selectedRaceSamples.length<8)selectedRaceSamples.push(s);
+    else if((s.route!=='OTHER'||/DebaTable|RaceMarkTable/.test(value))&&otherCardSamples.length<4)otherCardSamples.push(s);
+  }
   const matched=matchedCount>0;
   return {...flags,status:matched?'MATCHED':'HOLD',reasonCodes:matched?[]:['RACE_LINK_IDENTITY_INVALID'],matched,
-    quotedHrefCount,matchedCount,rejectionCounts,hrefKindCounts,syntax,firstBaseHintMatchCount,
+    quotedHrefCount,quotedMatchedCount,matchedCount,rejectionCounts,hrefKindCounts,syntax,firstBaseHintMatchCount,
+    unquotedHrefCount:unquoted.hrefs.length,unquotedMatchedCount,unquotedRejectionCounts,unquotedAnchorScan:{anchorCount:unquoted.anchorCount,rejectedAnchorCount:unquoted.rejectedAnchorCount},
     hintBasis:'SYNTACTIC_FIRST_BASE_ONLY_NOT_USED_FOR_ACCEPTANCE',selectedRaceSamples,otherCardSamples,
-    sampleLimit:12,samplesComplete:quotedHrefCount===selectedRaceSamples.length+otherCardSamples.length};
+    sampleLimit:12,samplesComplete:quotedHrefCount+unquoted.hrefs.length===selectedRaceSamples.length+otherCardSamples.length};
 }
