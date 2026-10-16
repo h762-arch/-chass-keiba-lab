@@ -5,6 +5,19 @@
   "branch": "chass-data",
   "snapshots": [
     {
+      "date": "2026-10-16",
+      "track": "川崎",
+      "trackSlug": "kawasaki",
+      "organization": "NAR",
+      "raceCount": 5,
+      "totalHorseCount": 55,
+      "latestPredictionAt": null,
+      "latestOddsAt": null,
+      "abilityOnlyFallback": true,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/research-nar/2026-10-16/kawasaki/day.json"
+    },
+    {
       "date": "2026-10-11",
       "track": "京都",
       "trackSlug": "kyoto",
@@ -129,9 +142,9 @@
       "status": "CAPTURED",
       "date": "2026-10-16",
       "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-16&format=compact",
-      "attemptedAt": "2026-10-16T08:09:33.822Z",
-      "capturedAt": "2026-10-16T08:09:35.682Z",
-      "payloadSha256": "9598210e655724e789d1b17d040fe8ddbf57b164464b9a6bb79d2fd19dfd0cee",
+      "attemptedAt": "2026-10-16T11:49:30.655Z",
+      "capturedAt": "2026-10-16T11:49:31.817Z",
+      "payloadSha256": "6040c8aef2dac87763e0bf54cf11bdee9b5216b189d33e0f2bbac9a963a5ebbb",
       "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
       "readOnlyCapture": true,
       "snapshotPath": "chat-snapshot/status/2026-10-16/nar-precompute-status.json"
