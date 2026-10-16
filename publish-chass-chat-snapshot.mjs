@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {fetchNarResearchChatMirror,supportsNarResearchMirror} from './src/research/nar-research-chat-mirror.mjs';
 
 export const MIRROR_SCHEMA_VERSION = 'chass-chat-mirror-v1';
 export const WORKER_ORIGIN = 'https://chass-keiba-lab7.h7625421.workers.dev';
@@ -215,13 +216,13 @@ export function mergeChatSnapshot({ ability, marketText, slug }) {
   };
 }
 
-async function request(url, { accept, allow404 = false, attempts = 2 } = {}) {
+async function request(url, { accept, allow404 = false, attempts = 2, fetchImpl = globalThis.fetch } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15_000);
     try {
-      const response = await fetch(url, { headers: { accept }, signal: controller.signal });
+      const response = await fetchImpl(url, { headers: { accept }, signal: controller.signal });
       if (response.status === 404 && allow404) return null;
       if (response.status === 429 || response.status >= 500) {
         lastError = new Error(`HTTP ${response.status}`);
@@ -243,10 +244,10 @@ async function request(url, { accept, allow404 = false, attempts = 2 } = {}) {
   throw lastError || new Error('Request failed.');
 }
 
-async function fetchTrack(date, slug) {
+async function fetchTrack(date, slug, {fetchImpl = globalThis.fetch} = {}) {
   const meta = TRACKS[slug];
   const abilityUrl = `${WORKER_ORIGIN}/api/chass/v1/public/ai-snapshot/${date}/${slug}.json`;
-  const abilityResponse = await request(abilityUrl, { accept: 'application/json', allow404: true });
+  const abilityResponse = await request(abilityUrl, { accept: 'application/json', allow404: true, fetchImpl });
   if (!abilityResponse) return null;
   const ability = await abilityResponse.json();
   if (ability?.date !== date) throw new Error(`Ability date mismatch for ${slug}.`);
@@ -255,7 +256,7 @@ async function fetchTrack(date, slug) {
   const dayAiUrl = `${WORKER_ORIGIN}/api/chass/v1/public/day-ai?${query}`;
   let marketText = null;
   try {
-    const response = await request(dayAiUrl, { accept: 'text/plain', allow404: true });
+    const response = await request(dayAiUrl, { accept: 'text/plain', allow404: true, fetchImpl });
     marketText = response ? await response.text() : null;
   } catch (error) {
     console.warn(JSON.stringify({ slug, marketFallback: 'ability-only', error: String(error?.message || error) }));
@@ -326,21 +327,36 @@ async function writeSnapshot(root, snapshot) {
   return base;
 }
 
-export async function main() {
-  const date = String(process.env.SNAPSHOT_DATE || '').trim() || jstDate();
-  const requested = String(process.env.TRACK_SLUG || 'all').trim().toLowerCase();
-  const outputRoot = path.resolve(process.env.OUTPUT_ROOT || '.');
+export async function main({env = process.env, fetchImpl = globalThis.fetch, now = () => new Date()} = {}) {
+  const date = String(env.SNAPSHOT_DATE || '').trim() || jstDate(now());
+  const requested = String(env.TRACK_SLUG || 'all').trim().toLowerCase();
+  const outputRoot = path.resolve(env.OUTPUT_ROOT || '.');
   if (!validDate(date)) throw new Error('SNAPSHOT_DATE must be a real YYYY-MM-DD date.');
   const slugs = requested === 'all' ? Object.keys(TRACKS) : requested.split(',').map(x => x.trim()).filter(Boolean);
   if (!slugs.length || slugs.some(slug => !TRACKS[slug])) throw new Error('TRACK_SLUG must be all or a supported comma-separated slug list.');
 
   const published = [];
   const missing = [];
+  const researchPublished = [];
   for (const slug of slugs) {
     try {
-      const snapshot = await fetchTrack(date, slug);
+      const snapshot = await fetchTrack(date, slug, {fetchImpl});
       if (!snapshot) {
+        // Keep the legacy miss explicit; research files use a different schema/path.
         missing.push(slug);
+        if (supportsNarResearchMirror(slug)) {
+          const research = await fetchNarResearchChatMirror({date, slug, fetchImpl, now});
+          if (research) {
+            const base = path.join(outputRoot, 'chat-snapshot', 'research-nar', date, slug);
+            await mkdir(base, {recursive:true});
+            await writeFile(path.join(base, 'day.json'), JSON.stringify(research, null, 2)+'\n', 'utf8');
+            for (const race of research.races) {
+              const {races, ...metadata} = research;
+              await writeFile(path.join(base, `race-${String(race.raceNumber).padStart(2,'0')}.json`), JSON.stringify({...metadata,raceCount:1,totalHorseCount:race.horseCount,race},null,2)+'\n','utf8');
+            }
+            researchPublished.push({slug,schemaVersion:research.schemaVersion,researchOnly:true,formalKpiEligible:false,productionActivationReady:false,raceCount:research.raceCount,totalHorseCount:research.totalHorseCount,outputPath:base,capturedAt:research.capturedAt});
+          }
+        }
         continue;
       }
       const outputPath = await writeSnapshot(outputRoot, snapshot);
@@ -351,7 +367,7 @@ export async function main() {
     }
     await new Promise(resolve => setTimeout(resolve, 150));
   }
-  console.log(JSON.stringify({ ok: true, schemaVersion: MIRROR_SCHEMA_VERSION, date, requested, published, missing }));
+  console.log(JSON.stringify({ ok: true, schemaVersion: MIRROR_SCHEMA_VERSION, date, requested, published, missing, researchPublished }));
 }
 
 const invokedAsScript = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
