@@ -1,1 +1,66 @@
+name: CHASS NAR ReadOnly Source Probe v1
 
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Current JST date (YYYY-MM-DD); no historical replay'
+        required: true
+        type: string
+      code:
+        description: 'Explicit venue code (21=Kawasaki, 22=Kanazawa, 23=Kasamatsu)'
+        required: true
+        default: '21'
+        type: string
+      race:
+        description: 'One explicit pre-start race number (1..20)'
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chass-nar-readonly-source-probe-v1
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Inspect official sources without production writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require main dispatch
+        env:
+          PROBE_REF: ${{ github.ref }}
+        run: test "$PROBE_REF" = refs/heads/main
+
+      - name: Checkout exact dispatched commit read-only
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run bounded source inspection
+        env:
+          PROBE_DATE: ${{ inputs.date }}
+          PROBE_CODE: ${{ inputs.code }}
+          PROBE_RACE: ${{ inputs.race }}
+        run: node scripts/run-nar-readonly-source-probe.mjs --date "$PROBE_DATE" --code "$PROBE_CODE" --race "$PROBE_RACE"
+
+      - name: Retain diagnostic evidence even on HOLD
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nar-readonly-source-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/nar-readonly-source-probe.json
+            artifacts/nar-readonly-source-probe.sha256
+          if-no-files-found: error
+          retention-days: 14
