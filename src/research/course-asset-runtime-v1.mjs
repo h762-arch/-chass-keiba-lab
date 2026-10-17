@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {dirname, resolve} from 'node:path';
+import {resolveCourseContextCore} from '../prediction/course-asset-core-v1.mjs';
 
 export const VERSION = 'CHASS_V2220_COURSE_ASSET_RUNTIME_V1';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -378,7 +379,7 @@ function resolveLoadedCourseContext(assets, input = {}) {
 }
 
 export function resolveCourseContextFromAssets(assets,input={}){
-  try{return resolveLoadedCourseContext(assets,safeInput(input));}
+  try{return resolveCourseContextCore(verifiedAssets.has(assets)?assets:null,safeInput(input));}
   catch{return baseHold('COURSE_IDENTITY_INPUT_INVALID',{});}
 }
 
