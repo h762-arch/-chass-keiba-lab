@@ -1000,7 +1000,7 @@ async function acquireNarEarlyResearchRecord({raceId:requestedId,enabled=false}=
  const {data}=await fetchNarSyncApi(`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`,{attempts:1});
  const record=buildNarEarlyResearchRecord(data,{date,track,raceNo});
  // Local receipt is not authenticated proof; preserve the server source time.
- return {record,acquiredAt:data.acquiredAt,receivedAt:new Date().toISOString(),acquisitionKind:'fresh'};
+ return {record,acquiredAt:data.acquiredAt,receivedAt:new Date().toISOString(),acquisitionKind:'fresh',sourceReceipt:{scope:'ALL_RUNNERS',raceId:requestedId,horseNos:data.horses.map(h=>Number(h.horseNo)),capturedAt:data.acquiredAt,sourceRef:`/api/nar/race?code=${code}&date=${encodeURIComponent(date)}&race=${raceNo}`}};
 }
 function buildAbilityRoot(d,date,track,raceNo){
  const horses=Array.isArray(d.horses)?d.horses:[],ready=horses.filter(h=>Number.isFinite(Number(h.abilityWinRate))).length,wins=horses.map(h=>Number(h.abilityWinRate)||0),abilityMode=ready>=Math.max(2,Math.ceil(horses.length*.5));
