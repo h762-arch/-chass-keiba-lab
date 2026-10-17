@@ -1,8 +1,11 @@
 import * as abilityCore from './jra-ability-core.mjs';
 import * as abilityResultProjector from './jra-ability-result-projector.mjs';
+import {evaluateWebCourseShadowFromSnapshot} from './course-asset-web-adapter-v1.mjs';
 
 window.CHASS_JRA_ABILITY_CORE=abilityCore;
 window.CHASS_JRA_ABILITY_RESULT_PROJECTOR=abilityResultProjector;
+// Prepared before app.js loads. Explicit opt-in only; production prediction is unchanged.
+window.CHASS_COURSE_SHADOW_PREFLIGHT=Object.freeze({evaluate:evaluateWebCourseShadowFromSnapshot,mode:'SHADOW_ONLY_UNWIRED'});
 const scripts=[
  '/jra-model.js',
  '/jra-adapter.js',

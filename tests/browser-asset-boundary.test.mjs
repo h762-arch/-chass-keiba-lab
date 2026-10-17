@@ -31,7 +31,7 @@ test('HTML module entry and its module dependencies are included in public asset
     const dep=new URL(match[1],new URL(path,root));queue.push(dep.pathname.slice(root.pathname.length));
    }
   }
-  assert.equal(seen.size,3);
+  assert.equal(seen.size,6);
  });
 });
 test('server modules, credentials configuration, research tooling and future modules remain excluded',()=>{
@@ -39,7 +39,7 @@ test('server modules, credentials configuration, research tooling and future mod
   for(const path of ['worker.js','worker-entry.mjs','server.mjs','wrangler.jsonc','package.json',
    'mcp/server.mjs','scripts/import-frozen-signal-cache.mjs','tests/browser-asset-boundary.test.mjs',
    'src/research/jra-signal-outcome-reader.mjs','src/prediction/background-precompute.mjs',
-   'src/prediction/future-internal.mjs','migrations/example.sql','.git/config','.github/workflows/example.yml'])
+   'src/prediction/future-internal.mjs','src/prediction/course-asset-worker-adapter-v1.mjs','migrations/example.sql','.git/config','.github/workflows/example.yml'])
    assert.equal(ignored(path),true,`${path} must not be public`);
  });
 });
@@ -49,6 +49,8 @@ test('classic browser scripts remain included without widening the module allowl
    'src/research/longshot-scenario.js','jra-result-client.js'])assert.equal(ignored(path),false,path);
   const exceptions=readFileSync(new URL('.assetsignore',root),'utf8').split('\n').filter(line=>line.startsWith('!'));
   assert.deepEqual(exceptions,['!/src/prediction/jra-browser-bootstrap.mjs','!/src/prediction/jra-ability-core.mjs',
-   '!/src/prediction/jra-ability-result-projector.mjs']);
+   '!/src/prediction/jra-ability-result-projector.mjs',
+   '!/src/prediction/course-asset-core-v1.mjs','!/src/prediction/course-shadow-preflight-v1.mjs',
+   '!/src/prediction/course-asset-web-adapter-v1.mjs']);
  });
 });
