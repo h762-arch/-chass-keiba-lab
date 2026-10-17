@@ -1,0 +1,74 @@
+{
+  "version": "CHASS_V2220_COURSE_ASSET_RUNTIME_V1",
+  "mode": "STATIC_SNAPSHOT_SHADOW",
+  "generatedAt": "2026-10-17T14:46:54.297Z",
+  "source": {
+    "spreadsheetId": "1dqFySEgG6cYEXIx8BmOw7tPOe7wI90H_No1FRoXlgoI",
+    "title": "CHASS競馬研究所_アーカイブマスター",
+    "tabs": [
+      "CHASS_COURSE_PROFILE_V1",
+      "CHASS_COURSE_DISTANCE_PROFILE_V1",
+      "CHASS_COURSE_SAMPLE_COVERAGE_V1"
+    ]
+  },
+  "policy": {
+    "productionDriveDirectRead": false,
+    "resultLeakageAllowed": false,
+    "validationOnlyLeakageAllowed": false,
+    "unknownIsNegative": false,
+    "longFirstTurnImpliesSlow": false
+  },
+  "assets": {
+    "geometry": {
+      "file": "course-geometry-v1.csv",
+      "sha256": "f8ddd1bd0f2418322fc6cc8e4298a548558885a62e80d2d04fc782c22944db92",
+      "runtimeUse": "STATIC_CANONICAL",
+      "bundled": true,
+      "sourceFile": "course-geometry-v1.csv"
+    },
+    "distanceProfiles": {
+      "file": "course-distance-profile-v1.csv",
+      "sha256": "bb92910fd9498f7204be88b4a09e618ec61166a1d203e14e30ff8fef13e5fa92",
+      "runtimeUse": "STATIC_CANONICAL",
+      "bundled": true,
+      "sourceFile": "course-distance-profile-v1.csv"
+    },
+    "coverage": {
+      "file": "course-sample-coverage-v1.csv",
+      "sha256": "f7aea1e91f18e21dc28defa7683bda7bd941413e93aade9f116ec7d913858cf3",
+      "runtimeUse": "SHADOW_GUARD_ONLY",
+      "bundled": true,
+      "sourceFile": "course-sample-coverage-v1.csv"
+    },
+    "historicalRaw": {
+      "bundled": false,
+      "runtimeUse": "FORBIDDEN",
+      "sourceTab": "CHASS_COURSE_HIST_SAMPLE_V1",
+      "reason": "POST result-bearing runner ledger is research-only; never bundled into PRE runtime snapshot."
+    },
+    "frameAggregate": {
+      "bundled": false,
+      "runtimeUse": "FORBIDDEN",
+      "sourceTab": "CHASS_COURSE_FRAME_AGG_V1",
+      "reason": "Historical SHADOW aggregate remains in Drive authority until separate promotion gate."
+    },
+    "biasShadow": {
+      "bundled": false,
+      "runtimeUse": "FORBIDDEN",
+      "sourceTab": "CHASS_COURSE_BIAS_SHADOW_V1",
+      "reason": "SHADOW-only, no fixed PRE coefficient."
+    },
+    "forwardJoin": {
+      "bundled": false,
+      "runtimeUse": "FORBIDDEN",
+      "sourceTab": "CHASS_COURSE_FORWARD_JOIN_V1",
+      "reason": "VALIDATION_ONLY"
+    },
+    "forwardReadiness": {
+      "bundled": false,
+      "runtimeUse": "FORBIDDEN",
+      "sourceTab": "CHASS_COURSE_FORWARD_READINESS_V1",
+      "reason": "VALIDATION_ONLY"
+    }
+  }
+}
