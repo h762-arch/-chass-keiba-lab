@@ -69,7 +69,9 @@ export async function runNarInitialEvidenceRehearsalV1(scenario='baseline'){
    noFormalPromotion:first.formalKpiEligible===false&&reopened.formalKpiEligible===false&&receipt?.trustedDurableTime!==true,
    noOriginalSignalsGenerated:bundle.sourceEarlySnapshot.data.marketSnapshot.signalSnapshot.horses.every(h=>h.valueMark===''&&h.warningMark==='')};
   return {...context,status:Object.values(checks).every(Boolean)?'PASS':'FAIL',scenario,raceId,
-   fixtureAt:at,first,reopened,checks,evidence:{bundleKey,
+   fixtureAt:at,first,reopened,checks,evidence:{schemaVersion:'CHASS_NAR_INITIAL_EVIDENCE_V1',evidenceKind:'SYNTHETIC_REHEARSAL',bundleKey,
+    bundleRawJson:beforeReopen.bundles[0].snapshot_json,
+    receiptRawJson:beforeReopen.receipts[0]?.snapshot_json??null,
     bundleUtf8Sha256:sha(beforeReopen.bundles[0].snapshot_json),
     receiptKey:beforeReopen.receipts[0]?.storage_key??null,
     receiptUtf8Sha256:receipt?sha(beforeReopen.receipts[0].snapshot_json):null,
