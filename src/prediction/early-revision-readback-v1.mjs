@@ -76,6 +76,7 @@ export async function readEarlyExactRevisionV1(DB,expectationJson,{timeoutMs=500
   return outcome('EXACT_REVISION_CONTENT_MATCH',null,{
    organization:snapshot.organization,raceId:snapshot.raceId,revision:snapshot.revision,
    sourceHash:snapshot.sourceHash,inputHash:snapshot.inputHash,snapshotHash:snapshot.snapshotHash,
+   sourceValidatedAt:snapshot.sourceValidatedAt,dataCalculatedAt:snapshot.dataCalculatedAt,
    storeReadPerformed:true,contentHashesVerified:true,
    assessmentBasis:'SUPPLIED_DB_AND_UNAUTHENTICATED_EXPECTATION',
    temporalVerification:'NOT_ASSESSED',formalBlocker:'TRUSTED_STORE_ACQUISITION_AND_SIGNAL_FREEZE_UNVERIFIED'});
