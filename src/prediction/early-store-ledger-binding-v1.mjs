@@ -45,7 +45,7 @@ export async function readEarlyStoreLedgerBindingV1(DB,evidenceJson,pinJson){
   const read=await readEarlyExactRevisionV1(DB,JSON.stringify({schemaVersion:'CHASS_EARLY_REVISION_EXPECTATION_V1',organization:record.organization,raceId:record.raceId,revision:record.revision,sourceHash:record.sourceHash,inputHash:record.inputHash,snapshotHash:record.snapshotHash}));
   if(read.status!=='EXACT_REVISION_CONTENT_MATCH')return result('HOLD','EXACT_REVISION_READBACK_HOLD');
   const validated=instant(read.sourceValidatedAt),calculated=instant(read.dataCalculatedAt);
-  if(!Number.isFinite(validated)||!Number.isFinite(calculated)||validated>calculated||calculated>savedAt)return result('HOLD','SNAPSHOT_SAVE_TIME_MISMATCH');
+  if(!Number.isFinite(validated)||!Number.isFinite(calculated)||validated>savedAt||calculated>savedAt)return result('HOLD','SNAPSHOT_SAVE_TIME_MISMATCH');
   return result('STORE_LEDGER_BINDINGS_MATCH',null,{
    organization:record.organization,raceId:record.raceId,revision:record.revision,
    snapshotHash:read.snapshotHash,saveRecordSha256:pin.saveRecordSha256,
