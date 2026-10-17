@@ -30,7 +30,10 @@ After these checks, one exact revision SELECT is performed through the previous
 readback module. SOURCE/input/snapshot hashes are recomputed against the record.
 Its output now also exposes sourceValidatedAt/dataCalculatedAt, which are covered
 by the snapshot hash. The order required is:
-sourceValidatedAt <= dataCalculatedAt <= savedAt <= core.frozenAt < core.offAt.
+sourceValidatedAt <= savedAt <= core.frozenAt < core.offAt, and
+dataCalculatedAt <= savedAt. SOURCE revalidation may follow DATA calculation when
+semantic input is unchanged and cached DATA is reused; neither timestamp may be
+later than the declared save.
 Invalid dates, missing timezone, later saves and earlier-than-calculation saves
 hold. Equality is allowed until the strict pre-start cutoff. This is relative
 chronology only, not trusted-clock or current-day validation.

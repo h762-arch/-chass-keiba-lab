@@ -4,7 +4,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {predictionKpiLedgerSha256 as hash,PREDICTION_KPI_LEDGER_VERSION as VERSION} from '../src/prediction/prediction-kpi-ledger-adapter-v2155.mjs';
 import {createPrecomputedSnapshot} from '../src/prediction/precomputed-snapshot.mjs';
-import {savePrecomputedSnapshot} from '../src/prediction/precomputed-store.mjs';
+import {savePrecomputedSnapshot,readLatestPrecomputedSnapshot} from '../src/prediction/precomputed-store.mjs';
+import {createPrecomputeRaceRunnerAdapter} from '../src/prediction/precompute-race-runner-adapter.mjs';
+import {raceJobKey} from '../src/prediction/background-precompute.mjs';
 import {readEarlyStoreLedgerBindingV1 as read} from '../src/prediction/early-store-ledger-binding-v1.mjs';
 const tiers=['T0_CACHE_REGISTRY','T1_CANONICAL_PROVIDER','T2_ALT_AUTHORITATIVE','T3_PRE_CUTOFF_BUILD'];
 const body=(x,k)=>x.bundle.sections.find(s=>s.kind===k).body;
@@ -72,3 +74,27 @@ test('equal instants with timezone offsets are accepted',async()=>{const x=await
 test('invalid and oversized inputs never invoke serialization callbacks or DB',async()=>{let calls=0;const DB={prepare(){calls++;throw Error();}},cb={toJSON(){calls++;throw Error();}};for(const raw of [null,cb,'{','null','[]','x'.repeat(500001),JSON.stringify({text:'馬'.repeat(170000)})]){const r=await read(DB,raw,'{}');assert.equal(r.reason,'INVALID_BINDING_INPUT');safe(r);}assert.equal(calls,0);});
 test('self-authentication flags and matching caller pin never grant trust',async()=>{const x=await fixture();try{x.pin.authenticated=true;x.evidence.trusted=true;const r=await check(x);assert.equal(r.status,'STORE_LEDGER_BINDINGS_MATCH');safe(r);}finally{x.DB.close();}});
 test('DB error is bounded and contains no private detail',async()=>{const x=await fixture();try{x.DB={prepare(){throw Error('PRIVATE_SECRET');},close:x.DB.close};const r=await check(x);assert.equal(r.reason,'EXACT_REVISION_READBACK_HOLD');assert.equal(JSON.stringify(r).includes('PRIVATE_SECRET'),false);safe(r);}finally{x.DB.close();}});
+async function refreshedFixture(){
+ const x=await fixture(),job={organization:'JRA',date:'2026-10-09',track:'05',raceNo:1},raceId=raceJobKey(job);
+ try{
+  const source={acquiredAt:'2026-10-09T08:54:00Z'},versions={calculationVersion:'integration-v1',modelVersion:'integration-v1'};
+  const original=await createPrecomputedSnapshot({organization:'JRA',raceId,source,data:{ability:80},versions,now:'2026-10-09T08:55:00Z'});
+  await savePrecomputedSnapshot(x.DB,original);let calculations=0;
+  const runner=createPrecomputeRaceRunnerAdapter({versions,now:()=> '2026-10-09T08:57:00Z',
+   loadSource:async()=>({...source,acquiredAt:'2026-10-09T08:57:00Z'}),
+   calculate:async()=>{calculations++;throw Error('must reuse DATA');},
+   loadLatest:(org,id)=>readLatestPrecomputedSnapshot(x.DB,org,id),
+   save:s=>savePrecomputedSnapshot(x.DB,s,{createdAt:'2026-10-09T08:58:00Z'})});
+  const execution=await runner(job),snapshot=await readLatestPrecomputedSnapshot(x.DB,'JRA',raceId);
+  assert.equal(execution.status,'SOURCE_VALIDATED');assert.equal(execution.revision,2);assert.equal(calculations,0);
+  assert.equal(snapshot.sourceValidatedAt,'2026-10-09T08:57:00.000Z');assert.equal(snapshot.dataCalculatedAt,'2026-10-09T08:55:00Z');
+  assert.deepEqual(snapshot.layers.DATA,original.layers.DATA);assert.equal(snapshot.inputHash,original.inputHash);
+  x.evidence=JSON.parse(JSON.stringify(x.evidence).replaceAll('"race1"',JSON.stringify(raceId)));
+  Object.assign(x.evidence.saveRecord,{revision:2,savedAt:'2026-10-09T08:58:00Z',sourceHash:snapshot.sourceHash,inputHash:snapshot.inputHash,snapshotHash:snapshot.snapshotHash});
+  Object.assign(x.pin,{raceId,revision:2,snapshotHash:snapshot.snapshotHash});await repin(x);x.DB.calls.length=0;
+  return x;
+ }catch(e){x.DB.close();throw e;}
+}
+test('real runner SOURCE revalidation may follow cached DATA calculation before save and freeze',async()=>{const x=await refreshedFixture();try{const r=await check(x);assert.equal(r.status,'STORE_LEDGER_BINDINGS_MATCH');assert.equal(r.revision,2);assert.equal(x.DB.calls.length,1);safe(r);}finally{x.DB.close();}});
+test('SOURCE validation after declared save still holds with cached DATA',async()=>{const x=await refreshedFixture();try{x.evidence.saveRecord.savedAt='2026-10-09T08:56:00Z';await repin(x);const r=await check(x);assert.equal(r.reason,'SNAPSHOT_SAVE_TIME_MISMATCH');safe(r);}finally{x.DB.close();}});
+test('save at SOURCE validation boundary remains pre-freeze and accepted',async()=>{const x=await refreshedFixture();try{x.evidence.saveRecord.savedAt='2026-10-09T08:57:00Z';await repin(x);const r=await check(x);assert.equal(r.status,'STORE_LEDGER_BINDINGS_MATCH');safe(r);}finally{x.DB.close();}});
