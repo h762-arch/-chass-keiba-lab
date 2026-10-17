@@ -3,9 +3,9 @@
   "status": "CAPTURED",
   "date": "2026-10-17",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-17&format=compact",
-  "attemptedAt": "2026-10-16T17:29:44.920Z",
-  "capturedAt": "2026-10-16T17:29:45.729Z",
-  "payloadSha256": "cacb539231ae998873298ac49504a2faa5a92b4c120048664ac572f5a4f5f8bb",
+  "attemptedAt": "2026-10-17T00:51:42.099Z",
+  "capturedAt": "2026-10-17T00:51:42.824Z",
+  "payloadSha256": "68153171f18f13176f5209e033088f6ba0a13be935248f884c748d843e20f2b4",
   "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
   "readOnlyCapture": true,
   "payload": {
@@ -16,10 +16,10 @@
     "historyStoreEnabled": true,
     "canaryDate": null,
     "stopAt": "2026-10-17T05:55:00.000Z",
-    "active": false,
+    "active": true,
     "scheduleMode": "daily",
-    "scheduleStatus": "SKIPPED",
-    "scheduleReason": "DAILY_WINDOW_CLOSED",
+    "scheduleStatus": "ACTIVE",
+    "scheduleReason": null,
     "dailyFrom": "2026-10-14",
     "dailyUntil": "2026-10-20",
     "dailyStartJst": "07:00",
@@ -50,20 +50,64 @@
     "selectedRaceNo": null,
     "narRunAudit": {
       "status": "RECORDED",
-      "scheduledAt": "2026-10-16T17:25:18.556Z",
+      "scheduledAt": "2026-10-17T00:50:18.556Z",
       "runDate": "2026-10-17",
-      "runStatus": "SKIPPED",
-      "reason": "DAILY_WINDOW_CLOSED",
+      "runStatus": "COMPLETED",
+      "reason": null,
       "attempted": 0,
       "saved": 0,
       "autoResultProcessed": 0,
-      "events": []
+      "events": [
+        {
+          "track": "川崎",
+          "reason": "MEETING_SOURCE_UNAVAILABLE",
+          "meetingAttempts": [
+            {
+              "route": "RaceList",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            },
+            {
+              "route": "RaceList_ipat",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            },
+            {
+              "route": "RaceList_mobile",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            }
+          ]
+        }
+      ]
     },
-    "lastNarRunAt": "2026-10-16T17:25:18.556Z",
-    "lastNarStatus": "SKIPPED",
-    "lastNarReason": "DAILY_WINDOW_CLOSED",
+    "lastNarRunAt": "2026-10-17T00:50:18.556Z",
+    "lastNarStatus": "COMPLETED",
+    "lastNarReason": null,
     "lastNarAttempted": 0,
     "lastNarSaved": 0,
-    "lastNarEvents": []
+    "lastNarEvents": [
+      {
+        "track": "川崎",
+        "reason": "MEETING_SOURCE_UNAVAILABLE",
+        "meetingAttempts": [
+          {
+            "route": "RaceList",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          },
+          {
+            "route": "RaceList_ipat",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          },
+          {
+            "route": "RaceList_mobile",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          }
+        ]
+      }
+    ]
   }
 }
