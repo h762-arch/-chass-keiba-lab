@@ -1,0 +1,165 @@
+Metric,Value,Status,Definition,Source,AsOf,Gate,Notes
+TOTAL_RUNNERS,1,FAIL,2026/10/03 京都＋東京 全Runner,CHASS_UNIFIED_RUNNER_EARLY,2026-10-11,IDENTITY,24R合計
+FLAT_RUNNERS,#REF!,#REF!,平地芝＋ダートRunner,JRA_PDF_MANIFEST,2026-10-11,STRUCTURAL,障害除外後
+OBSTACLE_EXCLUDED,#REF!,#REF!,平地Course Bias対象外,JRA_PDF_MANIFEST,2026-10-11,EXCLUSION,東京4R障害
+PROFILE_JOIN_RESOLVED,#REF!,#REF!,CourseProfile_ID解決済み平地Runner,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-11,PROFILE,flat denominator一致必須
+RESULT_JOIN_RESOLVED,#REF!,#REF!,着順Join解決済み,CHASS_UNIFIED_RUNNER_POST,2026-10-11,RESULT,全Runnerを期待
+FRAME_RESOLVED,#REF!,#REF!,枠番1-8解決済み,CHASS_UNIFIED_RUNNER_EARLY,2026-10-11,FRAME,全Runnerを期待
+STRUCTURAL_ELIGIBLE,#REF!,#REF!,枠×結果×CourseProfile完全,Phase3 Sample Ledger,2026-10-11,STRUCTURAL,Historical raw structural母集団
+MARKET_ADJUSTED_ELIGIBLE,#REF!,#REF!,Structural＋Frozen EARLY odds/pop,CHASS_UNIFIED_RUNNER_EARLY,2026-10-11,MARKET_ADJUSTED,Actual−Expected候補母集団
+MARKET_MISSING_HOLD,#REF!,#REF!,構造EligibleだがFrozen market不足,CHASS_UNIFIED_RUNNER_EARLY,2026-10-11,MISSINGNESS,FinalOddsで代用禁止
+STYLE_INTERACTION_ELIGIBLE,#REF!,#REF!,Structural＋ActualRunStyle,CHASS_UNIFIED_RUNNER_POST,2026-10-11,STYLE,Style欠損は負評価しない
+PROFILE_UNRESOLVED,#REF!,#REF!,平地CourseProfile未解決,Course Distance Profile,2026-10-11,PROFILE,0必須
+RESULT_UNRESOLVED,#REF!,#REF!,結果Join未解決,CHASS_UNIFIED_RUNNER_POST,2026-10-11,RESULT,0必須
+RAW_BIAS_ROWS,1,#REF!,枠別＋FrameGroup Raw Bias集計行数,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,RAW_BIAS,SHADOWのみ
+RAW_FRAME_EXACT_ROWS,#REF!,#REF!,CourseProfile×頭数Bucket×枠1-8,CHASS_COURSE_FRAME_AGG_V1,2026-10-11,FRAME_EXACT,観測記述統計
+RAW_FRAME_GROUP_ROWS,#REF!,#REF!,CourseProfile×頭数Bucket×INNER/MID/OUTER,CHASS_COURSE_FRAME_AGG_V1,2026-10-11,FRAME_GROUP,内中外の粗い構造比較
+BIAS_ERROR_CELLS,1,FAIL,Bias正本A:ADの数式エラーセル,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,FORMULA_INTEGRITY,0必須
+DESCRIPTIVE_N_GE8_ROWS,#REF!,#REF!,SampleRunners>=8の記述統計行,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,SAMPLE_SIZE,Production可を意味しない
+MAX_SAMPLE_RUNNERS,#REF!,#REF!,単一Bias行の最大Runner数,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,SAMPLE_SIZE,小標本監視
+PRODUCTION_STATUS_ROWS,#REF!,#REF!,SHADOW以外のStatus行,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,LEAKAGE_GUARD,0必須
+MARKET_ADJUSTMENT_HOLD_ROWS,#REF!,#REF!,ExpectedWinRate未Production行,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,MARKET_GUARD,Raw全行HOLD必須
+UNIQUE_COURSE_PROFILES_RAW,1,PASS,今回Raw Biasに現れたCourseProfile数,CHASS_COURSE_BIAS_SHADOW_V1,2026-10-11,PROFILE_COVERAGE,10/3京都＋東京Seedのみ
+FORWARD_HOLDOUT_CONTRACT,1,PASS,Prospective Course Bias Holdout preregistered after historical phases,CHASS_HOLDOUT_MANIFEST_V1,2026-10-11,FORWARD_CONTRACT,COURSEBIAS-FWD-20261011-001
+COURSE_FORWARD_JOIN_SCHEMA,39,PASS,CourseFreeze→Frozen EARLY Market→POST Result join schema,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,SCHEMA,39 columns
+COURSE_FORWARD_READINESS_SCHEMA,22,PASS,Per-race forward eligibility and leakage gate,CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,SCHEMA,22 columns
+RETROFIT_FORWARD_CONTAMINATION,0,PASS,2026-10-03 and pre-registration 2026-10-11 excluded from Forward N,COURSEBIAS-FWD-20261011-001,2026-10-11,LEAKAGE_GUARD,0 required
+PHASE5_PRODUCTION_CHANGES,0,PASS,AI probabilities/marks/Final5/Formal signals unchanged,CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+COURSE_AE_ENGINE_SCHEMA_V1_1,43,PASS,Forward Join 39→43 columns; provider/reliability/immutable/status separated from MarketKind,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,SCHEMA,43 columns
+COURSE_AE_DERIVED_FORMULAS,10,PASS,"FrameGroup, FieldSizeBucket, ImpliedWinRaw, ExpectedWinNorm, WinFlag, Top3Flag, WinAE, MarketEligibility, CourseBiasEligibility, LeakageGuard",CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,CALC_ENGINE,10 formula anchors
+SYNTHETIC_EXPECTED_SUM,1,PASS,2.0/4.0/8.0 odds normalized to 0.5714286/0.2857143/0.1428571,COURSE_AE_ENGINE_v1.0,2026-10-11,SELF_TEST,sum=1.0000000
+SYNTHETIC_RESIDUAL_SUM,0,PASS,WinActualMinusExpected residuals +0.4285714/-0.2857143/-0.1428571 sum to zero,COURSE_AE_ENGINE_v1.0,2026-10-11,SELF_TEST,sum=0
+PROXY_MARKET_TIER,3,PASS,Frozen pre-result PROXY market is separated as ELIGIBLE_WIN_AE_PROXY_SHADOW; never strict EV or automatic Production,COURSE_AE_ENGINE_v1.0,2026-10-11,SEMANTIC_GUARD,3/3 synthetic rows
+SYNTHETIC_TEST_ROWS_RETAINED,0,PASS,Temporary rows 495:497 cleared after self-test; only spill formulas remain,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,CLEANUP,0 required
+PRECONTRACT_20261012_MARKET_EXCLUSION,134,PASS,"Tokyo 2026-10-12 Original EARLY snapshots frozen 21:06-21:07 JST, before Course Bias contract 21:14; excluded from Forward N",CHASS_MARKET_SNAPSHOT_V1,2026-10-11,LEAKAGE_GUARD,retrofit=0
+PHASE6_PRODUCTION_CHANGES,0,PASS,AI probabilities/marks/Final5/Formal signals/Tickets unchanged; Place Actual−Expected remains HOLD,CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+POSTCONTRACT_MARKET_SNAPSHOT_COUNT,0,PASS,No Market Snapshot captured after 2026-10-11 21:14 JST at 22:36 scan; therefore no Forward sample may start.,CHASS_MARKET_SNAPSHOT_V1,2026-10-11,DISCOVERY_GATE,0; fabricate prohibited
+POSTCONTRACT_COURSE_FREEZE_COUNT,0,PASS,No 2026-10-12 JRA CourseContextFreeze exists at 22:36 scan; first Forward race chain is not yet instantiated.,CHASS_COURSE_CONTEXT_FREEZE_V1,2026-10-11,DISCOVERY_GATE,0; wait for true PRE freeze
+FIRST_TRUE_FORWARD_SAMPLE_N,0,ARMED,Holdout valid; no eligible post-contract race exists yet. 2026-10-12 Tokyo 134 precontract snapshots remain excluded.,COURSEBIAS-FWD-20261011-001,2026-10-11,FORWARD_N,N=0 until qualifying post-21:14 freeze
+PHASE7_PRODUCTION_CHANGES,0,PASS,No AI probability/marks/Final5/Formal signal/ticket changes; no Course Bias coefficient promotion.,CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+COURSE_PRECAP_POLICY_RULES,6,PASS,"Discovery, all-runner identity, frame, CourseProfile, CourseContextFreeze and EARLY win market rules frozen.",CHASS_V215_FIELD_ELIGIBILITY_LEDGER_V1,2026-10-11,PRE_CAPTURE_CONTRACT,6 immutable policy templates
+MARKET_AFTER_COURSE_FREEZE_GATE,1,PASS,EARLY market acquisition is permitted only after immutable CourseContextFreeze; market-before-freeze is critical violation.,COURSE_PRE_CAPTURE_v1.0,2026-10-11,CAUSAL_ORDER,freeze < market required
+COURSE_PRECAP_RUNTIME_ATTEMPTS,0,PASS,No qualifying post-contract race exists yet; Acquisition Ledger remains free of fabricated runtime attempts.,CHASS_V215_ACQUISITION_LEDGER_V1,2026-10-11,RUNTIME_GUARD,0 until real race discovery
+COURSE_PRECAP_RETROFIT_ALLOWED,0,PASS,Precontract 10/12 Tokyo snapshots cannot be re-frozen or reused as post-contract capture.,COURSEBIAS-FWD-20261011-001,2026-10-11,LEAKAGE_GUARD,0 required
+PHASE8_PRODUCTION_CHANGES,0,PASS,"Capture infrastructure only; AI probabilities, marks, Final5, Formal signals, tickets and fixed course coefficients unchanged.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+COURSE_MATERIALIZER_TEMPLATE_STAGES,7,PASS,Seven immutable Execution Link templates T01-T07 physically define per-race instantiation order.,CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,MATERIALIZER_TEMPLATE,7/7 required
+COURSE_MATERIALIZER_RUNTIME_CONTRACT,1,PASS,Forward Readiness contains immutable MATERIALIZER-CONTRACT with deterministic Run_ID and hard-stop conditions.,CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,RUNTIME_STATE_MACHINE,1 contract row required
+COURSE_MATERIALIZER_DETERMINISTIC_RUN_ID,1,PASS,Each qualifying CanonicalRace_ID maps to CBFWD-{CanonicalRace_ID}-001; corrections append with Supersedes rather than overwrite.,COURSE_PRECAP_MATERIALIZER_v1.0,2026-10-11,IDENTITY_GUARD,1 deterministic active Run_ID per race
+COURSE_MATERIALIZER_DUPLICATE_ACTIVE_RACE_ALLOWED,0,PASS,Duplicate active Runtime instance for the same CanonicalRace_ID is a hard stop.,COURSE_PRECAP_MATERIALIZER_v1.0,2026-10-11,DUPLICATE_GUARD,0 required
+COURSE_MATERIALIZER_MARKET_BEFORE_FREEZE_ALLOWED,0,PASS,Stage07 EARLY market attempt is unreachable until Stage06 CourseContextFreeze is immutable.,FRZ-COURSE-MATERIALIZER-20261011-001,2026-10-11,CAUSAL_ORDER,0 allowed
+COURSE_MATERIALIZER_REAL_RUNTIME_N,0,ARMED,No qualifying post-contract race has been instantiated; zero remains canonical and no synthetic runtime row was created.,CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,RUNTIME_N,N=0 until real qualifying discovery
+PHASE9_PRODUCTION_CHANGES,0,PASS,"Runtime materialization infrastructure only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P10_DIAGNOSTIC_SCENARIOS,6,PASS,Six SIMULATION_ONLY scenarios recorded: 1 structural-market HOLD + 4 critical hard stops + 1 obstacle scope rejection.,CHASS_COURSE_FORWARD_READINESS_V1 + CHASS_HOLDOUT_SEQUENCE_GATE_V1,2026-10-11,DIAGNOSTIC_REPLAY,6 required
+P10_STRUCTURAL_MARKET_HOLD,1,PASS,20261003-JRA-KYO-10: identity/frame/profile 16/16; Frozen EARLY market 5/16=31.25%; T07 correctly ends HOLD without FINAL/POST substitution.,CHASS_COURSE_HIST_SAMPLE_V1,2026-10-11,EXPECTED_HOLD,1 required
+P10_CRITICAL_HARD_STOP_CASES,4,PASS,"Incomplete denominator, market-before-freeze, duplicate active runtime, and precontract snapshot reuse each produce ForwardEligible=FALSE.",CHASS_HOLDOUT_SEQUENCE_GATE_V1,2026-10-11,HARD_STOP_VALIDATION,4/4 required
+P10_OBSTACLE_SCOPE_REJECTION,1,PASS,20261003-JRA-TOK-04 obstacle 3100m 12 runners is rejected as NOT_ELIGIBLE_OBSTACLE without being counted as integrity corruption.,CHASS_COURSE_HIST_SAMPLE_V1,2026-10-11,SCOPE_VALIDATION,1 required
+P10_FORWARD_N_CHANGE,0,PASS,Diagnostic replay rows are excluded from Forward N by immutable SIMULATION_ONLY status.,COURSEBIAS-FWD-20261011-001,2026-10-11,FORWARD_N_GUARD,0 required
+P10_RUNTIME_N_CHANGE,0,PASS,No real Runtime instance or Acquisition attempt is created by diagnostics.,CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,RUNTIME_N_GUARD,0 required
+P10_DIAGNOSTIC_TO_PRODUCTION_LEAKAGE,0,PASS,"No diagnostic result, reconstructed freeze, or simulated market state can feed Production or Forward Actual-Expected.",FRZ-COURSE-MAT-DIAG-20261011-001,2026-10-11,LEAKAGE_GUARD,0 required
+PHASE10_PRODUCTION_CHANGES,0,PASS,"Validator only; Course Bias coefficients, AI probabilities, marks, Final5, Formal signals and tickets unchanged.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P11_TRIGGER_TEMPLATE_STAGES,4,PASS,"Four immutable trigger templates bind key, active-runtime lookup, idempotency decision, and dispatch-or-readback before any real runtime write.",CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,RUNTIME_TRIGGER_TEMPLATE,4/4 required
+P11_TRIGGER_CONTRACT_GATES,2,PASS,Sequence Gate and Course Forward Readiness each contain the immutable Runtime Trigger/Idempotency contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,TRIGGER_CONTRACT,2/2 required
+P11_TRIGGER_KEY_DETERMINISTIC,1,PASS,TriggerKey is exactly Holdout_ID|CanonicalRace_ID and maps to deterministic Run_ID CBFWD-{CanonicalRace_ID}-001.,FRZ-COURSE-RUNTIME-TRIGGER-20261011-001,2026-10-11,IDEMPOTENCY_KEY,1 key contract required
+P11_FIRST_INVOCATION_CREATE_ONCE,1,PASS,SIMULATION_ONLY active-count=0 path resolves to exactly one runtime creation/Materializer dispatch; no real row was created during validation.,TRIGDIAG-P11-FIRST-001,2026-10-11,FIRST_CALL,1/1 expected create
+P11_RETRY_ALT_CALLER_READBACK,1,PASS,"Same TriggerKey with active-count=1 returns existing runtime/current stage. RuntimeCreateDelta=0, AcquisitionAttemptDelta=0, MarketAttemptDelta=0.",TRIGDIAG-P11-RETRY-001,2026-10-11,IDEMPOTENT_READBACK,1/1 required
+P11_DUPACTIVE_HARD_STOP,1,PASS,Injected active-count=2 produces HARD_STOP_DUPLICATE_ACTIVE_RACE before Materializer dispatch; repair requires append-only Supersedes lineage.,TRIGDIAG-P11-DUPACTIVE-001,2026-10-11,DUPLICATE_GUARD,1/1 hard stop required
+P11_REAL_RUN_MANIFEST_ROWS,0,PASS,Search of CHASS_V215_RUN_MANIFEST_V1 for CBFWD- returned zero real rows; diagnostics did not materialize a production/forward runtime.,CHASS_V215_RUN_MANIFEST_V1,2026-10-11,REAL_RUNTIME_GUARD,0 until qualifying race
+P11_REAL_ACQUISITION_ROWS,0,PASS,Search of Acquisition Ledger for COURSEBIAS-FWD-20261011-001 returned zero runtime rows; retry validation created no acquisition attempts.,CHASS_V215_ACQUISITION_LEDGER_V1,2026-10-11,ACQUISITION_GUARD,0 until real dispatch
+P11_REAL_FORWARD_JOIN_ROWS,0,PASS,Search of CHASS_COURSE_FORWARD_JOIN_V1 for CBFWD- returned zero rows; Forward N remains unchanged.,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,FORWARD_N_GUARD,0 until real post gate
+PHASE11_PRODUCTION_CHANGES,0,PASS,"Trigger/idempotency infrastructure only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P12_ATOMIC_COMMIT_TEMPLATE_STAGES,5,PASS,"Five immutable templates define CommitKey, PREPARE write-set, one-batch commit, exact readback, and resume pointer.",CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,ATOMIC_COMMIT_TEMPLATE,5/5 required
+P12_ATOMIC_CONTRACT_GATES,2,PASS,Sequence Gate and Course Forward Readiness each contain the immutable Atomic Commit/Recovery contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,ATOMIC_CONTRACT,2/2 required
+P12_STAGE_COMMIT_KEY_DETERMINISTIC,1,PASS,StageCommitKey is Run_ID|StageNo and must resolve to a single active commit lineage.,FRZ-COURSE-ATOMIC-COMMIT-20261011-001,2026-10-11,COMMIT_IDEMPOTENCY,1 deterministic key required
+P12_SINGLE_BATCH_STAGE_COMMIT,1,PASS,"After external inputs are prepared, all authoritative stage rows plus commit marker must be sent in one Sheets batchUpdate.",COURSE_ATOMIC_COMMIT_RECOVERY_v1.0,2026-10-11,ATOMIC_WRITE_BOUNDARY,1 batch per stage required
+P12_CLEAN_COMMIT_ADVANCE,1,PASS,"Clean zero-write-set stage commits once, exact readback passes, and resume advances one stage.",COMMITDIAG-P12-CLEAN-001,2026-10-11,NORMAL_PATH,1/1 required
+P12_RETRY_COMMITTED_SKIP,1,PASS,"Verified existing commit causes zero new stage writes and resumes at the next stage, including lost-response retry.",COMMITDIAG-P12-RETRY-001,2026-10-11,RETRY_PATH,1/1 required
+P12_ZERO_WRITESET_SAFE_RETRY,1,PASS,No commit + zero authoritative objects permits safe re-execution of the same deterministic stage.,COMMITDIAG-P12-ZERO-RETRY-001,2026-10-11,RECOVERY_SAFE_RETRY,1/1 required
+P12_PARTIAL_WRITE_HARD_HOLD,1,PASS,Partial authoritative write-set without commit marker is fail-closed; automatic fill-forward is prohibited.,COMMITDIAG-P12-PARTIAL-001,2026-10-11,PARTIAL_WRITE_GUARD,1/1 hold required
+P12_GAP_OR_READBACK_MISMATCH_HARD_STOP,2,PASS,Noncontiguous commit chain and commit-marker/object readback mismatch each hard-stop before next stage.,COMMITDIAG-P12-GAP-001 + COMMITDIAG-P12-MISMATCH-001,2026-10-11,COMMIT_INTEGRITY_GUARD,2/2 hard stop required
+P12_REAL_RUNTIME_FORWARD_DELTA,0,PASS,"Phase12 writes contract/diagnostic rows only; no real Run Manifest, Acquisition, Market or Course Forward Join rows are created.",COURSEBIAS-FWD-20261011-001,2026-10-11,REAL_N_GUARD,0 required
+PHASE12_PRODUCTION_CHANGES,0,PASS,"Atomic commit/recovery infrastructure only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P13_REPAIR_TEMPLATE_STAGES,5,PASS,"Five immutable recovery templates cover defect classification, repairability/provenance, Supersedes validation, atomic correction append, and resume reauthorization.",CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,RECOVERY_TEMPLATE,5/5 required
+P13_REPAIR_CONTRACT_GATES,2,PASS,Sequence Gate and Course Forward Readiness each contain the append-only recovery contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,RECOVERY_CONTRACT,2/2 required
+P13_REPAIRABLE_PARTIAL_RESUME,1,PASS,Technical partial-write defect with exact pre-result provenance can be repaired by append-only correction and resume after exact readback.,REPAIRDIAG-P13-REPAIRABLE-001,2026-10-11,REPAIRABLE_PATH,1/1 required
+P13_CORRECTION_RETRY_IDEMPOTENT,1,PASS,Retry with one verified active correction head performs readback only and creates no second correction.,REPAIRDIAG-P13-RETRY-001,2026-10-11,CORRECTION_IDEMPOTENCY,1/1 required
+P13_MISSING_SUPERSEDES_HARD_STOP,1,PASS,Missing Supersedes target blocks repair before correction materialization.,REPAIRDIAG-P13-MISSING-TARGET-001,2026-10-11,SUPERSEDES_TARGET_GUARD,1/1 hard stop required
+P13_SUPERSEDES_CYCLE_HARD_STOP,1,PASS,Any cycle in Supersedes lineage hard-stops active-head resolution.,REPAIRDIAG-P13-CYCLE-001,2026-10-11,SUPERSEDES_CYCLE_GUARD,1/1 hard stop required
+P13_SUPERSEDES_BRANCH_HARD_STOP,1,PASS,More than one active successor from the same target is prohibited.,REPAIRDIAG-P13-BRANCH-001,2026-10-11,SINGLE_HEAD_GUARD,1/1 hard stop required
+P13_POSTRESULT_BACKFILL_HARD_STOP,1,PASS,New evidence first seen after result exposure cannot be backfilled as PRE repair.,REPAIRDIAG-P13-POSTRESULT-001,2026-10-11,POSTRESULT_BACKFILL_GUARD,1/1 hard stop required
+P13_IMMUTABLE_ORIGINAL_MUTATION_HARD_STOP,1,PASS,Editing/deleting immutable original rows is prohibited; repair must append correction.,REPAIRDIAG-P13-IMMUTABLE-MUTATION-001,2026-10-11,IMMUTABLE_ORIGINAL_GUARD,1/1 hard stop required
+P13_REAL_RUNTIME_DELTA,0,PASS,Phase13 adds only contract and SIMULATION_ONLY diagnostic rows; no real CBFWD runtime is created.,COURSEBIAS-FWD-20261011-001,2026-10-11,REAL_RUNTIME_GUARD,0 required
+P13_FORWARD_N_DELTA,0,PASS,No diagnostic correction enters CHASS_COURSE_FORWARD_JOIN_V1 or Forward KPI denominator.,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,FORWARD_N_GUARD,0 required
+PHASE13_PRODUCTION_CHANGES,0,PASS,"Recovery governance only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P14_CLAIM_TEMPLATE_STAGES,6,PASS,"Six immutable Claim templates cover TriggerKey reuse, atomic Claim append, winner readback, winner-only Runtime create, loser zero-write readback and stale Claim recovery.",CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,CLAIM_TEMPLATE,6/6 required
+P14_CLAIM_CONTRACT_GATES,2,PASS,Sequence Gate and Course Forward Readiness each contain the concurrent Claim race-condition contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,CLAIM_CONTRACT,2/2 required
+P14_SINGLE_WINNER_CONCURRENT,1,PASS,Two concurrent callers resolve one authoritative Claim; winner creates one runtime and loser performs zero writes.,CLAIMDIAG-P14-CONCURRENT-SINGLE-WINNER-001,2026-10-11,RACE_CONDITION_GUARD,1/1 required
+P14_CLAIM_RETRY_IDEMPOTENT,1,PASS,Existing verified Claim/Runtime retry is readback-only with no second Claim or Runtime.,CLAIMDIAG-P14-CLAIM-RETRY-001,2026-10-11,CLAIM_IDEMPOTENCY,1/1 required
+P14_MULTI_ACTIVE_CLAIM_HARD_STOP,1,PASS,More than one active Claim head for a TriggerKey blocks Runtime CREATE; no last-writer-wins selection.,CLAIMDIAG-P14-MULTI-ACTIVE-001,2026-10-11,SINGLE_CLAIM_HEAD_GUARD,1/1 hard stop required
+P14_STALE_CLAIM_RECOVERY,1,PASS,Stale Claim with preregistered expiry proof and zero runtime can be recovered by append-only successor Supersedes.,CLAIMDIAG-P14-STALE-PROVEN-001,2026-10-11,STALE_RECOVERY_PATH,1/1 required
+P14_STALE_EXPIRY_UNPROVEN_HARD_STOP,1,PASS,"Without preregistered expiry evidence, Claim takeover is prohibited; no arbitrary TTL is inferred.",CLAIMDIAG-P14-STALE-UNPROVEN-001,2026-10-11,STALE_EXPIRY_PROOF_GUARD,1/1 hard stop required
+P14_DUPLICATE_RUNTIME_HARD_STOP,1,PASS,Runtime count greater than one for a canonical TriggerKey is fail-closed and cannot be auto-merged.,CLAIMDIAG-P14-DUPLICATE-RUNTIME-001,2026-10-11,DUPLICATE_RUNTIME_GUARD,1/1 hard stop required
+P14_NONWINNER_CREATE_HARD_STOP,1,PASS,A non-winner caller cannot create Runtime/Acquisition/Market rows after authoritative Claim resolution.,CLAIMDIAG-P14-NONWINNER-CREATE-001,2026-10-11,WINNER_AUTH_GUARD,1/1 hard stop required
+P14_REAL_RUNTIME_DELTA,0,PASS,Phase14 adds contract and SIMULATION_ONLY diagnostics only; no real CBFWD runtime or acquisition row is created.,COURSEBIAS-FWD-20261011-001,2026-10-11,REAL_RUNTIME_GUARD,0 required
+P14_FORWARD_N_DELTA,0,PASS,No Claim diagnostic enters CHASS_COURSE_FORWARD_JOIN_V1 or the Forward KPI denominator.,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,FORWARD_N_GUARD,0 required
+PHASE14_PRODUCTION_CHANGES,0,PASS,"Concurrency governance only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P15_CONSUME_TEMPLATE_STAGES,6,PASS,"Six immutable templates cover parent bind readback, consume append, 1:1 verify, retry readback, orphan closure and non-1:1 closure.",CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,CONSUME_TEMPLATE,6/6 required
+P15_CONSUME_CONTRACT_GATES,2,PASS,Sequence Gate and Course Forward Readiness each contain the Claim Consumption & Orphan Closure contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,CONSUME_CONTRACT,2/2 required
+P15_ONE_TO_ONE_CONSUME_SUCCESS,1,PASS,"One Claim binds one Runtime, one consume event reads back and reciprocal 1:1 cardinality authorizes downstream processing.",CONSUMEDIAG-P15-SUCCESS-001,2026-10-11,ONE_TO_ONE_GUARD,1/1 required
+P15_CONSUME_RETRY_IDEMPOTENT,1,PASS,Retry of an already consumed pair is readback-only with zero new Claim/Runtime/consume writes.,CONSUMEDIAG-P15-RETRY-001,2026-10-11,CONSUME_IDEMPOTENCY,1/1 required
+P15_ORPHAN_CLAIM_HARD_STOP,1,PASS,Authoritative Claim with no Runtime is blocked; only Phase14 stale recovery may supersede it when separately proven.,CONSUMEDIAG-P15-ORPHAN-CLAIM-001,2026-10-11,ORPHAN_CLAIM_GUARD,1/1 hard stop required
+P15_RUNTIME_WITHOUT_CLAIM_HARD_STOP,1,PASS,Runtime without exact authoritative Claim parent is ineligible for downstream processing.,CONSUMEDIAG-P15-RUNTIME-UNBOUND-001,2026-10-11,RUNTIME_PARENT_GUARD,1/1 hard stop required
+P15_CLAIM_MULTI_CONSUME_HARD_STOP,1,PASS,One Claim consumed by more than one Runtime is fail-closed; no latest/earliest Runtime selection.,CONSUMEDIAG-P15-CLAIM-MULTICONSUME-001,2026-10-11,CLAIM_CARDINALITY_GUARD,1/1 hard stop required
+P15_RUNTIME_MULTI_CLAIM_HARD_STOP,1,PASS,One Runtime bound to more than one Claim is fail-closed; parent provenance must be unique.,CONSUMEDIAG-P15-RUNTIME-MULTICLAIM-001,2026-10-11,RUNTIME_CARDINALITY_GUARD,1/1 hard stop required
+P15_REAL_RUNTIME_DELTA,0,PASS,Phase15 adds contract and SIMULATION_ONLY diagnostic rows only; no real CBFWD Runtime or Acquisition row is created.,COURSEBIAS-FWD-20261011-001,2026-10-11,REAL_RUNTIME_GUARD,0 required
+P15_FORWARD_N_DELTA,0,PASS,No consumption diagnostic enters CHASS_COURSE_FORWARD_JOIN_V1 or Forward KPI denominator.,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,FORWARD_N_GUARD,0 required
+PHASE15_PRODUCTION_CHANGES,0,PASS,"Claim consumption governance only; no Course Bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+P16_TERMINAL_TEMPLATE_STAGES,6,PASS,Six immutable terminal/close templates installed.,CHASS_HOLDOUT_EXECUTION_LINK_V1,2026-10-11,TERMINAL_TEMPLATE,6/6 required
+P16_TERMINAL_CONTRACT_GATES,2,PASS,Sequence and Readiness contain Runtime Terminal Closure contract.,CHASS_HOLDOUT_SEQUENCE_GATE_V1 + CHASS_COURSE_FORWARD_READINESS_V1,2026-10-11,TERMINAL_CONTRACT,2/2 required
+P16_TERMINAL_CLOSE_SUCCESS,1,PASS,One Runtime reaches one terminal and one Holdout Close.,TERMINALDIAG-P16-SUCCESS-001,2026-10-11,TERMINAL_CLOSE_PATH,1/1 required
+P16_CLOSE_RETRY_IDEMPOTENT,1,PASS,Closed Runtime retry is zero-write readback.,TERMINALDIAG-P16-RETRY-001,2026-10-11,CLOSE_IDEMPOTENCY,1/1 required
+P16_DANGLING_ACTIVE_HARD_STOP,1,PASS,Completed Runtime without terminal/close is fail-closed.,TERMINALDIAG-P16-DANGLING-ACTIVE-001,2026-10-11,DANGLING_RUNTIME_GUARD,1/1 hard stop required
+P16_POST_TERMINAL_WRITE_HARD_STOP,1,PASS,Writes after terminal readback are blocked.,TERMINALDIAG-P16-POSTTERMINAL-WRITE-001,2026-10-11,POST_TERMINAL_WRITE_GUARD,1/1 hard stop required
+P16_DUPLICATE_CLOSE_HARD_STOP,1,PASS,Second Close for same Holdout+Run+Race is blocked.,TERMINALDIAG-P16-DUPLICATE-CLOSE-001,2026-10-11,SINGLE_CLOSE_GUARD,1/1 hard stop required
+P16_PREMATURE_CLOSE_HARD_STOP,1,PASS,Recoverable HOLD or incomplete state cannot close.,TERMINALDIAG-P16-PREMATURE-CLOSE-001,2026-10-11,PREMATURE_CLOSE_GUARD,1/1 hard stop required
+P16_MULTI_TERMINAL_HEAD_HARD_STOP,1,PASS,Multiple active terminal heads block Close.,TERMINALDIAG-P16-MULTI-TERMINAL-HEAD-001,2026-10-11,SINGLE_TERMINAL_HEAD_GUARD,1/1 hard stop required
+P16_REAL_RUNTIME_DELTA,0,PASS,Contract/diagnostic only; no real CBFWD Runtime or Acquisition row.,COURSEBIAS-FWD-20261011-001,2026-10-11,REAL_RUNTIME_GUARD,0 required
+P16_FORWARD_N_DELTA,0,PASS,No terminal diagnostic enters Forward Join/KPI denominator.,CHASS_COURSE_FORWARD_JOIN_V1,2026-10-11,FORWARD_N_GUARD,0 required
+PHASE16_PRODUCTION_CHANGES,0,PASS,Runtime lifecycle governance only; no prediction/model/ticket change.,CHASS governance,2026-10-11,PRODUCTION_GUARD,0 required
+NAR_COURSE_GEOMETRY_ROWS,20,PASS,20 NAR geometry rows including separate Obihiro banei geometry.,CHASS_COURSE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,20 required
+NAR_FLAT_VENUES,14,PASS,14 conventional flat NAR venues normalized.,CHASS_COURSE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,14 required
+NAR_BANEI_SEPARATE,1,PASS,Obihiro banei is excluded from the flat distance model.,CHASS_COURSE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,1 required
+NAR_DISTANCE_PROFILE_ROWS,116,PASS,116 current flat venue×surface×route×distance profiles.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,116 required
+NAR_PROFILE_ID_DUPLICATES,0,PASS,Profile IDs are unique across all 116 seeded NAR flat profiles.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,0 required
+NAR_GEOMETRY_JOIN_UNRESOLVED,0,PASS,All generated NAR flat profiles resolve to one of the seeded geometry IDs.,CHASS_COURSE_PROFILE_V1 + CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY,0 required
+NAR_OFFICIAL_START_ANCHORS,8,OBSERVED,"Eight official start anchors resolved; remaining start geometry stays PENDING, never guessed.",CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_START_GEOMETRY,8 observed
+NAR_PRODUCTION_BIAS_COEFFICIENT_CHANGES,0,PASS,"Authority seed only; no bias coefficient, AI probability, mark, Final5, Formal signal or ticket change.",CHASS governance,2026-10-14,PRODUCTION_GUARD,0 required
+NAR_ARCHIVE_RUNNERS,1,OBSERVED,All saved NAR PRE runner rows.,NAR_予想アーカイブ,2026-10-14,NAR_HISTORY_READINESS,observed
+NAR_ARCHIVE_RACES,1,OBSERVED,Unique PRE race IDs.,NAR_予想アーカイブ,2026-10-14,NAR_HISTORY_READINESS,observed
+NAR_RESULT_RACES,1,OBSERVED,Unique race IDs with stored result rows.,NAR_レース結果,2026-10-14,NAR_HISTORY_READINESS,observed
+NAR_JOINED_DENOM_RUNNERS,#REF!,OBSERVED,PRE runner rows whose race has a result join.,NAR_予想アーカイブ + NAR_レース結果,2026-10-14,NAR_HISTORY_JOIN,observed
+NAR_JOINED_FRAME_NONBLANK,1,HOLD_LOW_COVERAGE,Frame coverage is incomplete; no frame coefficient permitted.,NAR_予想アーカイブ,2026-10-14,NAR_FRAME_READINESS,full field required for frame bias
+NAR_FRAME_COVERAGE_PCT,#REF!,HOLD_LOW_COVERAGE,Joined PRE runner frame coverage.,NAR_予想アーカイブ,2026-10-14,NAR_FRAME_READINESS,100% required for strict frame bias
+NAR_POSITION_SHADOW_ROWS,1,SHADOW_READY,Venue-distance-position proxy aggregate rows.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_POSITION_PROXY,observed
+NAR_POSITION_SHADOW_VENUE_DISTANCE,1,SHADOW_READY,Distinct venue-surface-distance combinations with current joined history.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_POSITION_PROXY,observed
+NAR_POSITION_SHADOW_SAMPLE_RUNNERS,#REF!,SHADOW_READY,Total runner denominator represented after blank-distance exclusion.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_POSITION_PROXY,observed
+NAR_POSITION_SHADOW_WINS,#REF!,SHADOW_READY,Winner labels joined into proxy analysis.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_POSITION_PROXY,observed
+NAR_POSITION_SHADOW_TOP3,#REF!,SHADOW_READY,Top3 labels joined into proxy analysis.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_POSITION_PROXY,observed
+NAR_POSITION_PROFILE_RESOLVED_ROWS,#REF!,SHADOW_READY,Rows mapped uniquely to one current CourseProfile.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_PROFILE_JOIN,observed
+NAR_POSITION_AMBIGUOUS_ROUTE_ROWS,#REF!,HOLD_PRESENT,Ambiguous route rows remain SHADOW and cannot map to a route-specific coefficient.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_ROUTE_GUARD,0 preferred
+NAR_POSITION_UNRESOLVED_PROFILE_ROWS,#REF!,HOLD_PRESENT,"Missing/legacy distance mappings remain unresolved, never coerced.",CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_PROFILE_GUARD,0 preferred
+PHASEN2_PRODUCTION_CHANGES,0,PASS,Descriptive SHADOW only; no Production coefficient or prediction change.,CHASS governance,2026-10-14,PRODUCTION_GUARD,0 required
+NAR_CORNER4_TOP3_COVERAGE_MAX,#REF!,#REF!,Top3 Corner4 coverage cannot exceed 100%; numerator restricted to Top3 rows only.,CHASS_NAR_DISTANCE_SHADOW_V1,2026-10-14,NAR_CORNER4_INTEGRITY,<=1 required
+NAR_COURSE_GEOMETRY_ROWS_FINAL,20,PASS,20 NAR geometry rows including Obihiro specialist.,CHASS_COURSE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY_v1.1,20 required
+NAR_DISTANCE_PROFILE_ROWS_FINAL,114,PASS,2026 current route universe: 113 conventional + 1 banei specialist.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY_v1.1,114 required
+NAR_VENUES_COVERED_FINAL,15,PASS,All 15 NAR venues including Obihiro.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY_v1.1,15 required
+NAR_CONVENTIONAL_FLAT_PROFILES_FINAL,113,PASS,Current conventional flat venue×surface×route×distance profiles.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_COURSE_AUTHORITY_v1.1,113 required
+NAR_BANEI_SPECIALIST_PROFILES_FINAL,1,PASS,"Obihiro 200m specialist profile, excluded from standard flat model.",CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,BANEI_SPECIALIST,1 required
+NAR_OFFICIAL_START_ANCHORS_FINAL,8,PASS,Eight official start anchors preserved; no guessed start geometry.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NAR_START_GEOMETRY,8 observed
+NAR_START_MAP_PENDING_CONVENTIONAL_FINAL,105,HOLD_DECLARED,Unresolved start details are explicit PENDING terminals and do not block nationwide completion.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,NONSTALL_PENDING_POLICY,105 declared pending
+NAR_FRAME_MOTHER_UNIVERSE_READY_FINAL,0,HOLD,Historical full-field frame mother universe is incomplete; HorseNo must never substitute for FrameNo.,NAR_予想アーカイブ + NAR_レース結果,2026-10-14,NAR_FRAME_READINESS,100% full-field required
+NAR_FRAME_BIAS_PRODUCTION_READY_FINAL,0,HOLD,No fixed frame coefficient until Forward full-field frame capture and holdout validation.,CHASS governance,2026-10-14,PRODUCTION_GUARD,0 required
+NAR_LEGACY_DISTANCE_MIXING_FINAL,0,PASS,Funabashi 800 and Kanazawa 1300/2300 removed from current authority; Kasamatsu corrected to 1580.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,CURRENT_ROUTE_GUARD,0 required
+NAR_DISTANCE_ANALYSIS_TAGGED_FINAL,114,PASS,Every current profile has a structural hypothesis tag; tags are SHADOW/SPECIALIST only.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,DISTANCE_STRUCTURAL_HYPOTHESIS,114 required
+NAR_PROFILE_ID_DUPLICATES_FINAL,0,PASS,All 114 CourseProfile_ID values are unique.,CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,IDENTITY_GUARD,0 required
+NAR_GEOMETRY_ORPHANS_FINAL,0,PASS,Every distance profile resolves to a seeded CourseGeometry_ID.,CHASS_COURSE_PROFILE_V1 + CHASS_COURSE_DISTANCE_PROFILE_V1,2026-10-14,GEOMETRY_JOIN_GUARD,0 required
+PHASEN1R_PRODUCTION_CHANGES,0,PASS,"Authority reconciliation only; no prediction probability, mark, Final5, signal, ticket or fixed bias coefficient change.",CHASS governance,2026-10-14,PRODUCTION_GUARD,0 required
