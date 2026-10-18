@@ -1,0 +1,155 @@
+{
+  "schemaVersion": "chass-nar-status-snapshot-v1",
+  "status": "CAPTURED",
+  "date": "2026-10-18",
+  "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-18&format=compact",
+  "attemptedAt": "2026-10-18T00:28:21.583Z",
+  "capturedAt": "2026-10-18T00:28:22.432Z",
+  "payloadSha256": "5316d7ac3c8b452cb7176a074db08a3fc04342a6c1873d73d169bca0848515df",
+  "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
+  "readOnlyCapture": true,
+  "payload": {
+    "ok": true,
+    "date": "2026-10-18",
+    "enabled": true,
+    "viewerEnabled": true,
+    "historyStoreEnabled": true,
+    "canaryDate": null,
+    "stopAt": "2026-10-18T05:55:00.000Z",
+    "active": true,
+    "scheduleMode": "daily",
+    "scheduleStatus": "ACTIVE",
+    "scheduleReason": null,
+    "dailyFrom": "2026-10-14",
+    "dailyUntil": "2026-10-20",
+    "dailyStartJst": "07:00",
+    "dailyStopJst": "14:55",
+    "trackCodes": [
+      "22"
+    ],
+    "researchOnly": true,
+    "formalKpiEligible": false,
+    "productionActivationReady": false,
+    "effectiveMaxJobs": 1,
+    "datedTrial": {
+      "date": "2026-10-18",
+      "code": "22",
+      "maxJobsPerInvocation": 1,
+      "totalTrialSaveLimit": null,
+      "status": "SELECTED_DATE",
+      "appliesToCurrentDate": true
+    },
+    "historyStoreSchemaReady": true,
+    "schemaReady": true,
+    "savedRaceCount": 1,
+    "rejectedRowCount": 0,
+    "races": [
+      {
+        "historyStoreAudit": {
+          "status": "PARTIAL",
+          "reasonCode": "ROLLING_HISTORY_RESEARCH_ONLY",
+          "insertedObservationCount": 23,
+          "existingObservationCount": 0,
+          "unresolvedObservationCount": 5,
+          "availableEpisodeCount": 23,
+          "heldEpisodeCount": 0,
+          "elapsedMs": 12509,
+          "cutoffAt": "2026-10-17T22:55:31.296Z",
+          "recoveryAction": "Accumulate identified observations in new eligible runs; resolve conflicts before model use."
+        },
+        "historyLinkAudit": {
+          "status": "RESOLVED",
+          "reasonCode": null,
+          "providerHorseCount": 9,
+          "resolvedEpisodeCount": 23,
+          "heldEpisodeCount": 5,
+          "recoveryAction": "Review shared research projection; resolve held episodes before model use."
+        },
+        "preAnalysisStatus": "PARTIAL",
+        "preAnalysisPackHash": "9a4566cbaa222ca24787b55865ea5f2a5da12137375adc43771a1bae329bc3c5",
+        "raceId": "20261018-NAR-22-10",
+        "track": "金沢",
+        "raceNo": 10,
+        "horseCount": 9,
+        "abilityCount": 9,
+        "timeCount": 3,
+        "quality": {
+          "schemaVersion": 1,
+          "horseCount": 9,
+          "activeHorseCount": 9,
+          "activeAbilityCount": 9,
+          "activeTimeCount": 3,
+          "retainedEvidenceCount": 9,
+          "abilityComplete": true,
+          "probabilityStatus": "MODEL_HOLD",
+          "probabilityReason": "PROBABILITY_MODEL_NOT_CONNECTED"
+        }
+      }
+    ],
+    "format": "compact",
+    "countScope": "DATE",
+    "raceDetailScope": "ALL_RESTORED_RACES",
+    "selectedRaceNo": null,
+    "narRunAudit": {
+      "status": "RECORDED",
+      "scheduledAt": "2026-10-18T00:25:18.556Z",
+      "runDate": "2026-10-18",
+      "runStatus": "COMPLETED",
+      "reason": null,
+      "attempted": 0,
+      "saved": 0,
+      "autoResultProcessed": 0,
+      "events": [
+        {
+          "track": "金沢",
+          "reason": "MEETING_SOURCE_UNAVAILABLE",
+          "meetingAttempts": [
+            {
+              "route": "RaceList",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            },
+            {
+              "route": "RaceList_ipat",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            },
+            {
+              "route": "RaceList_mobile",
+              "reason": "SOURCE_HTTP",
+              "httpStatus": 404
+            }
+          ]
+        }
+      ]
+    },
+    "lastNarRunAt": "2026-10-18T00:25:18.556Z",
+    "lastNarStatus": "COMPLETED",
+    "lastNarReason": null,
+    "lastNarAttempted": 0,
+    "lastNarSaved": 0,
+    "lastNarEvents": [
+      {
+        "track": "金沢",
+        "reason": "MEETING_SOURCE_UNAVAILABLE",
+        "meetingAttempts": [
+          {
+            "route": "RaceList",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          },
+          {
+            "route": "RaceList_ipat",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          },
+          {
+            "route": "RaceList_mobile",
+            "reason": "SOURCE_HTTP",
+            "httpStatus": 404
+          }
+        ]
+      }
+    ]
+  }
+}
