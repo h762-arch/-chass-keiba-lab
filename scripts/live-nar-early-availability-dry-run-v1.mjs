@@ -9,6 +9,36 @@ export const VERSION='CHASS_LIVE_NAR_EARLY_AVAILABILITY_DRY_RUN_V1';
 export const MAX_WAIT_MS=120_000;
 export const MAX_CAPTURE_MS=10_000;
 export const MAX_RESPONSE_BYTES=1_000_000;
+export const DIAGNOSTICS_VERSION='CHASS_LIVE_NAR_SAFE_DIAGNOSTICS_V1';
+
+// Never emit exception messages, stacks, URLs, sourceRef, bodies or snapshots.
+const safeErrorCodes=new Set([
+  'ENOTFOUND','EAI_AGAIN','ECONNRESET','ECONNREFUSED','ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET','ERR_TLS_CERT_ALTNAME_INVALID','CERT_HAS_EXPIRED',
+  'LIVE_CAPTURE_TIMEOUT','LIVE_CAPTURE_CLOCK_INVALID','CUTOFF_REACHED_BEFORE_ACQUISITION',
+  'LIVE_CAPTURE_CONTRACT_INVALID','LIVE_CAPTURE_CANCELLED','LIVE_CAPTURE_URL_INVALID',
+  'LIVE_CAPTURE_URL_FORBIDDEN','LIVE_CAPTURE_REQUEST_FORBIDDEN','LIVE_CAPTURE_REQUEST_LIMIT',
+  'LIVE_CAPTURE_REDIRECT_FORBIDDEN','LIVE_CAPTURE_RESPONSE_LIMIT','LIVE_CAPTURE_ROSTER_LIMIT',
+  'APP_SOURCE_INVALID','NAR_RESEARCH_ACQUIRE_UNAVAILABLE','LIVE_DRY_RUN_STORAGE_WRITE_FORBIDDEN',
+  'nar_early_disabled','nar_early_identity_invalid','nar_early_reference_rejected',
+  'nar_early_time_invalid','nar_early_horses_missing','parser_error','network_error',
+  'nar_timeout','nar_temporary','http_error','timeout','aborted'
+]);
+function safeErrorCode(error){
+  try{
+    for(const code of [error?.cause?.code,error?.code,error?.message]){
+      if(typeof code==='string'&&safeErrorCodes.has(code))return code;
+    }
+    if(error?.name==='SyntaxError')return 'SYNTAX_ERROR';
+    if(error?.name==='ReferenceError')return 'REFERENCE_ERROR';
+    if(error?.name==='TypeError')return 'TYPE_ERROR';
+    if(error?.name==='AbortError')return 'ABORT_ERROR';
+  }catch{}
+  return 'UNCLASSIFIED_ERROR';
+}
+const isoTime=value=>Number.isSafeInteger(value)&&Number.isFinite(new Date(value).getTime())
+  ?new Date(value).toISOString():null;
 
 const authority=()=>({
   liveCapture:true,
@@ -99,14 +129,16 @@ async function loadAppCore({
   baseUrl,
   fetchImpl=globalThis.fetch,
   clock=Date.now,
-  appSource,scope,signal,raceParts
+  appSource,scope,signal,raceParts,diagnostics
 }={}){
   const origin=normalizeBaseUrl(baseUrl);
   if(!origin||typeof fetchImpl!=='function'||typeof clock!=='function')throw Error('LIVE_CAPTURE_CONTRACT_INVALID');
+  diagnostics.phase='APP_SOURCE_READ';
   const source=typeof appSource==='string'
     ?appSource
     :await readFile(new URL('../app.js',import.meta.url),'utf8');
   if(!source||source.length>5_000_000)throw Error('APP_SOURCE_INVALID');
+  diagnostics.appSourceSha256=createHash('sha256').update(source,'utf8').digest('hex');
 
   const window={__CHASS_TEST__:true};
   const writes=scope.writes;
@@ -116,6 +148,7 @@ async function loadAppCore({
     querySelectorAll(){return [];}
   };
   const safeFetch=async(input,init)=>{
+    diagnostics.phase='REQUEST_VALIDATE';
     if(!scope.active||signal.aborted)throw Error('LIVE_CAPTURE_CANCELLED');
     const raw=typeof input==='string'?input:input?.url;
     if(typeof raw!=='string')throw Error('LIVE_CAPTURE_URL_INVALID');
@@ -127,9 +160,20 @@ async function loadAppCore({
       ||!/^\d{1,2}$/.test(target.searchParams.get('code')||'')
       ||(init?.method??'GET')!=='GET'||init?.body!=null||init?.headers!=null)throw Error('LIVE_CAPTURE_REQUEST_FORBIDDEN');
     if(++scope.requests!==1)throw Error('LIVE_CAPTURE_REQUEST_LIMIT');
+    diagnostics.requestCount=scope.requests;
+    diagnostics.phase='FETCH_TRANSPORT';
     const response=await fetchImpl(target.toString(),{...init,method:'GET',credentials:'omit',redirect:'error',signal});
+    diagnostics.responseReceived=true;
+    diagnostics.httpStatus=Number.isInteger(response?.status)&&response.status>=100&&response.status<=599?response.status:null;
+    diagnostics.phase='RESPONSE_VALIDATE';
     if(response?.redirected||(response?.url&&response.url!==target.toString()))throw Error('LIVE_CAPTURE_REDIRECT_FORBIDDEN');
-    return {ok:response.ok,status:response.status,json:()=>boundedPayload(response)};
+    return {ok:response.ok,status:response.status,json:async()=>{
+      diagnostics.phase='RESPONSE_BODY';
+      const payload=await boundedPayload(response);
+      diagnostics.responseParsed=true;
+      diagnostics.phase='APP_ACQUISITION';
+      return payload;
+    }};
   };
   const DateImpl=clockDate(clock);
   const sandbox={
@@ -148,6 +192,7 @@ async function loadAppCore({
     Date:DateImpl,Math,JSON,Number,String,Array,Object,Map,Set,RegExp,URL,Blob,TextEncoder,
     structuredClone
   };
+  diagnostics.phase='APP_VM_INIT';
   vm.createContext(sandbox);
   vm.runInContext(source,sandbox,{filename:'app.js',timeout:1000});
   const core=window.CHASS_TEST;
@@ -195,6 +240,16 @@ export async function evaluateLiveNarEarlyAvailabilityDryRun({
   sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
   appSource,captureTimeoutMs=MAX_CAPTURE_MS
 }={}){
+  const diagnostics={version:DIAGNOSTICS_VERSION,phase:'INPUT_VALIDATE',
+    startedAt:null,cutoff:null,captureCompletedAt:null,evaluatedAt:null,finishedAt:null,
+    requestCount:0,responseReceived:false,responseParsed:false,httpStatus:null,
+    appSourceSha256:null,errorCode:null};
+  const finish=(report,at)=>{
+    if(at===undefined){try{at=clock();}catch{at=null;}}
+    diagnostics.finishedAt=isoTime(at);
+    return {...report,diagnostics:{...diagnostics}};
+  };
+  const fail=(reason,extra={})=>finish(failed(reason,extra));
   try{
     const safeRaceId=boundedRaceId(raceId);
     const expected=typeof expectedRunnerCount==='string'&&/^\d{1,2}$/.test(expectedRunnerCount)
@@ -202,6 +257,8 @@ export async function evaluateLiveNarEarlyAvailabilityDryRun({
       :expectedRunnerCount;
     const cutoff=strictTimestamp(freezeAt);
     const started=clock();
+    diagnostics.startedAt=isoTime(started);
+    diagnostics.cutoff=Number.isFinite(cutoff)?new Date(cutoff).toISOString():null;
 
     if(
       !normalizeBaseUrl(baseUrl)||
@@ -210,42 +267,46 @@ export async function evaluateLiveNarEarlyAvailabilityDryRun({
       !Number.isFinite(cutoff)||
       !Number.isSafeInteger(started)||!Number.isFinite(new Date(started).getTime())||
       !Number.isSafeInteger(captureTimeoutMs)||captureTimeoutMs<1||captureTimeoutMs>MAX_CAPTURE_MS
-    )return failed('LIVE_CAPTURE_INPUT_INVALID');
+    )return fail('LIVE_CAPTURE_INPUT_INVALID');
 
-    if(cutoff<=started)return failed('CUTOFF_ALREADY_PASSED_BEFORE_CAPTURE',{
+    if(cutoff<=started)return fail('CUTOFF_ALREADY_PASSED_BEFORE_CAPTURE',{
       cutoff:freezeAt,
       observedAt:new Date(started).toISOString()
     });
-    if(cutoff-started>MAX_WAIT_MS)return failed('CUTOFF_TOO_FAR_FOR_LIVE_DRY_RUN',{
+    if(cutoff-started>MAX_WAIT_MS)return fail('CUTOFF_TOO_FAR_FOR_LIVE_DRY_RUN',{
       cutoff:freezeAt,
       observedAt:new Date(started).toISOString()
     });
 
     const raceParts=safeRaceId.split('|');
     if(raceParts.length!==3||!Number.isFinite(strictTimestamp(raceParts[0]+'T00:00:00Z'))
-      ||!/^([1-9]|1\d|20)$/.test(raceParts[2]))return failed('LIVE_CAPTURE_INPUT_INVALID');
-    if(raceParts[0]!==new Date(started+9*3600000).toISOString().slice(0,10))return failed('NOT_CURRENT_JST_RACE_DATE');
+      ||!/^([1-9]|1\d|20)$/.test(raceParts[2]))return fail('LIVE_CAPTURE_INPUT_INVALID');
+    if(raceParts[0]!==new Date(started+9*3600000).toISOString().slice(0,10))return fail('NOT_CURRENT_JST_RACE_DATE');
     const scope=captureScope(),controller=new AbortController();
     let deadline,acquired,appSourceSha256;
     try{
       const capture=(async()=>{
-        const loaded=await loadAppCore({baseUrl,fetchImpl,clock,appSource,scope,signal:controller.signal,raceParts});
+        const loaded=await loadAppCore({baseUrl,fetchImpl,clock,appSource,scope,signal:controller.signal,raceParts,diagnostics});
         const {core}=loaded;appSourceSha256=loaded.appSourceSha256;
         if(!scope.active)throw Error('LIVE_CAPTURE_TIMEOUT');
         const before=clock();
         if(!Number.isSafeInteger(before)||before<started)throw Error('LIVE_CAPTURE_CLOCK_INVALID');
         if(before>=cutoff)throw Error('CUTOFF_REACHED_BEFORE_ACQUISITION');
+        diagnostics.phase='APP_ACQUISITION';
         return core.acquireNarEarlyResearchRecord({raceId:safeRaceId,enabled:true});
       })();
       const timeout=new Promise((_,reject)=>{deadline=setTimeout(()=>{controller.abort();scope.dispose();reject(Error('LIVE_CAPTURE_TIMEOUT'));},Math.min(captureTimeoutMs,cutoff-started));});
       acquired=await Promise.race([capture,timeout]);
     }catch(error){
       const allowed=['LIVE_CAPTURE_TIMEOUT','LIVE_CAPTURE_CLOCK_INVALID','CUTOFF_REACHED_BEFORE_ACQUISITION'];
-      return failed(allowed.includes(error?.message)?error.message:'LIVE_CAPTURE_FAILED');
+      diagnostics.errorCode=safeErrorCode(error);
+      return fail(allowed.includes(error?.message)?error.message:'LIVE_CAPTURE_FAILED');
     }finally{
       clearTimeout(deadline);controller.abort();scope.dispose();
     }
-    if(scope.writes.length)return failed('LIVE_DRY_RUN_STORAGE_WRITE_FORBIDDEN');
+    if(scope.writes.length)return fail('LIVE_DRY_RUN_STORAGE_WRITE_FORBIDDEN');
+
+    diagnostics.phase='RECEIPT_VALIDATE';
 
     const snapshotJson=JSON.stringify(acquired?.record);
     const contextJson=JSON.stringify({
@@ -255,27 +316,31 @@ export async function evaluateLiveNarEarlyAvailabilityDryRun({
     });
 
     const completed=clock();
+    diagnostics.captureCompletedAt=isoTime(completed);
     const extraReasons=[];
-    if(!Number.isSafeInteger(completed)||completed<started)return failed('LIVE_CAPTURE_CLOCK_INVALID');
+    if(!Number.isSafeInteger(completed)||completed<started)return fail('LIVE_CAPTURE_CLOCK_INVALID');
     const acquiredAt=strictTimestamp(acquired?.acquiredAt);
-    if(acquired?.acquisitionKind!=='fresh'||!Number.isFinite(acquiredAt)||acquiredAt<started||acquiredAt>completed)return failed('LIVE_CAPTURE_RECEIPT_INVALID');
+    if(acquired?.acquisitionKind!=='fresh'||!Number.isFinite(acquiredAt)||acquiredAt<started||acquiredAt>completed)return fail('LIVE_CAPTURE_RECEIPT_INVALID');
     if(completed>cutoff)extraReasons.push('CAPTURE_COMPLETED_AFTER_CUTOFF');
 
     let waited=completed;
+    diagnostics.phase='CUTOFF_WAIT';
     while(waited<cutoff){
-      if(typeof sleep!=='function')return failed('LIVE_CAPTURE_SLEEP_INVALID');
+      if(typeof sleep!=='function')return fail('LIVE_CAPTURE_SLEEP_INVALID');
       await sleep(Math.min(1000,cutoff-waited));
       const next=clock();
-      if(!Number.isSafeInteger(next)||next<=waited)return failed('LIVE_CAPTURE_CLOCK_INVALID');
+      if(!Number.isSafeInteger(next)||next<=waited)return fail('LIVE_CAPTURE_CLOCK_INVALID');
       waited=next;
     }
 
     const observed=clock();
-    if(!Number.isSafeInteger(observed)||observed<waited)return failed('LIVE_CAPTURE_CLOCK_INVALID');
+    if(!Number.isSafeInteger(observed)||observed<waited)return fail('LIVE_CAPTURE_CLOCK_INVALID');
     if(observed<cutoff)extraReasons.push('CUTOFF_NOT_REACHED_AFTER_WAIT');
 
+    diagnostics.phase='AVAILABILITY_EVALUATE';
+    diagnostics.evaluatedAt=isoTime(observed);
     const report=evaluateEarlyAvailabilityDryRun(snapshotJson,contextJson,observed);
-    return mergeReasons({
+    return finish(mergeReasons({
       ...report,
       liveCaptureVersion:VERSION,
       liveCapture:true,
@@ -288,9 +353,10 @@ export async function evaluateLiveNarEarlyAvailabilityDryRun({
       acquisitionCompleted:true,
       appSourceSha256,
       testAppSourceOverride:appSource!==undefined
-    },extraReasons);
-  }catch{
-    return failed('LIVE_CAPTURE_FAILED');
+    },extraReasons),observed);
+  }catch(error){
+    diagnostics.errorCode=safeErrorCode(error);
+    return fail('LIVE_CAPTURE_FAILED');
   }
 }
 
