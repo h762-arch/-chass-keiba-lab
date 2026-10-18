@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Source ownership and integration inventory; not a runtime enablement configuration",
+  "entrypoints": {"browser": "index.html", "worker": "worker-entry.mjs", "localServer": "server.mjs"},
+  "features": [
+    {"id":"browser-prediction", "module":"app.js", "state":"RUNTIME", "owner":"Browser prediction, snapshot and compatibility dashboard", "authority":"Existing formal model; no automatic adoption of research scores"},
+    {"id":"jra-ability", "module":"src/prediction/jra-ability-core.mjs", "state":"SHARED_ABILITY_CORE", "owner":"JRA market-blind ability calculation", "authority":"Browser and precompute use this core; browser market policy remains separate"},
+    {"id":"cpsi-wave", "module":"src/prediction/chass-cpsi-wave-core-v1.mjs", "state":"SHADOW_ON_NEW_SNAPSHOT", "owner":"CPSI/Wave diagnostic", "authority":"Authenticated declared input prerequisites; no formal score/probability promotion"},
+    {"id":"course-web", "module":"src/prediction/course-asset-web-adapter-v1.mjs", "state":"EXPOSED_OPT_IN", "owner":"Browser course preflight", "authority":"Bootstrap exposes a callable; no automatic prediction adoption"},
+    {"id":"course-worker", "module":"src/prediction/course-asset-worker-adapter-v1.mjs", "state":"RESEARCH_MODULE_ONLY", "owner":"Worker-targeted course preflight", "authority":"No Worker entry wiring", "forbiddenRuntimeLanes":["worker"]},
+    {"id":"favorite-v211", "module":"src/prediction/chass-favorite-trust-v21-shadow.mjs", "state":"RESEARCH_MODULE_ONLY", "owner":"Favorite warning candidate review", "authority":"Caller metadata only; win model unimplemented", "forbiddenRuntimeLanes":["browser","worker","localServer"]},
+    {"id":"jra-exclusion-audit", "module":"src/research/jra-coverage-rescue-shadow-v1.mjs", "state":"RESEARCH_MODULE_ONLY", "owner":"Final5 exclusion audit", "authority":"Does not insert or replace horses", "forbiddenRuntimeLanes":["browser","worker","localServer"]},
+    {"id":"jra-post-robustness", "module":"src/research/jra-post-audit-robustness-shadow-v1.mjs", "state":"RESEARCH_MODULE_ONLY", "owner":"Post-result ledger robustness", "authority":"Separate POST audit; no PRE input", "forbiddenRuntimeLanes":["browser","worker","localServer"]},
+    {"id":"nar-initial-session", "module":"src/research/nar-initial-shadow-session.mjs", "state":"CLI_RESEARCH_SESSION", "owner":"New NAR evidence session", "authority":"Not an HTTP route or browser automatic capture"},
+    {"id":"favorite-risk-collector", "module":"src/research/favorite-risk-snapshot.mjs", "state":"WORKER_RESEARCH_COLLECTOR", "owner":"Legacy favorite-risk D1 collector", "authority":"Distinct from Favorite v2.1.1; scheduled writes are an existing separate subsystem"},
+    {"id":"jra-early-outcome", "module":"src/research/jra-early-result-kpi.mjs", "state":"RESEARCH_MODULE_ONLY", "owner":"EARLY/outcome proof checks", "authority":"Not a replacement for generic browser dashboard metrics"},
+    {"id":"nar-precompute", "module":"src/prediction/nar-ability-precompute.mjs", "state":"WORKER_RESEARCH_PRECOMPUTE", "owner":"NAR source, retained history and research viewer", "authority":"Research-only flags and venue/time controls; not CPSI authority"}
+  ],
+  "changePolicy": [
+    "Do not remove modules merely because they are not reachable from these runtime entrypoints; CLI and research are legitimate consumers.",
+    "Before wiring research into a runtime lane, review the input/output contract, EARLY freeze, missingness, provenance and unseen validation; update this inventory in the same PR.",
+    "Production activation, deployments, storage migration and model promotion are separate decisions."
+  ]
+}
