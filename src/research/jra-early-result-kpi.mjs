@@ -1,4 +1,4 @@
-import {readJraEarlyResearchSnapshot} from '../prediction/jra-early-research-reader.mjs';
+import {readJraEarlyResearchSnapshot,jraEarlyIdentity,earlyEvidenceTime} from '../prediction/jra-early-research-reader.mjs';
 
 const rejected=reason=>Object.freeze({status:'REJECTED',reason,comparison:null});
 const pending=()=>Object.freeze({status:'PENDING',reason:'OFFICIAL_RESULT_NOT_FOUND',comparison:null});
@@ -11,8 +11,8 @@ function seconds(value){
 }
 
 function raceIdentity(raceId){
- const match=/^(\d{4})(\d{2})(\d{2})-JRA-(.+)-(\d{2})$/.exec(raceId);
- return match?{date:`${match[1]}-${match[2]}-${match[3]}`,track:match[4],race:Number(match[5])}:null;
+ const id=jraEarlyIdentity(raceId);
+ return id?{date:id.date.replace(/^(\d{4})(\d{2})(\d{2})$/,'$1-$2-$3'),track:id.track,race:id.raceNo}:null;
 }
 
 function validOfficialResult(row,result,id,early,now){
@@ -22,7 +22,7 @@ function validOfficialResult(row,result,id,early,now){
   result.quality?.complete!==true||Number(result.quality?.finishOrderCount)<3||
   !Array.isArray(result.finishOrder)||result.finishOrder.length!==3||
   !Array.isArray(result.results)||result.results.length<3)return false;
- const fetchedAt=Date.parse(row.fetched_at||'');
+ const fetchedAt=earlyEvidenceTime(row.fetched_at);
  if(!Number.isFinite(fetchedAt)||fetchedAt>now||fetchedAt<Date.parse(early.dataCalculatedAt)||
   fetchedAt<Date.parse(early.sourceValidatedAt))return false;
  const order=result.finishOrder;
@@ -44,7 +44,7 @@ export async function compareJraEarlyToOfficialResult({DB,raceId,now=Date.now()}
   if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(postTime))return rejected('INVALID_POST_TIME');
   postAt=Date.parse(`${id.date}T${postTime}:00+09:00`);
   if(!Number.isFinite(postAt))return rejected('INVALID_POST_TIME');
-  if(Date.parse(snapshot.sourceValidatedAt)>postAt||Date.parse(snapshot.dataCalculatedAt)>postAt)
+  if(Date.parse(snapshot.sourceValidatedAt)>=postAt||Date.parse(snapshot.dataCalculatedAt)>=postAt)
    return rejected('EARLY_AFTER_POST_TIME');
   postTimeStatus='PRE_POST';
  }
@@ -58,9 +58,10 @@ export async function compareJraEarlyToOfficialResult({DB,raceId,now=Date.now()}
  let result;
  try{result=JSON.parse(row.payload_json);}catch{return rejected('MALFORMED_RESULT');}
  if(!validOfficialResult(row,result,id,snapshot,now))return rejected('RESULT_INTEGRITY_FAILED');
- if(postAt!=null&&Date.parse(row.fetched_at)<postAt)return rejected('RESULT_BEFORE_POST_TIME');
+ if(postAt!=null&&Date.parse(row.fetched_at)<=postAt)return rejected('RESULT_BEFORE_POST_TIME');
  const predicted=new Map(snapshot.data.horses.map(horse=>[horse.horseNo,horse]));
  if(result.finishOrder.some(horseNo=>!predicted.has(horseNo)))return rejected('RESULT_RUNNER_MISMATCH');
+ if(result.results.some(horse=>!predicted.has(horse.horseNo)))return rejected('RESULT_RUNNER_MISMATCH');
  const actual=new Map(result.results.map(horse=>[horse.horseNo,horse]));
  const top3=new Set(result.finishOrder),win=[],place=[],time=[];
  const runners=snapshot.data.horses.map(horse=>{
@@ -74,11 +75,15 @@ export async function compareJraEarlyToOfficialResult({DB,raceId,now=Date.now()}
   if(error!=null)time.push(Math.abs(error));
   return Object.freeze({horseNo:horse.horseNo,matched:true,win:won,top3:placed,timeErrorSeconds:error});
  });
+ const formalExclusionReason=postTimeStatus!=='PRE_POST'?'UNVERIFIED_POST_TIME'
+  :runners.length!==win.length?'RUNNER_COVERAGE_INCOMPLETE':null;
  return Object.freeze({status:'READY',reason:null,comparison:Object.freeze({
   raceId,earlyRevision:snapshot.revision,calculationVersion:snapshot.calculationVersion,
   modelVersion:snapshot.modelVersion,earlyCalculatedAt:snapshot.dataCalculatedAt,
   resultFetchedAt:row.fetched_at,resultSource:'JRA_OFFICIAL',postTimeStatus,
-  formalKpiEligible:postTimeStatus==='PRE_POST',
+  formalKpiEligible:formalExclusionReason===null,formalExclusionReason,
+  eligibilityBasis:'STORED_ROW_CONTRACT_ONLY',sourceOriginAuthenticated:false,
+  formalKpiReadiness:'HOLD',probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO',
   matchedRunnerCount:win.length,unmatchedRunnerCount:runners.length-win.length,
   winBrier:average(win),top3Brier:average(place),timeSampleCount:time.length,timeMaeSeconds:average(time),
   runners:Object.freeze(runners)

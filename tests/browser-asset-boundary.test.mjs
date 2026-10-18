@@ -31,7 +31,7 @@ test('HTML module entry and its module dependencies are included in public asset
     const dep=new URL(match[1],new URL(path,root));queue.push(dep.pathname.slice(root.pathname.length));
    }
   }
-  assert.equal(seen.size,7);
+  assert.equal(seen.size,8);
  });
 });
 test('server modules, credentials configuration, research tooling and future modules remain excluded',()=>{
@@ -52,6 +52,9 @@ test('classic browser scripts remain included without widening the module allowl
    '!/src/prediction/jra-ability-result-projector.mjs',
    '!/src/prediction/course-asset-core-v1.mjs','!/src/prediction/course-shadow-preflight-v1.mjs',
    '!/src/prediction/course-asset-web-adapter-v1.mjs',
-   '!/src/prediction/chass-cpsi-wave-core-v1.mjs']);
+   '!/src/prediction/chass-cpsi-wave-core-v1.mjs',
+   '!/src/prediction/early-kpi-dashboard-boundary-v1.mjs']);
+  assert.equal(ignored('src/prediction/early-kpi-dashboard-boundary-v1.mjs'),false);
+  assert.equal(ignored('src/research/early-kpi-cohort-v1.mjs'),true);
  });
 });
