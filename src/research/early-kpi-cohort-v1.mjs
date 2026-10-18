@@ -16,14 +16,19 @@ const common=()=>({version:EARLY_KPI_COHORT_VERSION,evidenceBasis:'CALLER_PROVID
  probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO'});
 // Single bounded, SELECT-only research entry. No injected comparison/payload,
 // public route, fetch, current-market requirement, repairs or fallback revision.
-export async function summarizeEarlyEvidenceCohort({DB,targets,now=Date.now()}={}){
+export function earlyEvidenceCohortRejection(targets,now){
  if(!Number.isFinite(now)||!Array.isArray(targets)||!targets.length||targets.length>100
   ||targets.some(t=>!t||Array.isArray(t)||typeof t.raceId!=='string'||t.raceId.length>160
     ||Object.keys(t).some(k=>!['organization','raceId'].includes(k))
     ||(t.organization==='JRA'?!jraEarlyIdentity(t.raceId):t.organization==='NAR'?!narIdentity(t.raceId):true)))
-  return freeze({...common(),status:'REJECTED',reason:'INVALID_COHORT',report:null});
+  return 'INVALID_COHORT';
  if(new Set(targets.map(t=>t.organization+'|'+t.raceId)).size!==targets.length)
-  return freeze({...common(),status:'REJECTED',reason:'DUPLICATE_TARGET',report:null});
+  return 'DUPLICATE_TARGET';
+ return null;
+}
+export async function summarizeEarlyEvidenceCohort({DB,targets,now=Date.now()}={}){
+ const reason=earlyEvidenceCohortRejection(targets,now);
+ if(reason)return freeze({...common(),status:'REJECTED',reason,report:null});
  const jra=targets.filter(t=>t.organization==='JRA').map(t=>t.raceId).sort(),nar=targets.filter(t=>t.organization==='NAR').sort((a,b)=>a.raceId.localeCompare(b.raceId));
  const read=jra.length?await summarizeJraEarlyResultKpi({DB,raceIds:jra,now}):null;
  const s=read?.status==='READY'?read.summary:null;
