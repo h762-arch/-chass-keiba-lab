@@ -181,9 +181,9 @@
       "status": "CAPTURED",
       "date": "2026-10-18",
       "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-18&format=compact",
-      "attemptedAt": "2026-10-18T08:00:53.350Z",
-      "capturedAt": "2026-10-18T08:00:55.693Z",
-      "payloadSha256": "b871b3c2928b488e3db49c6c53f4807f14509896c9a18eabf17e27ebdd45c852",
+      "attemptedAt": "2026-10-18T12:36:16.140Z",
+      "capturedAt": "2026-10-18T12:36:17.285Z",
+      "payloadSha256": "e74450925e0284ae76b740fa07326c2cea22a66f65794e570fba3e3350ab1bc3",
       "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
       "readOnlyCapture": true,
       "snapshotPath": "chat-snapshot/status/2026-10-18/nar-precompute-status.json"
