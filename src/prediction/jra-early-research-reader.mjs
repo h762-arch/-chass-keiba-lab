@@ -31,12 +31,12 @@ export function earlyEvidenceTime(value){
  if(!Number.isFinite(calendar)||new Date(calendar).toISOString().slice(0,10)!==day)return NaN;
  return Date.parse(value);
 }
-function containsCurrentOutcome(value,depth=0){
+export function earlyEvidenceContainsCurrentOutcome(value,depth=0){
  if(depth>32)throw Error('DEPTH');
  if(!value||typeof value!=='object')return false;
  const forbidden=new Set(['result','results','resultsnapshot','finishorder','actualtimes','actualtime',
   'validationsnapshot','validationcompleted','liveassessment','hasresult']);
- return Object.entries(value).some(([k,v])=>forbidden.has(k.replace(/[^a-z0-9]/gi,'').toLowerCase())||containsCurrentOutcome(v,depth+1));
+ return Object.entries(value).some(([k,v])=>forbidden.has(k.replace(/[^a-z0-9]/gi,'').toLowerCase())||earlyEvidenceContainsCurrentOutcome(v,depth+1));
 }
 
 function validData(data,raceId){
@@ -89,7 +89,7 @@ export async function readJraEarlyResearchSnapshot({DB,raceId,now=Date.now()}={}
  if(!validData(data,raceId))return rejected('MALFORMED_DATA');
  if(data.historicalResearch||data.race.historicalResearch||data.predictionKind==='backtest_prediction'
   ||data.race.predictionKind==='backtest_prediction'||data.race.researchMode==='historical_research')return rejected('HISTORICAL_REFERENCE_ONLY');
- try{if(containsCurrentOutcome(data))return rejected('RESULT_DATA_FORBIDDEN');}catch{return rejected('MALFORMED_DATA');}
+ try{if(earlyEvidenceContainsCurrentOutcome(data))return rejected('RESULT_DATA_FORBIDDEN');}catch{return rejected('MALFORMED_DATA');}
  try{assertMarketIndependentData(data);}catch{return rejected('MARKET_DATA_FORBIDDEN');}
  return Object.freeze({status:'READY',reason:null,snapshot:Object.freeze({
   raceId,revision:row.revision,calculationVersion:row.calculation_version,modelVersion:row.model_version,

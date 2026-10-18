@@ -1,4 +1,5 @@
 import {summarizeJraEarlyResultKpi} from './jra-early-kpi-summary.mjs';
+import {readNarEarlyOutcome} from './nar-early-outcome-reader-v1.mjs';
 import {jraEarlyIdentity,JRA_EARLY_CALCULATION_VERSION,JRA_EARLY_MODEL_VERSION} from '../prediction/jra-early-research-reader.mjs';
 
 export const EARLY_KPI_COHORT_VERSION='CHASS_EARLY_KPI_COHORT_V1';
@@ -23,20 +24,32 @@ export async function summarizeEarlyEvidenceCohort({DB,targets,now=Date.now()}={
   return freeze({...common(),status:'REJECTED',reason:'INVALID_COHORT',report:null});
  if(new Set(targets.map(t=>t.organization+'|'+t.raceId)).size!==targets.length)
   return freeze({...common(),status:'REJECTED',reason:'DUPLICATE_TARGET',report:null});
- const jra=targets.filter(t=>t.organization==='JRA').map(t=>t.raceId).sort(),nar=targets.filter(t=>t.organization==='NAR');
+ const jra=targets.filter(t=>t.organization==='JRA').map(t=>t.raceId).sort(),nar=targets.filter(t=>t.organization==='NAR').sort((a,b)=>a.raceId.localeCompare(b.raceId));
  const read=jra.length?await summarizeJraEarlyResultKpi({DB,raceIds:jra,now}):null;
  const s=read?.status==='READY'?read.summary:null;
- const included=s?.included||[],excluded=[...(s?.excluded||jra.map(raceId=>({raceId,status:'HOLD',reason:read?.reason||'EARLY_READ_UNAVAILABLE'}))),
-  ...nar.map(t=>({raceId:t.raceId,status:'HOLD',reason:'NAR_AUTHENTICATED_OUTCOME_READER_NOT_WIRED'}))].sort((a,b)=>a.raceId.localeCompare(b.raceId));
+ const narIncluded=[],narExcluded=[];
+ for(const t of nar){
+  const r=await readNarEarlyOutcome({DB,raceId:t.raceId,now});
+  if(r.status==='READY'&&r.comparison?.rowContractQualified===true)narIncluded.push(r.comparison);
+  else narExcluded.push({raceId:t.raceId,status:r.status,reason:r.reason});
+ }
+ const jraIncluded=s?.included||[],included=[...jraIncluded,...narIncluded].sort((a,b)=>a.raceId.localeCompare(b.raceId));
+ const excluded=[...(s?.excluded||jra.map(raceId=>({raceId,status:'HOLD',reason:read?.reason||'EARLY_READ_UNAVAILABLE'}))),
+  ...narExcluded].sort((a,b)=>a.raceId.localeCompare(b.raceId));
+ const average=xs=>xs.length?Number((xs.reduce((a,b)=>a+b,0)/xs.length).toFixed(6)):null;
  const reasonCounts={};for(const x of excluded)reasonCounts[x.reason]=(reasonCounts[x.reason]||0)+1;
  return freeze({...common(),status:'READ_COMPLETE',reason:null,report:{requestedRaceCount:targets.length,
   contractQualifiedRaceCount:included.length,heldRaceCount:excluded.length,reasonCounts,included,excluded,
   // Never combine JRA/NAR or race-/runner-weighted means.
-  JRA:{requestedRaceCount:jra.length,contractQualifiedRaceCount:included.length,
+  JRA:{requestedRaceCount:jra.length,contractQualifiedRaceCount:jraIncluded.length,
    calculationVersion:JRA_EARLY_CALCULATION_VERSION,modelVersion:JRA_EARLY_MODEL_VERSION,
    metrics:s?{unit:'MEAN_OF_RACE_MEANS',meanRaceWinBrier:s.meanRaceWinBrier,meanRaceTop3Brier:s.meanRaceTop3Brier,
     meanRaceTimeMaeSeconds:s.meanRaceTimeMaeSeconds,matchedRunnerCount:s.matchedRunnerCount,
     timeSampleCount:s.timeSampleCount,timeRaceCount:s.timeRaceCount}:null},
-  NAR:{requestedRaceCount:nar.length,contractQualifiedRaceCount:0,metrics:null,
-   reason:'NAR_AUTHENTICATED_OUTCOME_READER_NOT_WIRED'}}});
+  NAR:{requestedRaceCount:nar.length,contractQualifiedRaceCount:narIncluded.length,
+   metrics:narIncluded.length?{unit:'MEAN_OF_RACE_MEANS',meanRaceWinBrier:average(narIncluded.map(r=>r.winBrier)),
+    meanRaceTop3Brier:average(narIncluded.map(r=>r.top3Brier)),meanRaceTimeMaeSeconds:average(narIncluded.filter(r=>r.timeMaeSeconds!==null).map(r=>r.timeMaeSeconds)),
+    matchedRunnerCount:narIncluded.reduce((n,r)=>n+r.matchedRunnerCount,0),timeSampleCount:narIncluded.reduce((n,r)=>n+r.timeSampleCount,0),
+    timeRaceCount:narIncluded.filter(r=>r.timeMaeSeconds!==null).length}:null,
+   reason:'STORED_ROW_CONTRACT_ONLY_SOURCE_AND_DURABLE_TIME_UNAUTHENTICATED'}}});
 }

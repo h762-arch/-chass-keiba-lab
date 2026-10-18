@@ -33,13 +33,13 @@ test('common entry separates JRA candidates, pending and NAR HOLD without networ
  try{
   const out=await summarizeEarlyEvidenceCohort({DB,targets:[target(3),target(1),target(2),{organization:'NAR',raceId:'2026-10-04|高知|7'}],now});
   assert.equal(out.status,'READ_COMPLETE');assert.equal(out.report.contractQualifiedRaceCount,1);assert.equal(out.report.heldRaceCount,3);
-  assert.deepEqual(out.report.reasonCounts,{OFFICIAL_RESULT_NOT_FOUND:1,RUNNER_COVERAGE_INCOMPLETE:1,NAR_AUTHENTICATED_OUTCOME_READER_NOT_WIRED:1});
+  assert.deepEqual(out.report.reasonCounts,{OFFICIAL_RESULT_NOT_FOUND:1,RUNNER_COVERAGE_INCOMPLETE:1,NAR_INITIAL_BUNDLE_MISSING:1});
   const expected=Number((((.25-1)**2+.1**2+.05**2)/3).toFixed(6));
   assert.equal(out.report.JRA.metrics.meanRaceWinBrier,expected);assert.equal(out.report.JRA.metrics.meanRaceTimeMaeSeconds,.2);
   assert.equal(out.report.JRA.metrics.unit,'MEAN_OF_RACE_MEANS');assert.equal(out.report.NAR.metrics,null);
   assert.equal(out.formalKpiEligible,false);assert.equal(out.formalKpiReadiness,'HOLD');assert.equal(out.sourceOriginAuthenticated,false);
   assert.equal(out.productionActivationDecision,'NO-GO');assert.equal(out.probabilityDecision,'MODEL_HOLD');
-  assert.equal(DB.calls.length,6);assert.notEqual(JSON.stringify(DB.calls),before);
+  assert.equal(DB.calls.length,8);assert.notEqual(JSON.stringify(DB.calls),before);
   assert.doesNotMatch(JSON.stringify(out),/payload_json|sourceRef|finishOrder|actualTimes|horseName/);
   assert.ok(Object.isFrozen(out.report.JRA.metrics));
  }finally{globalThis.fetch=old;}
