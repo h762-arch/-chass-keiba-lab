@@ -214,3 +214,50 @@ test('review: CLI rejects replay flags and emits fixed authority on HOLD',()=>{c
 test('review: actual Response stream feeds the real app path',async()=>{const h=harness();delete h.input.appSource;let at=started;h.input.clock=()=>at;h.input.sleep=async ms=>{at+=ms};h.input.fetchImpl=async()=>{at+=1000;return new Response(JSON.stringify(realPayload()),{status:200});};const r=await run(h.input);assert.equal(r.status,'LOCAL_PRESTART_MAPPING_READY');assert.equal(r.testAppSourceOverride,false);});
 test('review: oversized response stream is rejected before app calculation',async()=>{const h=harness();h.input.fetchImpl=async()=>new Response(' '.repeat(1000001),{status:200});assert.equal((await run(h.input)).status,'HOLD');});
 test('review: too many runners are rejected before app calculation',async()=>{const h=harness();h.input.fetchImpl=async()=>({ok:true,status:200,json:async()=>({...realPayload(),horses:Array.from({length:31},(_,i)=>({horseNo:i+1}))})});assert.equal((await run(h.input)).status,'HOLD');});
+
+test('diagnostics: transport failure retains safe phase, clock and app hash, not error text',async()=>{
+ const h=harness();h.input.fetchImpl=async()=>{throw Object.assign(Error('PRIVATE https://secret.invalid sourceRef RESULT'),{cause:{code:'ENOTFOUND'}})};
+ const r=await run(h.input),d=r.diagnostics;
+ assert.equal(r.status,'HOLD');assert.equal(d.phase,'FETCH_TRANSPORT');assert.equal(d.errorCode,'ENOTFOUND');
+ assert.equal(d.requestCount,1);assert.equal(d.httpStatus,null);assert.equal(d.responseReceived,false);
+ assert.equal(d.startedAt,new Date(started).toISOString());assert.equal(d.cutoff,cutoff.replace('20Z','20.000Z'));
+ assert.equal(d.appSourceSha256,createHash('sha256').update(appSource).digest('hex'));
+ assert.ok(!JSON.stringify(r).includes('PRIVATE'));assert.ok(!JSON.stringify(r).includes('secret.invalid'));
+});
+test('diagnostics: unknown codes and messages are not echoed',async()=>{
+ const h=harness();h.input.fetchImpl=async()=>{throw Object.assign(Error('PRIVATE_PAYLOAD'),{code:'PRIVATE_CODE'})};
+ const r=await run(h.input);assert.equal(r.diagnostics.errorCode,'UNCLASSIFIED_ERROR');assert.ok(!JSON.stringify(r).includes('PRIVATE'));
+});
+test('diagnostics: HTTP failure retains status without server body',async()=>{
+ const h=harness();h.input.fetchImpl=async()=>({ok:false,status:503,json:async()=>({error:'PRIVATE_BODY'})});
+ const r=await run(h.input);assert.equal(r.status,'HOLD');assert.equal(r.diagnostics.httpStatus,503);
+ assert.equal(r.diagnostics.responseReceived,true);assert.equal(r.diagnostics.phase,'RESPONSE_BODY');assert.ok(!JSON.stringify(r).includes('PRIVATE'));
+});
+test('diagnostics: invalid JSON is distinct from transport failure',async()=>{
+ const h=harness();h.input.fetchImpl=async()=>new Response('PRIVATE_NOT_JSON',{status:200});
+ const r=await run(h.input);assert.equal(r.diagnostics.phase,'RESPONSE_BODY');assert.equal(r.diagnostics.httpStatus,200);
+ assert.equal(r.diagnostics.errorCode,'SYNTAX_ERROR');assert.equal(r.diagnostics.responseParsed,false);assert.ok(!JSON.stringify(r).includes('PRIVATE'));
+});
+test('diagnostics: VM load failure retains app hash and makes zero requests',async()=>{
+ const h=harness();h.input.appSource='throw new ReferenceError("PRIVATE_VM");';
+ const r=await run(h.input);assert.equal(r.diagnostics.phase,'APP_VM_INIT');assert.equal(r.diagnostics.errorCode,'REFERENCE_ERROR');
+ assert.equal(r.diagnostics.requestCount,0);assert.equal(h.stats().requests,0);assert.match(r.diagnostics.appSourceSha256,/^[a-f0-9]{64}$/);
+ assert.ok(!JSON.stringify(r).includes('PRIVATE'));
+});
+test('diagnostics: real app result rejection records only the allowlisted code',async()=>{
+ const h=harness();delete h.input.appSource;let at=started;h.input.clock=()=>at;
+ h.input.fetchImpl=async()=>{at+=1000;return {ok:true,status:200,json:async()=>({...realPayload(),resultSnapshot:{private:'PRIVATE_RESULT'}})}};
+ const r=await run(h.input);assert.equal(r.diagnostics.phase,'APP_ACQUISITION');assert.equal(r.diagnostics.errorCode,'nar_early_reference_rejected');
+ assert.ok(!JSON.stringify(r).includes('PRIVATE'));assert.equal(r.acquisitionCompleted,false);
+});
+test('diagnostics: successful synthetic evaluation preserves original decision and hashes',async()=>{
+ const h=harness(),r=await run(h.input);assert.equal(r.status,'LOCAL_PRESTART_MAPPING_READY');
+ assert.equal(r.diagnostics.phase,'AVAILABILITY_EVALUATE');assert.equal(r.diagnostics.evaluatedAt,r.observedAt);
+ assert.equal(r.diagnostics.captureCompletedAt,new Date(started+1000).toISOString());assert.equal(r.diagnostics.httpStatus,200);
+ assert.equal(r.diagnostics.requestCount,1);assert.equal(r.diagnostics.responseParsed,true);assert.equal(r.diagnostics.errorCode,null);
+ assert.match(r.snapshotSha256,/^[a-f0-9]{64}$/);assert.equal(r.formalKpiReadiness,'HOLD');
+});
+test('diagnostics: capture timeout records no payload and does not retry',async()=>{
+ const h=harness();let calls=0;h.input.fetchImpl=async()=>{calls++;return new Promise(()=>{})};h.input.captureTimeoutMs=10;
+ const r=await run(h.input);assert.equal(r.diagnostics.errorCode,'LIVE_CAPTURE_TIMEOUT');assert.equal(r.diagnostics.phase,'FETCH_TRANSPORT');assert.equal(calls,1);
+});
