@@ -1,119 +1,149 @@
-"""Offline validation only: no GitHub dispatch or race/API acquisition."""
-import json
-import os
-from pathlib import Path
-import subprocess
-import tempfile
-import unittest
-import yaml
+name: CHASS NAR EARLY Live Smoke Once v1
 
-ROOT = Path(__file__).resolve().parent
-WORKFLOW = ROOT / "CHASS-NAR-EARLY-Live-Smoke-Once-v1.yml"
-CONFIG = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-STEPS = CONFIG["jobs"]["smoke"]["steps"]
-RUN = STEPS[3]["run"]
-VALIDATOR = RUN.split("node --input-type=module <<'NODE'\n", 1)[1].split("\nNODE\n", 1)[0]
-AUTH = {"formalKpiReadiness": "HOLD", "probabilityDecision": "MODEL_HOLD", "productionActivationDecision": "NO-GO", "saved": False, "freezeExecuted": False}
+"on":
+  workflow_dispatch:
+    inputs:
+      race_id:
+        description: 'One unseen current-JST NAR race: YYYY-MM-DD|venue|race'
+        required: true
+        type: string
+      post_at:
+        description: 'Independently verified official post time, ISO with timezone'
+        required: true
+        type: string
+      expected_runner_count:
+        description: 'Verified current runner count (2..30)'
+        required: true
+        type: string
+      expected_commit:
+        description: 'Exact independently audited main SHA after this workflow is merged'
+        required: true
+        type: string
 
+permissions:
+  contents: read
 
-def report(status="HOLD"):
-    return {"version": "CHASS_NAR_EARLY_SMOKE_ONCE_V1", "status": status,
-            "reasons": ["LIVE_CAPTURE_FAILED"] if status == "HOLD" else [], **AUTH}
+concurrency:
+  group: chass-nar-early-live-smoke-once-v1
+  cancel-in-progress: false
 
+jobs:
+  smoke:
+    name: One pre-start acquisition without production writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require main, manual dispatch, first attempt and exact commit
+        shell: bash
+        env:
+          SMOKE_REF: ${{ github.ref }}
+          SMOKE_EVENT: ${{ github.event_name }}
+          SMOKE_ATTEMPT: ${{ github.run_attempt }}
+          SMOKE_SHA: ${{ github.sha }}
+          SMOKE_EXPECTED: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          test "$SMOKE_REF" = refs/heads/main
+          test "$SMOKE_EVENT" = workflow_dispatch
+          test "$SMOKE_ATTEMPT" = 1
+          [[ "$SMOKE_EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+          test "$SMOKE_SHA" = "$SMOKE_EXPECTED"
 
-class WorkflowTests(unittest.TestCase):
-    def run_validator(self, data, exit_code, receipt=None, raw=False):
-        with tempfile.TemporaryDirectory(prefix="chass-smoke-yaml-test-") as temp:
-            parent = Path(temp)
-            safe = parent / "chass-nar-smoke-safe"
-            safe.mkdir()
-            (parent / "chass-nar-smoke-stdout-private.json").write_text(data if raw else json.dumps(data), encoding="utf-8")
-            (parent / "chass-nar-smoke-stderr-private.jsonl").write_text(json.dumps(receipt) if receipt else "PRIVATE_STDERR", encoding="utf-8")
-            child = subprocess.run(["node", "--input-type=module"], input=VALIDATOR, text=True, capture_output=True,
-                                   env={**os.environ, "RUNNER_TEMP": temp, "SMOKE_EXIT": str(exit_code)}, timeout=5)
-            files = {p.name: p.read_text(encoding="utf-8") for p in safe.iterdir()}
-            return child, files, json.loads(files["report.json"])
+      - name: Checkout exact audited commit read-only
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-    def test_workflow_structure_and_permissions(self):
-        self.assertEqual(set(CONFIG["on"]), {"workflow_dispatch"})
-        self.assertEqual(CONFIG["permissions"], {"contents": "read"})
-        self.assertFalse(CONFIG["concurrency"]["cancel-in-progress"])
-        self.assertEqual(CONFIG["jobs"]["smoke"]["timeout-minutes"], 5)
-        self.assertEqual(STEPS[1]["with"]["persist-credentials"], False)
-        self.assertEqual(RUN.count("node scripts/run-live-nar-early-smoke-once-v1.mjs"), 1)
-        self.assertNotIn("${{ inputs.", RUN)
-        self.assertNotIn("secrets.", WORKFLOW.read_text(encoding="utf-8"))
-        paths = STEPS[-1]["with"]["path"].splitlines()
-        self.assertEqual(len(paths), 3)
-        self.assertTrue(all("/chass-nar-smoke-safe/" in p and "*" not in p for p in paths))
+      - name: Use Node without installing project dependencies
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
 
-    def test_shell_and_node_syntax(self):
-        for step in STEPS:
-            if "run" in step:
-                subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True, capture_output=True)
-        subprocess.run(["node", "--input-type=module", "--check"], input=VALIDATOR, text=True, check=True, capture_output=True)
+      - name: Run the existing guarded launcher once
+        shell: bash
+        env:
+          SMOKE_RACE_ID: ${{ inputs.race_id }}
+          SMOKE_POST_AT: ${{ inputs.post_at }}
+          SMOKE_COUNT: ${{ inputs.expected_runner_count }}
+          SMOKE_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/chass-nar-smoke-safe"
+          set +e
+          node scripts/run-live-nar-early-smoke-once-v1.mjs \
+            --race-id "$SMOKE_RACE_ID" \
+            --post-at "$SMOKE_POST_AT" \
+            --expected-runner-count "$SMOKE_COUNT" \
+            --expected-commit "$SMOKE_COMMIT" \
+            > "$RUNNER_TEMP/chass-nar-smoke-stdout-private.json" \
+            2> "$RUNNER_TEMP/chass-nar-smoke-stderr-private.jsonl"
+          SMOKE_EXIT=$?
+          set -e
+          export SMOKE_EXIT
+          set +e
+          node --input-type=module <<'NODE'
+          import {readFileSync,writeFileSync} from 'node:fs';
+          import {join} from 'node:path';
+          const dir=join(process.env.RUNNER_TEMP,'chass-nar-smoke-safe');
+          const exit=Number(process.env.SMOKE_EXIT);
+          const authority={formalKpiReadiness:'HOLD',probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO',saved:false,freezeExecuted:false};
+          const forbidden=new Set(['sourceRef','snapshot','record','RESULT','result','resultSnapshot','finishOrder','body','stack','message']);
+          function boundedParse(path){
+            const text=readFileSync(path,'utf8');
+            if(Buffer.byteLength(text)>1_000_000)throw Error();
+            return JSON.parse(text);
+          }
+          function clean(value,depth=0){
+            if(depth>12)throw Error();
+            if(!value||typeof value!=='object')return;
+            for(const [key,v] of Object.entries(value)){
+              if(forbidden.has(key))throw Error();
+              clean(v,depth+1);
+            }
+          }
+          let report;
+          try{
+            report=boundedParse(join(process.env.RUNNER_TEMP,'chass-nar-smoke-stdout-private.json'));
+            clean(report);
+            if(report?.version!=='CHASS_NAR_EARLY_SMOKE_ONCE_V1'||!['HOLD','LOCAL_PRESTART_MAPPING_READY'].includes(report.status))throw Error();
+            for(const [key,v] of Object.entries(authority))if(report[key]!==v)throw Error();
+            if(exit!==(report.status==='LOCAL_PRESTART_MAPPING_READY'?0:2))throw Error();
+            if(report.status==='LOCAL_PRESTART_MAPPING_READY'){
+              if(report.runnerReport?.status!=='LOCAL_PRESTART_MAPPING_READY'||report.execution?.runnerExitCode!==0
+                ||!['FINAL5_READY_FULL','FINAL5_READY_DEGRADED'].includes(report.runnerReport?.mappedPredictionReadiness))throw Error();
+            }
+          }catch{
+            report={version:'CHASS_NAR_EARLY_SMOKE_ONCE_V1',status:'HOLD',reasons:['ACTIONS_REPORT_INVALID'],...authority};
+          }
+          const rawExit=Number.isSafeInteger(exit)&&exit>=0&&exit<=255?exit:null;
+          writeFileSync(join(dir,'report.json'),JSON.stringify({wrapperExitCode:rawExit,...report},null,2)+'\n');
+          writeFileSync(join(dir,'exit-code.txt'),String(rawExit)+'\n');
+          // Only project explicit safe launch fields. Never upload the original stderr.
+          try{
+            const receipt=boundedParse(join(process.env.RUNNER_TEMP,'chass-nar-smoke-stderr-private.jsonl'));
+            const source=receipt?.launch,keys=['commit','launchAt','freezeAt','appSourceSha256','invocationSha256'];
+            if(!source||!keys.every(k=>typeof source[k]==='string'))throw Error();
+            if(!/^[0-9a-f]{40}$/.test(source.commit)||!['appSourceSha256','invocationSha256'].every(k=>/^[0-9a-f]{64}$/.test(source[k])))throw Error();
+            if(!['launchAt','freezeAt'].every(k=>/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(source[k])))throw Error();
+            writeFileSync(join(dir,'launch-receipt.json'),JSON.stringify(Object.fromEntries(keys.map(k=>[k,source[k]])),null,2)+'\n');
+          }catch{}
+          console.log(`Smoke status=${report.status}; actual wrapper exit=${rawExit}; Formal KPI HOLD; Probability MODEL_HOLD; Production NO-GO`);
+          process.exitCode=report.status==='LOCAL_PRESTART_MAPPING_READY'?0:2;
+          NODE
+          VALIDATION_EXIT=$?
+          set -e
+          if [ "$VALIDATION_EXIT" -ne 0 ]; then exit 2; fi
+          exit "$SMOKE_EXIT"
 
-    def test_context_guard_first_attempt_main_and_exact_sha(self):
-        valid = {"SMOKE_REF": "refs/heads/main", "SMOKE_EVENT": "workflow_dispatch", "SMOKE_ATTEMPT": "1", "SMOKE_SHA": "a" * 40, "SMOKE_EXPECTED": "a" * 40}
-        for patch in [{}, {"SMOKE_REF": "refs/heads/other"}, {"SMOKE_ATTEMPT": "2"}, {"SMOKE_EXPECTED": "b" * 40}, {"SMOKE_EVENT": "push"}]:
-            child = subprocess.run(["bash"], input=STEPS[0]["run"], text=True, capture_output=True, env={**os.environ, **valid, **patch})
-            self.assertEqual(child.returncode == 0, not patch)
-
-    def test_hold_preserves_real_exit_and_no_stderr(self):
-        child, files, parsed = self.run_validator(report(), 2)
-        self.assertEqual(child.returncode, 2)
-        self.assertEqual(parsed["status"], "HOLD")
-        self.assertEqual(parsed["wrapperExitCode"], 2)
-        self.assertEqual(files["exit-code.txt"], "2\n")
-        self.assertNotIn("PRIVATE", json.dumps(files))
-
-    def test_valid_degraded_runner_is_ready_without_promoting_authority(self):
-        data = report("LOCAL_PRESTART_MAPPING_READY")
-        data.update(execution={"runnerExitCode": 0}, runnerReport={"status": "LOCAL_PRESTART_MAPPING_READY", "mappedPredictionReadiness": "FINAL5_READY_DEGRADED"})
-        child, _, parsed = self.run_validator(data, 0)
-        self.assertEqual(child.returncode, 0)
-        self.assertEqual(parsed["status"], "LOCAL_PRESTART_MAPPING_READY")
-        self.assertEqual(parsed["formalKpiReadiness"], "HOLD")
-
-    def test_success_requires_real_runner_exit_and_readiness(self):
-        for runner in [{"status": "HOLD"}, {"status": "LOCAL_PRESTART_MAPPING_READY", "mappedPredictionReadiness": "PREDICTION_HOLD"}]:
-            data = report("LOCAL_PRESTART_MAPPING_READY")
-            data.update(execution={"runnerExitCode": 2}, runnerReport=runner)
-            child, _, parsed = self.run_validator(data, 0)
-            self.assertEqual(child.returncode, 2)
-            self.assertEqual(parsed["reasons"], ["ACTIONS_REPORT_INVALID"])
-
-    def test_conflicting_exit_is_hold(self):
-        child, _, parsed = self.run_validator(report(), 0)
-        self.assertEqual(child.returncode, 2)
-        self.assertEqual(parsed["reasons"], ["ACTIONS_REPORT_INVALID"])
-
-    def test_non_json_is_not_uploaded(self):
-        child, files, parsed = self.run_validator("PRIVATE_RAW_API", 2, raw=True)
-        self.assertEqual(child.returncode, 2)
-        self.assertEqual(parsed["reasons"], ["ACTIONS_REPORT_INVALID"])
-        self.assertNotIn("PRIVATE", json.dumps(files))
-
-    def test_forbidden_nested_payload_is_not_uploaded(self):
-        for key in ["sourceRef", "snapshot", "RESULT", "resultSnapshot", "body", "stack", "message"]:
-            data = {**report(), "runnerReport": {key: "PRIVATE_RAW_API"}}
-            child, files, parsed = self.run_validator(data, 2)
-            self.assertEqual(child.returncode, 2)
-            self.assertEqual(parsed["reasons"], ["ACTIONS_REPORT_INVALID"])
-            self.assertNotIn("PRIVATE", json.dumps(files))
-
-    def test_bad_authority_is_hold(self):
-        data = {**report(), "productionActivationDecision": "GO"}
-        child, _, parsed = self.run_validator(data, 2)
-        self.assertEqual(child.returncode, 2)
-        self.assertEqual(parsed["productionActivationDecision"], "NO-GO")
-
-    def test_receipt_projects_hashes_and_clocks_only(self):
-        receipt = {"launch": {"commit": "a" * 40, "launchAt": "2026-10-19T00:00:00.000Z", "freezeAt": "2026-10-19T00:00:30.000Z", "appSourceSha256": "b" * 64, "invocationSha256": "c" * 64, "sourceRef": "PRIVATE_SOURCE"}}
-        _, files, _ = self.run_validator(report(), 2, receipt)
-        self.assertEqual(set(json.loads(files["launch-receipt.json"])), {"commit", "launchAt", "freezeAt", "appSourceSha256", "invocationSha256"})
-        self.assertNotIn("PRIVATE", json.dumps(files))
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+      - name: Retain only sanitized report, launch receipt and exit code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nar-early-live-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/chass-nar-smoke-safe/report.json
+            ${{ runner.temp }}/chass-nar-smoke-safe/launch-receipt.json
+            ${{ runner.temp }}/chass-nar-smoke-safe/exit-code.txt
+          if-no-files-found: warn
+          retention-days: 7
