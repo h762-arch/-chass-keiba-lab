@@ -72,6 +72,6 @@ exit 0やREAD_COMPLETEはSmoke成功・真正な取得・正式KPI・Production�
 
 実際の元証拠DBと結果DBのファイルはこの変更では指定・取得しておらず、実台帳照合は未実行。次に必要なのは、元bundle/receiptと同一race/modelの結果を保持する読み取り専用コピー、対象一覧、その来歴である。対象欠損や除外率の監査を済ませ、出典・永続化時刻の独立認証を検討してから未見レースのShadow比較へ進む。
 
-NARの異なるモデルを混ぜた参考平均を、個別モデルの性能比較へ流用しない。モデル別の対象群で別実行する。取消・DNF・同着の評価方針、独立認証、実台帳ログ比較、モデル改善の前向き評価は引き続き未完了。高知7Rの過去Smoke失敗も、この合成テストでは解消扱いにしない。
+NARのモデル別集計は `EARLY_MODEL_COHORT_BOUNDARY_V1.md` に従う。複数modelVersionの適格行があればNAR.metricsはnullとし、NAR.modelsに各モデルの値を分ける。対象レース群が異なるモデル同士の平均を、そのまま改善率や優劣へ流用しない。取消・DNF・同着の評価方針、独立認証、実台帳ログ比較、モデル改善の前向き評価は引き続き未完了。高知7Rの過去Smoke失敗も、この合成テストでは解消扱いにしない。
 
 既存Production、Original EARLY、Signal Freeze、⚠️/💎、予想確率、TIME式、runtime flags、workflow、deployment設定を変更しない。
