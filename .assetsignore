@@ -29,6 +29,7 @@ server.mjs
 !/src/prediction/course-shadow-preflight-v1.mjs
 !/src/prediction/course-asset-web-adapter-v1.mjs
 !/src/prediction/chass-cpsi-wave-core-v1.mjs
+!/src/prediction/early-kpi-dashboard-boundary-v1.mjs
 wrangler.jsonc
 wrangler.*.jsonc
 package.json

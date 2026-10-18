@@ -24,7 +24,7 @@ export async function summarizeJraEarlyResultKpi({DB,raceIds,now=Date.now()}={})
    win.push(c.winBrier);top3.push(c.top3Brier);
    if(c.timeSampleCount>0)time.push(c.timeMaeSeconds);
   }else{
-   const reason=read.status==='READY'?'UNVERIFIED_POST_TIME':read.reason;
+   const reason=read.status==='READY'?(read.comparison.formalExclusionReason||'UNVERIFIED_POST_TIME'):read.reason;
    excluded.push(Object.freeze({raceId,status:read.status,reason}));
   }
  }
@@ -37,6 +37,8 @@ export async function summarizeJraEarlyResultKpi({DB,raceIds,now=Date.now()}={})
   // A race is the unit of each mean. Time uses only races with an actual time sample.
   meanRaceWinBrier:mean(win),meanRaceTop3Brier:mean(top3),meanRaceTimeMaeSeconds:mean(time),
   timeRaceCount:time.length,reasonCounts:Object.freeze(reasonCounts),
-  included:Object.freeze(included),excluded:Object.freeze(excluded)
+  included:Object.freeze(included),excluded:Object.freeze(excluded),
+  eligibilityBasis:'STORED_ROW_CONTRACT_ONLY',sourceOriginAuthenticated:false,
+  formalKpiReadiness:'HOLD',probabilityDecision:'MODEL_HOLD',productionActivationDecision:'NO-GO'
  })});
 }
