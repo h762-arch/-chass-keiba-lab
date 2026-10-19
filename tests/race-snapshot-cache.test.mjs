@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {readD1Manifest} from '../worker.js';
+import {readD1Manifest,d1SyncDescriptor} from '../worker.js';
 
 async function loadCore(fetchImpl){
   const source=await readFile(new URL('../app.js',import.meta.url),'utf8'),memory=new Map(),window={__CHASS_TEST__:true};
@@ -21,9 +21,9 @@ test('ten unchanged snapshot saves produce no research write or cloud POST',asyn
 });
 
 test('single-race cloud sync never triggers a full research refresh',async()=>{
-  const calls=[],saved=record(),descriptorResponse={raceId:'2026-09-07|大井|10',modelVersion:'10.0.1',status:'prediction_saved'};
-  const core=await loadCore(async(url,options={})=>{calls.push([String(url),options.method||'GET']);return new Response(JSON.stringify({ok:true,records:[{raceId:'2026-09-07|大井|10',written:true,descriptor:descriptorResponse}]}),{headers:{'content-type':'application/json'}})});
-  await core.syncRaceToCloud('2026-09-07|大井|10',saved);
+  const calls=[],saved=record(),descriptorResponse=d1SyncDescriptor('2026-09-07|大井|10',saved);
+  const core=await loadCore(async(url,options={})=>{calls.push([String(url),options.method||'GET']);return new Response(JSON.stringify({ok:true,records:[{raceId:'2026-09-07|大井|10',modelVersion:'10.0.1',status:'created',written:true,descriptor:descriptorResponse}]}),{headers:{'content-type':'application/json'}})});
+  assert.equal((await core.syncRaceToCloud('2026-09-07|大井|10',saved)).status,'created');
   assert.equal(calls.filter(([url])=>url.includes('/api/db/sync')).length,1);assert.equal(calls.some(([url])=>url.includes('/api/db/research')),false);
 });
 

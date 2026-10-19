@@ -155,7 +155,13 @@ const storageDiagnostics={cacheHit:0,cacheMiss:0,indexedDbRead:0,indexedDbWrite:
 function storageDiagnostic(name,amount=1){if(Object.hasOwn(storageDiagnostics,name))storageDiagnostics[name]+=amount;return storageDiagnostics[name]}
 function stableRecordUpdatedAt(record){return record?.updatedAt||record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt||record?.predictionCreatedAt||record?.resultSnapshot?.fetchedAt||record?.resultAcquiredAt||'1970-01-01T00:00:00.000Z'}
 function cloudFingerprint(value){return value==null?null:snapshotFingerprint(value)}
-function queueCloudStatus(record){return record?.validationCompleted?'validated':record?.resultSnapshot?'result_fetched':record?.resultQueue?.enabled===false?'prediction_saved':record?.resultQueue?.status||'prediction_saved'}
+function queueCloudStatus(record){
+ const issue=record?.race&&cloudMergeBindingIssue(record);if(issue||record?.predictionSnapshot?.modelVersion!=null&&record?.modelVersion!=null&&String(record.predictionSnapshot.modelVersion)!==String(record.modelVersion))return 'data_conflict';
+ const order=record?.resultSnapshot?.finishOrder,known=new Set((record?.predictionSnapshot?.horses||[]).map(h=>Number(h.horseNo))),valid=v=>(typeof v==='number'||typeof v==='string')&&String(v).trim()!==''&&Number.isInteger(Number(v))&&Number(v)>0&&(!known.size||known.has(Number(v)));
+ const complete=Array.isArray(order)&&order.length>=3&&order.every(valid)&&new Set(order.map(Number)).size===order.length;
+ if(complete&&(record?.validationCompleted||record?.validated))return 'validated';if(complete)return 'result_fetched';if(record?.resultQueue?.enabled===false)return 'prediction_saved';
+ const status=record?.resultQueue?.status;return ['result_waiting','result_pending','result_retry','prediction_saved','paused'].includes(status)?status:'prediction_saved';
+}
 function cloudDescriptor(raceId,record){const racePayload={...(record?.race||record?.predictionSnapshot?.race||{}),...(record?.snapshotIntegrity||record?.race?.snapshotIntegrity?{snapshotIntegrity:record.snapshotIntegrity||record.race.snapshotIntegrity}:{}),resultQueue:record?.resultQueue||null,liveAdjustedPrediction:record?.liveAdjustedPrediction||null,scratchAudit:record?.scratchAudit||null};return {raceId,modelVersion:String(record?.predictionSnapshot?.modelVersion||record?.modelVersion||'Legacy'),updatedAt:stableRecordUpdatedAt(record),status:queueCloudStatus(record),raceFingerprint:cloudFingerprint(racePayload),predictionFingerprint:cloudFingerprint(record?.predictionSnapshot),marketFingerprint:cloudFingerprint(record?.marketSnapshot),finalFingerprint:cloudFingerprint(record?.finalSnapshot),resultFingerprint:cloudFingerprint(record?.resultSnapshot),validationFingerprint:cloudFingerprint(record?.validationSnapshot),liveFingerprint:cloudFingerprint({liveAdjustedPrediction:record?.liveAdjustedPrediction||null,scratchAudit:record?.scratchAudit||null})}}
 function manifestKey(item){return `${item?.raceId||''}|${item?.modelVersion||'Legacy'}`}
 function manifestMatches(local,remote){return !!remote&&['raceFingerprint','predictionFingerprint','marketFingerprint','finalFingerprint','resultFingerprint','validationFingerprint','liveFingerprint'].every(key=>(local[key]||null)===(remote[key]||null))&&local.status===remote.status}
@@ -166,7 +172,7 @@ async function idbGetAll(name){return idbRequest(researchDb.transaction(name,'re
 function idbPut(name,value){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite');tx.objectStore(name).put(value);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
 function idbPutMany(name,values){if(!researchDb)return Promise.reject(new Error('IndexedDB unavailable'));return new Promise((resolve,reject)=>{const tx=researchDb.transaction(name,'readwrite'),objectStore=tx.objectStore(name);values.forEach(value=>objectStore.put(value));tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))})}
 function queueStorageWrite(promise,fallback){promise.catch(()=>{researchStorageMode='localStorage-fallback';fallback?.()})}
-function setCloudPending(id,pending=true){if(pending)cloudPending.add(id);else cloudPending.delete(id);localStore.set(CLOUD_PENDING_KEY,[...cloudPending]);renderCloudSyncState()}
+function setCloudPending(id,pending=true){if(cloudPending.has(id)===pending)return;if(pending)cloudPending.add(id);else cloudPending.delete(id);localStore.set(CLOUD_PENDING_KEY,[...cloudPending]);renderCloudSyncState()}
 function restoredHorseView(record){
  const rows=frozenHorses(record),saved=new Map((record?.horses||[]).map(h=>[Number(h.horseNo),h])),audit=record?.scratchAudit||{},participants=resultParticipantHorseNos(record),inactive=confirmedInactiveHorseNos(record);
  for(const row of rows){const no=Number(row.horseNo),meta=audit.statusMetaByHorse?.[no],old=saved.get(no);let status;
@@ -216,16 +222,105 @@ function applyCloudResearchDataset(data,{merge=true}={}){
  const eligibleRaceIds=[...new Set(records.filter(x=>x?.eligible&&(!merge||!!raceCache[x.raceId]&&raceCache[x.raceId].cloudEligible!==false&&!raceCache[x.raceId].cloudConflict)).map(x=>x.raceId))];
  cloudResearchAudit={counts:data?.counts||null,exclusions:data?.exclusions||[],missingResults:data?.missingResults||[],warnings:data?.warnings||[],conflicts,eligibleRaceIds,datasetRaceIds:records.map(x=>x?.raceId).filter(Boolean),loadedAt:new Date().toISOString()};return records;
 }
-async function refreshCloudResearchDataset({persist=false,render=true}={}){if(typeof fetch!=='function'||!cloudState.available)return false;storageDiagnostic('researchRefresh');storageDiagnostic('d1Read');const generation=++cloudAuditRefreshGeneration;cloudState.status='refreshing';renderCloudSyncState();try{const data=await cloudRequest('/api/db/research');if(generation!==cloudAuditRefreshGeneration)return false;applyCloudResearchDataset(data,{merge:true});if(persist){if(researchDb){await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));storageDiagnostic('indexedDbWrite',Object.keys(raceCache).length)}else localStore.set(KEY,raceCache)}cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:'',lastSyncedAt:new Date().toISOString()};if(render){renderCloudDatasetSummary();renderDashboard()}return data}catch(e){if(generation===cloudAuditRefreshGeneration){cloudState={...cloudState,status:'error',error:e.code||e.message};renderCloudSyncState()}return false}}
+async function refreshCloudResearchDataset({persist=false,render=true}={}){if(typeof fetch!=='function'||!cloudState.available)return false;storageDiagnostic('researchRefresh');storageDiagnostic('d1Read');const generation=++cloudAuditRefreshGeneration;cloudState.status='refreshing';renderCloudSyncState();try{const data=await cloudRequest('/api/db/research');if(generation!==cloudAuditRefreshGeneration)return false;applyCloudResearchDataset(data,{merge:true});if(persist){if(researchDb){await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));storageDiagnostic('indexedDbWrite',Object.keys(raceCache).length)}else localStore.set(KEY,raceCache)}cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:''};settleCloudSyncState('synced');if(render){renderCloudDatasetSummary();renderDashboard()}return data}catch(e){if(generation===cloudAuditRefreshGeneration){cloudState={...cloudState,status:'error',error:e.code||e.message};renderCloudSyncState()}return false}}
 function cloudRestoreChangeCounts(previous,cache,records){
  let added=0,enriched=0,conflicts=0;const ids=new Set((records||[]).filter(x=>x?.raceId&&x.record).map(x=>x.raceId));
  for(const id of ids){const record=cache[id];if(!record||record.cloudConflict){conflicts++;continue;}if(!previous.has(id))added++;else if(researchContentFingerprint(record)!==previous.get(id))enriched++;}
  return {added,enriched,conflicts};
 }
 async function restoreResearchFromCloud(){const data=await cloudRequest('/api/db/research'),before=Object.keys(raceCache).length,previous=new Map(Object.entries(raceCache).map(([id,record])=>[id,researchContentFingerprint(record)]));applyCloudResearchDataset(data,{merge:true});const changes=cloudRestoreChangeCounts(previous,raceCache,data.records);if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));else localStore.set(KEY,raceCache);renderCloudDatasetSummary();return {...changes,total:Object.keys(raceCache).length,before,counts:data.counts||{}}}
-async function cloudRequest(path,options={}){const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}}),data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{status:response.status,code:data.error});return data}
-async function syncRaceToCloud(id,data){if(typeof fetch!=='function'||!id||!data?.predictionSnapshot)return false;setCloudPending(id,true);storageDiagnostic('cloudPost');try{const response=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({raceId:id,record:data})}),saved=response.records?.[0]||{status:'unchanged',written:false},descriptor=saved.descriptor||cloudDescriptor(id,data);cloudManifestCache.set(manifestKey(descriptor),descriptor);if(saved.written)storageDiagnostic('d1Write');cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:'',lastSyncedAt:new Date().toISOString()};setCloudPending(id,false);return saved}catch(e){cloudState={...cloudState,status:cloudState.available?'error':'local',error:e.code||e.message};renderCloudSyncState();return false}}
-async function syncAllResearchToCloud(){const entries=Object.entries(raceCache).filter(([,record])=>record?.predictionSnapshot);if(!entries.length)return {created:0,updated:0,unchanged:0,failed:0,total:0,target:0};cloudState.status='syncing';renderCloudSyncState();storageDiagnostic('d1Read');const manifest=await cloudRequest('/api/db/manifest'),remote=new Map((manifest.records||[]).map(item=>[manifestKey(item),item]));for(const [key,value] of remote)cloudManifestCache.set(key,value);const targets=entries.filter(([raceId,record])=>cloudPending.has(raceId)||!manifestMatches(cloudDescriptor(raceId,record),remote.get(manifestKey(cloudDescriptor(raceId,record)))));let created=0,updated=0,failed=0;for(let i=0;i<targets.length;i+=25){const batch=targets.slice(i,i+25).map(([raceId,record])=>({raceId,record}));batch.forEach(x=>setCloudPending(x.raceId,true));try{storageDiagnostic('cloudPost');const result=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})});created+=result.created||0;updated+=result.updated||0;for(const item of result.records||[]){if(item.descriptor)cloudManifestCache.set(manifestKey(item.descriptor),item.descriptor);setCloudPending(item.raceId,false)}if((result.created||0)+(result.updated||0))storageDiagnostic('d1Write',(result.created||0)+(result.updated||0))}catch(e){failed+=batch.length;cloudState={...cloudState,status:'error',error:e.code||e.message};break}}const unchanged=entries.length-targets.length;cloudState={...cloudState,available:true,source:'cloud',status:failed?'error':'synced',error:failed?cloudState.error:'',lastSyncedAt:new Date().toISOString(),summary:{created,updated,unchanged,failed}};renderCloudSyncState();return {created,updated,unchanged,failed,total:entries.length,target:targets.length,synced:created+updated}}
+async function cloudRequest(path,options={}){
+ const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}});
+ const data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));
+ if(!response.ok||data?.ok!==true){const sync=path==='/api/db/sync',code=data?.error||(sync&&response.status===409?'SYNC_CONFLICT':`HTTP ${response.status}`);throw Object.assign(new Error(code),{status:response.status,code,...(sync&&Array.isArray(data?.records)?{syncResponse:data}:{})});}
+ return data;
+}
+const CLOUD_SYNC_HOLD_KEY='chass_cloud_sync_holds_v1';
+const cloudSyncHolds=new Map(Object.entries(localStore.get(CLOUD_SYNC_HOLD_KEY,{})||{}));
+const cloudSyncFlights=new Map();let cloudBulkFlight=null;
+const cloudSyncReasonLabels={PREDICTION_SNAPSHOT_CONFLICT:'元予測の不一致',FROZEN_SIGNAL_CONFLICT:'凍結Signalの不一致',FROZEN_WARNING_CONFLICT:'凍結警告の不一致',snapshot_binding_conflict:'レース・モデルの不一致',LOCAL_CLOUD_CONFLICT:'復元時の競合',REMOTE_RESULT_PRESERVED:'クラウドの結果を保持',REMOTE_STATE_DIFFERENT:'クラウドの保存内容を要確認',SYNC_RESPONSE_INVALID:'保存応答を確認できない',SYNC_OUTCOME_UNKNOWN:'保存成否が不明',SYNC_CONFLICT:'保存内容の競合',duplicate_sync_identity:'同期対象の重複'};
+function cloudSyncReason(code,fallback='SYNC_CONFLICT'){return Object.hasOwn(cloudSyncReasonLabels,code)?code:fallback;}
+function cloudSyncCurrent(id,fallback){return raceCache[id]||fallback;}
+function cloudSyncSameRevision(id,record){const current=cloudSyncCurrent(id,record);return manifestKey(cloudDescriptor(id,current))===manifestKey(cloudDescriptor(id,record))&&researchContentFingerprint(current)===researchContentFingerprint(record);}
+function cloudSyncHold(id,record,reason){
+ const descriptor=cloudDescriptor(id,record),key=manifestKey(descriptor),hold={raceId:id,modelVersion:descriptor.modelVersion,reason:cloudSyncReason(reason),heldAt:new Date().toISOString()};
+ cloudSyncHolds.set(key,hold);cloudManifestCache.delete(key);localStore.set(CLOUD_SYNC_HOLD_KEY,Object.fromEntries(cloudSyncHolds));
+ if(manifestKey(cloudDescriptor(id,cloudSyncCurrent(id,record)))===key)setCloudPending(id,false);return hold;
+}
+function cloudSyncClearHold(key){if(cloudSyncHolds.delete(key))localStore.set(CLOUD_SYNC_HOLD_KEY,Object.fromEntries(cloudSyncHolds));}
+function cloudSyncActiveHolds(){return [...cloudSyncHolds.values()].filter(h=>h&&typeof h.raceId==='string'&&typeof h.modelVersion==='string');}
+function settleCloudSyncState(status='synced',summary=null){
+ const held=cloudSyncActiveHolds().length,pending=cloudPending.size;
+ cloudState={...cloudState,status:held?'held':status==='error'?'error':pending?'pending':status,...(summary?{summary}:{})};renderCloudSyncState();
+}
+function cloudSyncSummary(records=[]){const out={created:0,updated:0,unchanged:0,held:0,failed:0,pending:0};for(const r of records)if(Object.hasOwn(out,r.status))out[r.status]++;return out;}
+function applyCloudSyncResponse(batch,payload,{unknown=false}={}){
+ const replies=Array.isArray(payload?.records)?payload.records:[],byKey=new Map();
+ for(const reply of replies){if(!reply||typeof reply!=='object')continue;const key=manifestKey({raceId:reply.raceId,modelVersion:reply.modelVersion||reply.descriptor?.modelVersion});const group=byKey.get(key)||[];group.push(reply);byKey.set(key,group);}
+ return batch.map(({raceId:id,record})=>{
+  const local=cloudDescriptor(id,record),key=manifestKey(local),group=byKey.get(key)||[],reply=group.length===1?group[0]:null;
+  let reason=null,status=reply?.status;
+  if(reply?.status==='not_attempted'){setCloudPending(id,true);return {attempted:true,raceId:id,modelVersion:local.modelVersion,status:'pending',written:false,reason:reply.error||'NOT_ATTEMPTED'};}
+  if(reply?.status==='conflict')reason=cloudSyncReason(reply.error);
+  else if(reply?.status==='failed'&&reply.outcomeKnown===true&&reply.written===false){setCloudPending(id,true);return {attempted:true,raceId:id,modelVersion:local.modelVersion,status:'failed',written:false,reason:'SYNC_FAILED'};}
+  else if(!reply||!['created','updated','unchanged'].includes(status)||typeof reply.written!=='boolean'||status==='unchanged'&&reply.written||status!=='unchanged'&&!reply.written)reason=unknown||reply?.outcomeKnown===false?'SYNC_OUTCOME_UNKNOWN':'SYNC_RESPONSE_INVALID';
+  else if(reply.reason==='REMOTE_RESULT_PRESERVED')reason='REMOTE_RESULT_PRESERVED';
+  else if(reply.descriptor&&!manifestMatches(local,reply.descriptor))reason='REMOTE_STATE_DIFFERENT';
+  else if(status==='unchanged'&&!reply.descriptor)reason='SYNC_RESPONSE_INVALID';
+  if(reason){cloudSyncHold(id,record,reason);return {attempted:true,raceId:id,modelVersion:local.modelVersion,status:'held',written:null,reason};}
+  cloudSyncClearHold(key);if(reply.descriptor)cloudManifestCache.set(key,cloneData(reply.descriptor));else cloudManifestCache.delete(key);
+  if(cloudSyncSameRevision(id,record))setCloudPending(id,false);else setCloudPending(id,true);
+  if(reply.written)storageDiagnostic('d1Write');
+  return {attempted:true,raceId:id,modelVersion:local.modelVersion,status,written:reply.written};
+ });
+}
+async function sendCloudSyncBatch(entries){
+ const waiting=[...new Set(entries.map(x=>cloudSyncFlights.get(manifestKey(cloudDescriptor(x.raceId,x.record)))).filter(Boolean))];
+ if(waiting.length){await Promise.allSettled(waiting);return sendCloudSyncBatch(entries);}
+ const skipped=[],batch=[];
+ for(const entry of entries){
+  const record=cloneData(cloudSyncCurrent(entry.raceId,entry.record)),id=entry.raceId,local=cloudDescriptor(id,record),key=manifestKey(local);
+  if(record.cloudConflict){cloudSyncHold(id,record,'LOCAL_CLOUD_CONFLICT');skipped.push({raceId:id,modelVersion:local.modelVersion,status:'held',reason:'LOCAL_CLOUD_CONFLICT'});continue;}
+  if(manifestMatches(local,cloudManifestCache.get(key))){cloudSyncClearHold(key);setCloudPending(id,false);skipped.push({raceId:id,modelVersion:local.modelVersion,status:'unchanged',written:false,confirmation:'ACK_OR_MANIFEST_CACHE'});continue;}
+  const hold=cloudSyncHolds.get(key);if(hold){skipped.push({raceId:id,modelVersion:local.modelVersion,status:'held',reason:hold.reason});continue;}
+  batch.push({raceId:id,record});setCloudPending(id,true);
+ }
+ if(!batch.length)return skipped;
+ let task;task=Promise.resolve().then(async()=>{
+  let payload,unknown=false;
+  try{storageDiagnostic('cloudPost');payload=await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})});cloudState={...cloudState,available:true,source:'cloud'};}
+  catch(e){payload=e.syncResponse;unknown=!payload;cloudState={...cloudState,error:cloudSyncReason(e.code,'SYNC_OUTCOME_UNKNOWN')};if(payload)cloudState.available=true;}
+  const outcomes=applyCloudSyncResponse(batch,payload,{unknown}),accepted=outcomes.some(x=>['created','updated','unchanged'].includes(x.status));
+  if(accepted)cloudState={...cloudState,error:'',lastSyncedAt:new Date().toISOString()};
+  settleCloudSyncState(outcomes.some(x=>x.status==='failed')?'error':'synced');
+  return [...skipped,...outcomes];
+ }).finally(()=>{for(const entry of batch){const key=manifestKey(cloudDescriptor(entry.raceId,entry.record));if(cloudSyncFlights.get(key)===task)cloudSyncFlights.delete(key);}});
+ for(const entry of batch)cloudSyncFlights.set(manifestKey(cloudDescriptor(entry.raceId,entry.record)),task);
+ return task;
+}
+async function syncRaceToCloud(id,data){
+ if(typeof fetch!=='function'||!id||!data?.predictionSnapshot)return false;
+ const outcomes=await sendCloudSyncBatch([{raceId:id,record:data}]),saved=outcomes[0];settleCloudSyncState(saved?.status==='failed'?'error':'synced',cloudSyncSummary(outcomes));
+ return saved&&['created','updated','unchanged'].includes(saved.status)?saved:false;
+}
+function syncAllResearchToCloud(){
+ if(cloudBulkFlight)return cloudBulkFlight;
+ cloudBulkFlight=(async()=>{
+  const entries=Object.entries(raceCache).filter(([,record])=>record?.predictionSnapshot).map(([raceId,record])=>({raceId,record}));
+  if(!entries.length)return {...cloudSyncSummary(),total:0,target:0,synced:0};
+  cloudState.status='syncing';renderCloudSyncState();storageDiagnostic('d1Read');
+  let manifest;try{manifest=await cloudRequest('/api/db/manifest');}catch(e){cloudState.error=e.code||'MANIFEST_READ_FAILED';settleCloudSyncState('error');throw e;}
+  const remote=new Map((manifest.records||[]).map(item=>[manifestKey(item),item]));cloudManifestCache.clear();for(const [key,value] of remote)cloudManifestCache.set(key,value);
+  cloudState={...cloudState,available:true,source:'cloud'};const outcomes=[];
+  for(let i=0;i<entries.length;i+=25){
+   const chunk=await sendCloudSyncBatch(entries.slice(i,i+25));outcomes.push(...chunk);
+   if(chunk.some(x=>x.status==='held'&&['SYNC_OUTCOME_UNKNOWN','SYNC_RESPONSE_INVALID'].includes(x.reason))){for(const item of entries.slice(i+25)){setCloudPending(item.raceId,true);outcomes.push({raceId:item.raceId,modelVersion:cloudDescriptor(item.raceId,item.record).modelVersion,status:'pending',written:false,reason:'BATCH_STOPPED'});}break;}
+  }
+  const summary=cloudSyncSummary(outcomes),result={...summary,total:entries.length,target:outcomes.filter(x=>x.attempted).length,synced:summary.created+summary.updated,records:outcomes};
+  if(summary.unchanged===entries.length)cloudState.lastSyncedAt=new Date().toISOString();
+  settleCloudSyncState(summary.failed?'error':'synced',result);return result;
+ })().finally(()=>{cloudBulkFlight=null;renderCloudSyncState();});return cloudBulkFlight;
+}
 async function initCloudResearch(){
  if(typeof fetch!=='function')return false;
  try{
@@ -235,7 +330,7 @@ async function initCloudResearch(){
   if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));
   cloudState.source='cloud';researchStorageMode='d1+indexedDB';
   for(const id of new Set([...cloudPending,...localDiff]))if(raceCache[id])await syncRaceToCloud(id,raceCache[id]);
-  renderCloudSyncState();renderCloudDatasetSummary();return true;
+  settleCloudSyncState('connected');renderCloudDatasetSummary();return true;
  }catch(e){cloudState={...cloudState,available:false,source:'local',status:'local',error:e.code||e.message};renderCloudSyncState();return false}
 }
 function saveRaceRecord(id,data){raceCache[id]=data;if(researchDb){storageDiagnostic('indexedDbWrite');const localWrite=idbPut('races',{id,data,updatedAt:stableRecordUpdatedAt(data)});queueStorageWrite(localWrite,()=>localStore.set(KEY,raceCache));localWrite.then(()=>syncRaceToCloud(id,data)).catch(()=>{})}else{localStore.set(KEY,raceCache);syncRaceToCloud(id,data)}}
@@ -277,7 +372,25 @@ function setVersion(){
   document.title=`チャス競馬研究所 Ver.${APP_VERSION}`;
   const sp=document.querySelector('.topbar h1 span'); if(sp) sp.textContent=`Ver.${APP_VERSION}`;
 }
-function renderCloudSyncState(){if(typeof document==='undefined')return;const source=$('cloudSource'),status=$('cloudSyncStatus'),button=$('cloudSyncButton');if(source)source.textContent=cloudState.available?'クラウド D1':'ローカル IndexedDB';if(status){status.className='';if(cloudState.status==='syncing')status.textContent='差分確認中';else if(cloudState.status==='refreshing')status.textContent='D1再集計中';else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error'}else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;else if(cloudState.status==='synced'){const s=cloudState.summary;status.textContent=s?(s.created+s.updated?`☁ 同期完了｜新規 ${s.created}件・更新 ${s.updated}件・変更なし ${s.unchanged}件`:'☁ 最新です｜同期対象 0件'):'☁ 同期済'}else status.textContent='ローカルのみ'}if(button)button.disabled=cloudState.status==='syncing'}
+function renderCloudSyncState(){
+ if(typeof document==='undefined')return;
+ const source=$('cloudSource'),status=$('cloudSyncStatus'),button=$('cloudSyncButton'),holds=cloudSyncActiveHolds();
+ if(source)source.textContent=cloudState.available?'クラウド D1':'ローカル IndexedDB';
+ if(status){
+  status.className='';const s=cloudState.summary;
+  if(cloudBulkFlight||cloudState.status==='syncing')status.textContent='差分確認中';
+  else if(cloudState.status==='refreshing')status.textContent='D1再集計中';
+  else if(holds.length){status.textContent=`同期保留 ${holds.length}件｜${cloudSyncReasonLabels[holds[0].reason]||'保存内容を要確認'}${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error';}
+  else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error';}
+  else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;
+  else if(cloudState.status==='synced')status.textContent=s?`☁ 確認完了｜新規 ${s.created}件・更新 ${s.updated}件・変更なし ${s.unchanged}件`:'☁ 同期済';
+  else status.textContent=cloudState.available?'クラウド接続済':'ローカルのみ';
+ }
+ const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount');
+ if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
+ if(list)list.innerHTML=holds.map(h=>`<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}</small></div>`).join('');
+ if(button)button.disabled=!!cloudBulkFlight||cloudState.status==='syncing';
+}
 function renderCloudDatasetSummary(){if(typeof document==='undefined')return;const target=$('cloudDatasetSummary'),list=$('cloudExclusionList'),details=$('cloudExclusions'),c=cloudResearchAudit.counts;if(!target)return;if(!c){target.innerHTML='<span>Source: Local Cache｜クラウド未接続・ローカル集計</span>';if(details)details.hidden=true;return}const consistent=(c.consistency?.predictionBalance??(c.d1PredictionSaved===c.d1ResultFetched+c.resultMissing))&&(c.consistency?.resultBalance??(c.d1ResultFetched===c.validationEligible+c.excluded));target.innerHTML=`<div class="cloud-source-label">Source: Cloudflare D1（サーバー側の保存件数・参考）</div><p>端末への結合で競合保留：${new Set((cloudResearchAudit.conflicts||[]).map(x=>x.raceId)).size}R</p><div class="cloud-summary-grid"><div class="cloud-stat"><span>予想保存</span><strong>${Number(c.d1PredictionSaved)||0}R</strong></div><div class="cloud-stat"><span>結果取得済</span><strong>${Number(c.d1ResultFetched)||0}R</strong></div><div class="cloud-stat"><span>検証可能</span><strong>${Number(c.validationEligible)||0}R</strong></div><div class="cloud-stat"><span>結果未取得</span><strong>${Number(c.resultMissing)||0}R</strong><small>予想保存済・結果待ち</small></div><div class="cloud-stat cloud-stat-wide"><span>データ不備除外</span><strong>${Number(c.excluded)||0}R</strong></div></div>${consistent?'':'<p class="cloud-consistency-warning">⚠ 集計整合性に差異あり</p>'}<div class="cloud-sync-help"><span>クラウドへ同期：端末の新規データをD1へ送信</span><span>クラウドから復元：D1のみのデータを端末キャッシュへ追加</span></div>`;const reasonLabel={CLOUD_MODEL_MISMATCH:'モデル版の不一致',CLOUD_RACE_MISMATCH:'レースの不一致',CLOUD_LAYER_BINDING_MISMATCH:'Snapshotのレース・モデル不一致',CLOUD_RECORD_MISSING:'復元レコードなし',PREDICTION_MISSING:'予想Snapshotなし',SNAPSHOT_INCOMPLETE:'Snapshot不完全',RESULT_INCOMPLETE:'結果不完全',LEGACY_UNVERIFIED:'旧データ未検証',DATA_QUALITY:'データ品質',DUPLICATE_OR_CONFLICT:'重複・競合',SCHEMA_MISMATCH:'スキーマ不一致'};const exclusions=[...(cloudResearchAudit.exclusions||[]),...(cloudResearchAudit.conflicts||[])];if(list)list.innerHTML=exclusions.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.raceId)}</strong><span>${reasonLabel[x.reason]||esc(x.reason)}</span><small>${esc(x.date||'')} ${esc(x.track||'')} ${esc(x.raceNo||'')}R｜${esc(x.modelVersion||'Legacy')}</small></div>`).join('')||'<p class="muted">検証除外はありません。</p>';if(details)details.hidden=false;let missing=$('cloudMissingResults');if(!missing){target.insertAdjacentHTML('afterend','<details id="cloudMissingResults" class="cloud-exclusions"><summary>結果未取得の一覧</summary><div id="cloudMissingList"></div></details>');missing=$('cloudMissingResults')}const missingList=$('cloudMissingList'),items=cloudResearchAudit.missingResults||[];missing.querySelector('summary').textContent=`結果未取得の一覧 ${items.length}R`;missingList.innerHTML=items.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.date)}｜${esc(x.track)} ${esc(x.raceNo)}R</strong><span>${esc(x.modelVersion||'Legacy')}</span><button type="button" class="cloud-open-missing" data-race-id="${esc(x.raceId)}">結果を取得</button></div>`).join('')||'<p class="muted">結果未取得はありません。</p>';missing.querySelectorAll('.cloud-open-missing').forEach(b=>b.onclick=()=>openMissingResultRace(b.dataset.raceId))}
 function openMissingResultRace(id){const saved=raceCache[id];if(!saved)return;activeRaceGeneration++;state=restoreSavedRace(saved);setRaceMode(raceTypeOf(state),{announce:false,preserveState:true});fillRace(state.race);render();setView('prediction');if($('narStatus'))$('narStatus').textContent='結果を取得中…';requestAnimationFrame(()=>{$('resultCard')?.scrollIntoView({behavior:'smooth',block:'start'});syncNar({auto:false})})}
 function raceId(r={}){
@@ -1602,7 +1715,12 @@ function historicalRecord(root,resultData){
  }finally{state=previous}
 }
 async function persistHistoricalRecord(id,record){raceCache[id]=record;if(researchDb)await idbPut('races',{id,data:record,updatedAt:record.updatedAt});else localStore.set(KEY,raceCache)}
-async function syncHistoricalBatch(batch){if(!batch.length)return {created:0,updated:0,unchanged:0};try{return await cloudRequest('/api/db/sync',{method:'POST',body:JSON.stringify({records:batch})})}catch(e){batch.forEach(x=>setCloudPending(x.raceId,true));throw e}}
+async function syncHistoricalBatch(batch){
+ if(!batch.length)return cloudSyncSummary();
+ const records=await sendCloudSyncBatch(batch),summary={...cloudSyncSummary(records),records};
+ if(summary.held||summary.failed||summary.pending)throw Object.assign(new Error('SYNC_PARTIAL_HOLD'),{code:'SYNC_PARTIAL_HOLD',syncSummary:summary});
+ return summary;
+}
 function renderHistoryCollector(){
  const box=$('historyCollector');if(!box)return;const st=getHistoryState(),dates=historyDateRange(st.startDate,st.endDate),tracks=(st.tracks||[]).filter(t=>NAR_TRACKS[t]),existing=cloudResearchAudit.counts?.d1PredictionSaved??Object.keys(raceCache).length,remaining1=Math.max(0,1000-existing),remaining3=Math.max(0,3000-existing);st.meetingTotal=dates.length*tracks.length;
  const discovery=st.meetingTotal?Math.min(100,100*(st.meetingChecked||0)/st.meetingTotal):0,collection=st.raceTargets?Math.min(100,100*(st.raceProcessed||0)/st.raceTargets):0,isDiscovery=['meeting_discovery','meeting_retry'].includes(st.phase),progress=isDiscovery?discovery:collection,metrics=historyRequestMetrics(st);
@@ -1648,14 +1766,14 @@ async function runHistoricalCollectorForeground(){
     const root=buildAbilityRoot(raceData,item.date,item.track,item.raceNo);root.race.historicalResearch=true;root.race.researchMode='historical_research';root.race.predictionKind='backtest_prediction';
     let resultData=null;try{st.requestStats.resultRequests++;const resultRes=await fetch(`/api/nar/sync?code=${code}&date=${encodeURIComponent(item.date)}&race=${item.raceNo}`,{cache:'no-store'}),rd=await responseJson(resultRes);if(resultRes.ok&&rd.finishOrder?.length>=3)resultData=rd;else st.resultWaiting++}catch{st.resultWaiting++}
     const record=historicalRecord(root,resultData);await persistHistoricalRecord(item.id,record);batch.push({raceId:item.id,record});st.saved++;historyTrackStat(st,item.track).saved++;
-    if(batch.length>=10){try{await syncHistoricalBatch(batch);batch=[]}catch(e){st.cloudFailure+=batch.length;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message});batch=[]}}
+    if(batch.length>=10){try{await syncHistoricalBatch(batch);batch=[]}catch(e){st.cloudFailure+=e.syncSummary?(e.syncSummary.held+e.syncSummary.failed+e.syncSummary.pending):batch.length;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message});batch=[]}}
    }catch(e){if(e?.code==='parse_failure'||e?.code==='parser_error')st.parseFailure++;else if(['network_error','network_failure','timeout','nar_timeout','http_error'].includes(e?.code)||e?.status)st.networkFailure++;else st.unexpectedFailure++;st.errors=(st.errors||[]).slice(-19);st.errors.push({at:new Date().toISOString(),item:st.lastItem,error:e.code||e.message})}
    finally{st.raceProcessed++;historyTrackStat(st,item.track).raceProcessed++;st.raceIndex=ri+1}
    saveHistoryState();await new Promise(r=>setTimeout(r,700+Math.floor(Math.random()*700)));
    }
    if(!historyCollectorAbort){st.collectionMeetingIndex=mi+1;st.raceIndex=0}
   }
-  if(batch.length){try{await syncHistoricalBatch(batch)}catch(e){st.cloudFailure+=batch.length}}
+  if(batch.length){try{await syncHistoricalBatch(batch)}catch(e){st.cloudFailure+=e.syncSummary?(e.syncSummary.held+e.syncSummary.failed+e.syncSummary.pending):batch.length}}
   if(!historyCollectorAbort){st.phase='done';st.status=st.unknownMeetings.length?'done_with_retry':'done'}
  }finally{
   historyCollectorRunning=false;historyCollectorAbort=false;saveHistoryState();try{await refreshCloudResearchDataset({persist:true,render:false});renderCloudDatasetSummary();renderDashboard()}catch{}renderHistoryCollector();
@@ -2245,7 +2363,7 @@ if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.sta
 if($('publicApiCheck'))$('publicApiCheck').onclick=checkPublicApi;
 if($('publicApiCopy'))$('publicApiCopy').onclick=copyCurrentPublicApiUrl;
 if($('publicApiDayCopy'))$('publicApiDayCopy').onclick=copyCurrentPublicDayApiUrl;
-if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=async()=>{setButtonBusy('cloudRestoreButton',true,'復元中');try{const result=await restoreResearchFromCloud();cloudState={...cloudState,available:true,source:'cloud',status:'synced'};renderDashboard();$('cloudSyncStatus').textContent=`☁ 復元完了｜追加 ${result.added}件・補完 ${result.enriched}件・競合保留 ${result.conflicts||0}件`}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudRestoreButton',false)} };
+if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=async()=>{setButtonBusy('cloudRestoreButton',true,'復元中');try{const result=await restoreResearchFromCloud();cloudState={...cloudState,available:true,source:'cloud',status:'synced'};settleCloudSyncState('synced');renderDashboard();$('cloudSyncStatus').textContent=`☁ 復元完了｜追加 ${result.added}件・補完 ${result.enriched}件・競合保留 ${(result.conflicts||0)+cloudSyncActiveHolds().length}件`}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudRestoreButton',false)} };
 if($('quickPredict'))$('quickPredict').onclick=()=>raceTypeOf(state)==='JRA'?(jraNormalizedDraft?$('jraAnalyze')?.click():$('jraOfficialLoad')?.click()):$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
