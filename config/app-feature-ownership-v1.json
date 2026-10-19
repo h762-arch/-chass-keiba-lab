@@ -3,6 +3,7 @@
   "purpose": "Source ownership and integration inventory; not a runtime enablement configuration",
   "entrypoints": {"browser": "index.html", "worker": "worker-entry.mjs", "localServer": "server.mjs"},
   "features": [
+    {"id":"original-record-reader", "module":"src/research/original-record-reader-v1.mjs", "state":"SHARED_READ_ONLY_PROJECTION", "owner":"Worker saved/public and similarity Original read contracts", "authority":"No prediction calculation, storage I/O, sealing, signal generation or formal KPI promotion", "forbiddenRuntimeLanes":["browser"]},
     {"id":"browser-prediction", "module":"app.js", "state":"RUNTIME", "owner":"Browser prediction, snapshot and compatibility dashboard", "authority":"Existing formal model; no automatic adoption of research scores"},
     {"id":"jra-ability", "module":"src/prediction/jra-ability-core.mjs", "state":"SHARED_ABILITY_CORE", "owner":"JRA market-blind ability calculation", "authority":"Browser and precompute use this core; browser market policy remains separate"},
     {"id":"cpsi-wave", "module":"src/prediction/chass-cpsi-wave-core-v1.mjs", "state":"SHADOW_ON_NEW_SNAPSHOT", "owner":"CPSI/Wave diagnostic", "authority":"Authenticated declared input prerequisites; no formal score/probability promotion"},
