@@ -9,6 +9,7 @@ import {handleJraResultRequest} from './jra-result-fetch.mjs';
 import {handleJraMeetingPersistent,JRA_MEETING_CACHE_SCHEMA,runScheduledJraMeetingRefresh} from './jra-background-refresh.mjs';
 import {SIMILARITY_VERSION,analyzeHistoricalSimilarity,walkForwardSimilarity} from './src/research/similarity-intelligence.mjs';
 import {readFiniteNumber,inspectRecordBinding,readBoundRecord,readOriginalHorses,hasCompleteReadResult} from './src/research/original-record-reader-v1.mjs';
+import {recoverFingerprintMetadata} from './src/research/fingerprint-recovery-v1.mjs';
 import {parseNarRaceList} from './meeting-discovery.mjs';
 import {enqueueResearchSync,runResearchSyncQueue} from './src/research/research-storage-sync.mjs';
 import {classifyHorseOrigin,classifyRunVenue,mergeCardIdentities,summarizeHorseOrigins} from './src/nar/exchange-origin.mjs';
@@ -935,6 +936,13 @@ export default{
   if(u.pathname==="/api/db/similarity"&&request.method==="GET"){
     const DB=getResearchDb(env),raceId=String(u.searchParams.get('raceId')||''),detail=u.searchParams.get('detail')==='full'?'full':'compact';if(!DB)return json({ok:false,error:"d1_binding_unavailable"},503);if(!raceId)return json({ok:false,error:'race_id_required'},400);
     try{const dataset=await readD1ResearchDataset(DB),items=dataset.records||[],item=items.find(x=>x.raceId===raceId);if(!item)return json({ok:false,error:'race_not_found'},404);return json({ok:true,schemaVersion:CHASS_BRIDGE_SCHEMA_VERSION,modelVersion:VERSION,source:'cloudflare_d1',generatedAt:new Date().toISOString(),raceId,historicalSimilarity:buildHistoricalSimilarityForItem(item,items,{detail})})}catch(e){return json({ok:false,error:e?.code||"similarity_unavailable"},503)}
+  }
+  if(u.pathname==="/api/db/recover-fingerprints"){
+    if(request.method!=='POST')return json({ok:false,error:'method_not_allowed'},405);
+    let body;try{const reader=request.body?.getReader();if(!reader)return json({ok:false,error:'fingerprint_invalid_identity'},400);let size=0;const chunks=[];while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>1024){await reader.cancel();return json({ok:false,error:'fingerprint_invalid_identity'},413)}chunks.push(value)}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length}body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{return json({ok:false,error:'fingerprint_invalid_identity'},400)}
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(k=>!['raceId','modelVersion'].includes(k)))return json({ok:false,error:'fingerprint_invalid_identity'},400);
+    try{return json({ok:true,...await recoverFingerprintMetadata(getResearchDb(env),body.raceId,body.modelVersion,{fingerprint:d1Fingerprint})})}
+    catch(e){const code=e?.code||'d1_fingerprint_write_failed';return json({ok:false,error:code},code==='fingerprint_invalid_identity'?400:code==='fingerprint_record_not_found'?404:code==='d1_binding_unavailable'?503:500)}
   }
   if(u.pathname==="/api/db/result-repair"){
     if(request.method!=="GET")return json({ok:false,error:'method_not_allowed'},405);
