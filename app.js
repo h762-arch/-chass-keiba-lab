@@ -241,9 +241,9 @@ function cloudRestoreChangeCounts(previous,cache,records){
 const CLOUD_READ_OPERATION_KEY='chass_cloud_read_operation_v1';
 let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CLOUD_READ_OPERATION_KEY,null));
 function readCloudOperation(value){
- if(!value||!['restore','recheck'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
+ if(!value||!['restore','recheck','repair'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
  const out={action:value.action,status:value.status==='running'?'interrupted':value.status,phase:['fetch','validate','save','complete','render'].includes(value.phase)?value.phase:'fetch',startedAt:typeof value.startedAt==='string'?value.startedAt.slice(0,40):'',finishedAt:typeof value.finishedAt==='string'?value.finishedAt.slice(0,40):'',code:value.code?cloudReadErrorCode({code:value.code}):''};
- if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining','unverifiable'].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
+ if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining','unverifiable','skipped'].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
  return out;
 }
 function cloudReadErrorCode(error){const code=error?.code,mapped={d1_binding_unavailable:'DATABASE_UNAVAILABLE',d1_read_failed:'DATABASE_READ_FAILED',d1_research_read_failed:'DATABASE_READ_FAILED',d1_schema_error:'DATABASE_SCHEMA_ERROR'};return Object.hasOwn(mapped,code)?mapped[code]:['RESTORE_RESPONSE_INVALID','MANIFEST_RESPONSE_INVALID','CLOUD_READ_TIMEOUT','LOCAL_SAVE_FAILED','NETWORK_ERROR','INVALID_JSON','HTTP_ERROR','RENDER_FAILED','CLOUD_SYNC_BUSY','DATABASE_UNAVAILABLE','DATABASE_READ_FAILED','DATABASE_SCHEMA_ERROR'].includes(code)?code:code==='invalid_response'?'INVALID_JSON':error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error instanceof TypeError?'NETWORK_ERROR':Number(error?.status)>=400?'HTTP_ERROR':'NETWORK_ERROR';}
@@ -304,6 +304,42 @@ function recheckCloudSyncHolds(){
    const counts={checked:holds.length,cleared,remaining:cloudSyncActiveHolds().length,...(unverifiable?{unverifiable}:{})};setCloudReadOperation({status:'success',phase:'complete',code:'',counts,finishedAt:new Date().toISOString()});return counts;
   }catch(e){const code=cloudReadErrorCode(e);cloudState={...cloudState,status:'error',error:code};setCloudReadOperation({status:'error',code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
  })().finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
+}
+function buildResultRepairRecord(local,item,id,model){
+ const reject=()=>{throw Object.assign(new Error('repair_response_invalid'),{code:'repair_response_invalid'});};
+ const remote=item?.record;
+ if(!local||local.resultSnapshot||local.result?.finishOrder?.length||local.cloudConflict||item?.raceId!==id||item?.modelVersion!==model||!remote?.resultSnapshot||cloudMergeBindingIssue(local,id)||cloudMergeBindingIssue(remote,id))reject();
+ const a=activeRaceIdentity(local),b=activeRaceIdentity(remote);
+ if(a.raceId!==b.raceId||a.organization!==b.organization||String(local.predictionSnapshot?.modelVersion||local.modelVersion||'Legacy')!==model||String(remote.predictionSnapshot?.modelVersion||remote.modelVersion||'Legacy')!==model||!local.predictionSnapshot?.horses?.length||stableStringify(local.predictionSnapshot)!==stableStringify(remote.predictionSnapshot))reject();
+ const order=remote.resultSnapshot.finishOrder,known=new Set(local.predictionSnapshot.horses.map(h=>Number(h.horseNo)));
+ if(!Array.isArray(order)||order.length<3||order.some(n=>!['number','string'].includes(typeof n)||String(n).trim()===''||!Number.isInteger(Number(n))||Number(n)<=0||!known.has(Number(n)))||new Set(order.map(Number)).size!==order.length)reject();
+ return {...cloneData(local),resultSnapshot:cloneData(remote.resultSnapshot),...(!local.resultAcquiredAt?{resultAcquiredAt:remote.resultSnapshot.fetchedAt||remote.resultAcquiredAt||null}:{})};
+}
+function repairHeldCloudResults(){
+ if(cloudReadFlight)return cloudReadFlight;
+ cloudReadFlight=Promise.resolve().then(async()=>{
+  const counts={total:0,checked:0,resultAdded:0,conflicts:0,deferred:0,skipped:0};
+  setCloudReadOperation({action:'repair',status:'running',phase:'fetch',startedAt:new Date().toISOString(),finishedAt:'',code:'',counts:{...counts}});
+  try{
+   if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
+   const targets=cloudSyncActiveHolds().filter(h=>h.reason==='REMOTE_RESULT_PRESERVED'&&raceCache[h.raceId]?.predictionSnapshot&&!raceCache[h.raceId].resultSnapshot&&!raceCache[h.raceId].result?.finishOrder?.length&&!raceCache[h.raceId].cloudConflict&&!cloudMergeBindingIssue(raceCache[h.raceId],h.raceId)&&cloudDescriptor(h.raceId,raceCache[h.raceId]).modelVersion===h.modelVersion).slice(0,100);
+   counts.total=targets.length;
+   for(const h of targets){
+    const original=raceCache[h.raceId],revision=stableStringify(original);
+    setCloudReadOperation({phase:'fetch',counts:{...counts}});
+    const item=await cloudReadRequest(`/api/db/result-repair?raceId=${encodeURIComponent(h.raceId)}&modelVersion=${encodeURIComponent(h.modelVersion)}`);counts.checked++;
+    if(stableStringify(raceCache[h.raceId])!==revision){counts.deferred++;continue;}
+    let next;try{next=buildResultRepairRecord(original,item,h.raceId,h.modelVersion);}catch{counts.conflicts++;continue;}
+    setCloudReadOperation({phase:'save',counts:{...counts}});
+    try{if(researchDb)await idbPut('races',{id:h.raceId,data:next,updatedAt:stableRecordUpdatedAt(next)});else if(!localStore.set(KEY,{...raceCache,[h.raceId]:next}))throw Error('local_save_failed');}
+    catch{throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});}
+    if(stableStringify(raceCache[h.raceId])!==revision){counts.deferred++;continue;}
+    raceCache[h.raceId]=next;counts.resultAdded++;
+    // Holds, pending state, original signals and formal validation stay unchanged.
+   }
+   setCloudReadOperation({status:counts.conflicts||counts.deferred?'partial':'success',phase:'complete',counts:{...counts},code:'',finishedAt:new Date().toISOString()});return counts;
+  }catch(e){const code=cloudReadErrorCode(e);setCloudReadOperation({status:counts.resultAdded?'partial':'error',counts:{...counts},code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
+ }).finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
 }
 async function cloudRequest(path,options={}){
  const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}});
@@ -470,7 +506,7 @@ function renderCloudSyncState(){
  }
  renderCloudReadOperation();
  const readBusy=!!cloudReadFlight||cloudReadOperation?.status==='running';
- for(const id of ['cloudRestoreButton','cloudRecheckButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
+ for(const id of ['cloudRestoreButton','cloudRecheckButton','cloudResultRepairButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
  const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount');
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
  if(list)list.innerHTML=holds.map(h=>`<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}</small></div>`).join('');
@@ -479,7 +515,7 @@ function renderCloudSyncState(){
 function renderCloudReadOperation(){
  const node=$('cloudOperationStatus');if(!node)return;
  const op=cloudReadOperation;node.hidden=!op;if(!op)return;
- const action=op.action==='restore'?'復元':'保留の再確認',counts=op.counts||{},at=op.finishedAt||op.startedAt;
+ const action=op.action==='repair'?'不足結果の補完':op.action==='restore'?'復元':'保留の再確認',counts=op.counts||{},at=op.finishedAt||op.startedAt;
  let text;
  if(op.status==='running')text=`${action}中｜${{fetch:'クラウドへ接続中',validate:'受信内容を確認中',save:'端末へ保存中'}[op.phase]||'処理中'}`;
  else if(op.status==='interrupted')text=`前回の${action}は完了を確認できませんでした。再操作前に保存状態を確認してください。`;
@@ -487,12 +523,14 @@ function renderCloudReadOperation(){
   const labels={RESTORE_RESPONSE_INVALID:'復元データの形式が不正です。端末データは変更していません。',MANIFEST_RESPONSE_INVALID:'差分応答の形式が不正です。保留は解除していません。',CLOUD_READ_TIMEOUT:'通信が時間内に完了しませんでした。',LOCAL_SAVE_FAILED:'端末への保存に失敗しました。復元成功にはしていません。',NETWORK_ERROR:'クラウドとの通信に失敗しました。',INVALID_JSON:'クラウドの応答を読み取れませんでした。',HTTP_ERROR:'クラウドがエラーを返しました。',DATABASE_UNAVAILABLE:'クラウドの保存先に接続できませんでした。',DATABASE_READ_FAILED:'クラウドの保存データを読み出せませんでした。',DATABASE_SCHEMA_ERROR:'クラウドの保存形式を確認できませんでした。',CLOUD_SYNC_BUSY:'同期処理中です。終了後に操作してください。'};
   text=`${action}失敗｜${labels[op.code]||'処理を完了できませんでした。'}｜${op.code}`;
  }else if(op.code==='RENDER_FAILED')text=`${action}の保存は完了しましたが、画面更新に失敗しました。`;
+ else if(op.action==='repair')text=`不足結果の補完${op.status==='partial'?'は一部完了':'完了'}｜対象 ${counts.total||0}件・確認 ${counts.checked||0}件・結果補完 ${counts.resultAdded||0}件・不一致 ${counts.conflicts||0}件・端末変更を保持 ${counts.deferred||0}件${op.code?`・停止理由 ${op.code}`:''}｜元予想・Signal・保留は変更なし／クラウドへの送信なし`;
  else if(op.action==='restore')text=`復元完了｜受信 ${counts.received||0}件・追加 ${counts.added||0}件・補完 ${counts.enriched||0}件（結果補完 ${counts.resultAdded||0}件）・変更なし ${counts.unchanged||0}件・今回の競合 ${counts.conflicts||0}件${counts.deferred?`・端末の新しい変更を保持 ${counts.deferred}件`:''}｜同期保留は別途再確認してください。`;
  else text=`保留の再確認完了｜確認 ${counts.checked||0}件・一致して解除 ${counts.cleared||0}件・保留継続 ${counts.remaining||0}件${counts.unverifiable?`（照合情報不足 ${counts.unverifiable}件）`:''}｜クラウドへの送信なし`;
+ if(op.status==='running'&&op.action==='repair')text+=`｜確認 ${counts.checked||0}/${counts.total||0}件・結果補完 ${counts.resultAdded||0}件`;
  node.textContent=text+(at?`｜${at}`:'');node.className=['error','interrupted','partial'].includes(op.status)?'muted is-error':'muted';
 }
 async function runCloudReadAction(action){
- try{await (action==='restore'?restoreResearchFromCloud():recheckCloudSyncHolds());try{renderCloudDatasetSummary();renderDashboard();}catch{setCloudReadOperation({status:'partial',phase:'render',code:'RENDER_FAILED'});}}
+ try{await (action==='repair'?repairHeldCloudResults():action==='restore'?restoreResearchFromCloud():recheckCloudSyncHolds());try{renderCloudDatasetSummary();renderDashboard();}catch{setCloudReadOperation({status:'partial',phase:'render',code:'RENDER_FAILED'});}}
  catch{/* Safe diagnostic state is retained independently from sync holds. */}
  finally{renderCloudSyncState();}
 }
@@ -2470,6 +2508,7 @@ if($('publicApiCopy'))$('publicApiCopy').onclick=copyCurrentPublicApiUrl;
 if($('publicApiDayCopy'))$('publicApiDayCopy').onclick=copyCurrentPublicDayApiUrl;
 if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=()=>runCloudReadAction('restore');
 if($('cloudRecheckButton'))$('cloudRecheckButton').onclick=()=>runCloudReadAction('recheck');
+if($('cloudResultRepairButton'))$('cloudResultRepairButton').onclick=()=>runCloudReadAction('repair');
 if($('quickPredict'))$('quickPredict').onclick=()=>raceTypeOf(state)==='JRA'?(jraNormalizedDraft?$('jraAnalyze')?.click():$('jraOfficialLoad')?.click()):$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;

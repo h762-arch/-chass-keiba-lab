@@ -488,5 +488,6 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 .cloud-sync-bar strong,.cloud-sync-bar span{overflow-wrap:anywhere}
 .cloud-sync-bar .cloud-sync-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}
 .cloud-sync-bar .cloud-sync-actions button{width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere}
+.cloud-sync-bar #cloudResultRepairButton{grid-column:1/-1}
 #cloudOperationStatus{white-space:normal;overflow-wrap:anywhere;line-height:1.6;padding:10px;border:1px solid var(--line);border-radius:10px}
 @media(max-width:600px){.cloud-sync-bar .cloud-sync-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.cloud-sync-bar #cloudRecheckButton{grid-column:1/-1}}
