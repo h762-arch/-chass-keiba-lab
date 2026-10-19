@@ -347,25 +347,25 @@ function recoverCloudFingerprintMetadata(){
    if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
    const manifest=await cloudReadRequest('/api/db/manifest');if(!validCloudReadRecords(manifest,{manifest:true}))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
    const remote=new Map(manifest.records.map(x=>[manifestKey(x),x]));
-   const targets=cloudSyncActiveHolds().filter(h=>h.reason==='MANIFEST_FINGERPRINT_UNAVAILABLE').slice(0,1500);counts.total=targets.length;
+   const targets=cloudSyncActiveHolds().filter(h=>['MANIFEST_FINGERPRINT_UNAVAILABLE','REMOTE_RESULT_PRESERVED'].includes(h.reason)).slice(0,1500);counts.total=targets.length;
    for(const h of targets){
     const key=manifestKey(h),record=raceCache[h.raceId];
     counts.checked++;setCloudReadOperation({counts:{...counts}});
     if(!record||record.cloudConflict||cloudMergeBindingIssue(record,h.raceId)||cloudDescriptor(h.raceId,record).modelVersion!==h.modelVersion){counts.skipped++;continue;}
     const revision=stableStringify(record);let descriptor=remote.get(key);
-    if(descriptor?.fingerprintStatus==='unavailable'){
-     const reply=await cloudReadRequest('/api/db/recover-fingerprints',{method:'POST',body:JSON.stringify({raceId:h.raceId,modelVersion:h.modelVersion})});
-     if(reply.raceId!==h.raceId||reply.modelVersion!==h.modelVersion||!['recovered','already_present','skipped','concurrent_change'].includes(reply.outcome))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
+    if(descriptor?.fingerprintStatus==='unavailable'||h.reason==='REMOTE_RESULT_PRESERVED'){
+     const reply=await cloudReadRequest('/api/db/recover-fingerprints',{method:'POST',body:JSON.stringify({raceId:h.raceId,modelVersion:h.modelVersion,...(h.reason==='REMOTE_RESULT_PRESERVED'?{refreshExisting:true}:{})})});
+     if(reply.raceId!==h.raceId||reply.modelVersion!==h.modelVersion||!['recovered','refreshed','already_present','skipped','concurrent_change'].includes(reply.outcome))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
      if(reply.outcome==='skipped'){counts.skipped++;continue;}
      if(reply.outcome==='concurrent_change'){counts.deferred++;continue;}
-     if(reply.metadataWritten!==(reply.outcome==='recovered'))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
+     if(reply.metadataWritten!==(['recovered','refreshed'].includes(reply.outcome)))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
      descriptor=reply.descriptor;
      if(reply.metadataWritten)counts.metadataRecovered++;
     }
     if(!descriptor||manifestKey(descriptor)!==key||descriptor.fingerprintStatus!=='stored'||!['raceFingerprint','predictionFingerprint','liveFingerprint'].every(k=>typeof descriptor[k]==='string'&&descriptor[k].length>0)||!['marketFingerprint','finalFingerprint','resultFingerprint','validationFingerprint'].every(k=>descriptor[k]===null||typeof descriptor[k]==='string'&&descriptor[k].length>0)){counts.skipped++;continue;}
     counts.ready++;cloudManifestCache.set(key,cloneData(descriptor));
     if(stableStringify(raceCache[h.raceId])!==revision){counts.deferred++;continue;}
-    if(manifestMatches(cloudDescriptor(h.raceId,record),descriptor)&&cloudSyncHolds.get(key)?.reason==='MANIFEST_FINGERPRINT_UNAVAILABLE'){cloudSyncClearHold(key);setCloudPending(h.raceId,false);counts.cleared++;}
+    if(manifestMatches(cloudDescriptor(h.raceId,record),descriptor)&&['MANIFEST_FINGERPRINT_UNAVAILABLE','REMOTE_RESULT_PRESERVED'].includes(cloudSyncHolds.get(key)?.reason)){cloudSyncClearHold(key);setCloudPending(h.raceId,false);counts.cleared++;}
     else counts.conflicts++;
     counts.remaining=cloudSyncActiveHolds().length;setCloudReadOperation({counts:{...counts}});
    }
