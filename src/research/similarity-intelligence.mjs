@@ -1,3 +1,4 @@
+import {readFiniteNumber,inspectRecordBinding,readBoundRecord,readOriginalHorses,hasCompleteReadResult} from './original-record-reader-v1.mjs';
 export const SIMILARITY_VERSION='similarity_v1';
 export const SIMILARITY_WEIGHTS=Object.freeze({
   track:15,distance:10,classLevel:10,fieldSize:5,trackCondition:5,
@@ -6,10 +7,10 @@ export const SIMILARITY_WEIGHTS=Object.freeze({
 });
 
 const clamp=(value,min=0,max=1)=>Math.max(min,Math.min(max,Number(value)||0));
-const number=value=>{const n=Number(value);return Number.isFinite(n)?n:null};
+const number=readFiniteNumber;
 const mean=values=>{const xs=values.filter(x=>number(x)!=null).map(Number);return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:null};
-const predictionAt=record=>Date.parse(record?.predictionCreatedAt||record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt||'')||0;
-const resultAt=record=>Date.parse(record?.resultAcquiredAt||record?.resultSnapshot?.fetchedAt||'')||0;
+const predictionAt=record=>Date.parse(record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt||record?.predictionCreatedAt||'')||0;
+const resultAt=record=>Date.parse(record?.resultSnapshot?.fetchedAt||record?.resultAcquiredAt||'')||0;
 const timeSeconds=value=>{const m=String(value||'').match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);if(!m)return null;const n=Number(m[1]||0)*60+Number(m[2]);return n>0?n:null};
 const surface=value=>/芝|turf/i.test(String(value||''))?'turf':/ダ|dirt/i.test(String(value||''))?'dirt':null;
 const conditionRank=value=>({良:0,稍重:1,重:2,不良:3}[String(value||'').trim()]??null);
@@ -22,13 +23,8 @@ const pctSimilarity=(a,b,scale)=>a==null||b==null?null:clamp(1-Math.abs(a-b)/sca
 const vectorSimilarity=(a,b,scale=1)=>{if(!Array.isArray(a)||!Array.isArray(b)||!a.length||!b.length)return null;const n=Math.min(a.length,b.length),diff=Array.from({length:n},(_,i)=>Math.abs(a[i]-b[i])).reduce((s,x)=>s+x,0)/n;return clamp(1-diff/scale)};
 const safeRate=(numerator,denominator)=>denominator?Number((numerator/denominator).toFixed(4)):null;
 
-function originalHorses(record){
-  const prediction=record?.predictionSnapshot?.horses||[],created=predictionAt(record),marketAt=Date.parse(record?.marketSnapshot?.acquiredAt||'')||0;
-  const safeMarket=!marketAt||!created||marketAt<=created;
-  const market=new Map((safeMarket?record?.marketSnapshot?.horses||[]:[]).map(h=>[Number(h.horseNo),h]));
-  return prediction.map(h=>({...h,...(market.get(Number(h.horseNo))||{})}));
-}
-function liveLayer(record){return record?.liveAdjustedPrediction||record?.race?.liveAdjustedPrediction||null}
+function originalHorses(record){return readOriginalHorses(record,{marketAtOrBefore:predictionAt(record)||null})}
+function liveLayer(record){const bound=readBoundRecord(record);return bound?.liveAdjustedPrediction||bound?.race?.liveAdjustedPrediction||null}
 function liveHorses(record){return (liveLayer(record)?.horses||[]).filter(h=>!['scratched','excluded','withdrawn'].includes(h.horseStatus||h.status))}
 function layerHorses(record,mode='original'){return mode==='live_adjusted'?liveHorses(record):originalHorses(record)}
 function layerTime(record,mode='original'){const live=liveLayer(record);return mode==='live_adjusted'?(Date.parse(live?.createdAt||live?.updatedAt||'')||0):predictionAt(record)}
@@ -44,7 +40,7 @@ function classLevel(value){const text=String(value||'').toUpperCase().replace(/\
 function featureCoverage(features){const keys=['track','distance','surface','trackCondition','classInfo','fieldSize','abilityVector','winVector','placeVector','timeVector','pace','market','marketGap','volatility'];return keys.filter(k=>features[k]!=null&&(!Array.isArray(features[k])||features[k].length)).length/keys.length}
 
 export function extractSimilarityFeatures(item,{mode='original'}={}){
-  const record=item?.record||item||{},race=record.race||record.predictionSnapshot?.race||{},rows=horseRows(record,mode),horses=rows.horses,styles={escape:0,front:0,stalker:0,closer:0};
+  const record=readBoundRecord(item?.record||item||{},item?.raceId),race=record.race||record.predictionSnapshot?.race||{},rows=horseRows(record,mode),horses=rows.horses,styles={escape:0,front:0,stalker:0,closer:0};
   for(const h of horses){const style=styleName(h.runningStyle||h.style);if(style)styles[style]++}
   const live=liveLayer(record),abilityValues=rows.ability.map(h=>number(h.abilityScore??h.raw?.highest??h.overall)).filter(x=>x!=null),winValues=rows.wins.map(h=>number(h.win)).filter(x=>x!=null),placeValues=rows.places.map(h=>number(h.place)).filter(x=>x!=null),timeValues=rows.times.map(h=>timeSeconds(h.predictedTime)).filter(x=>x!=null),popular=[...horses].filter(h=>number(h.popularity)!=null).sort((a,b)=>Number(a.popularity)-Number(b.popularity)),odds=popular.map(h=>number(h.odds)).filter(x=>x!=null),marketGaps=horses.map(h=>number(h.marketGapScore)).filter(x=>x!=null),axis=mode==='live_adjusted'?live:record.predictionSnapshot?.axisModel,volatility=mode==='live_adjusted'?live?.volatility:record.predictionSnapshot?.volatility;
   const features={raceId:item?.raceId||race.raceId||'',mode,at:layerTime(record,mode),track:race.track||null,distance:number(race.distance),surface:surface(race.surface),trackCondition:race.trackCondition||race.condition||null,classInfo:classLevel(race.raceClass||race.class),fieldSize:horses.length||number(race.fieldSize),ageCondition:race.ageCondition||null,sexCondition:race.sexCondition||null,abilityVector:normalizedTop(rows.ability,h=>number(h.abilityScore??h.raw?.highest??h.overall),5),abilityGap1_2:abilityValues.length>1?abilityValues[0]-abilityValues[1]:null,abilityGap1_3:abilityValues.length>2?abilityValues[0]-abilityValues[2]:null,winVector:winValues.slice(0,5).map(x=>x/100),winTop3Total:winValues.length>=3?winValues.slice(0,3).reduce((a,b)=>a+b,0)/100:null,placeVector:placeValues.slice(0,5).map(x=>x/100),placeConcentration:placeValues.length>=3?placeValues.slice(0,3).reduce((a,b)=>a+b,0)/300:null,timeVector:timeValues.length?timeValues.slice(0,5).map(x=>x-timeValues[0]):[],timeGap1_2:timeValues.length>1?timeValues[1]-timeValues[0]:null,timeTop5Range:timeValues.length>1?timeValues[Math.min(4,timeValues.length-1)]-timeValues[0]:null,pace:{label:paceName(race.pace),...styles},market:popular.length?{favoriteOdds:odds[0]??null,secondOdds:odds[1]??null,topConcentration:odds.length>=3?mean(odds.slice(0,3).map(x=>1/Math.max(.1,x))):null}:null,marketGap:marketGaps.length?mean(marketGaps):null,longshotCount:horses.filter(h=>h.valueMark||['相手穴','勝ち穴','大穴'].includes(h.valueType)).length,dangerCount:horses.filter(h=>h.warningMark).length,volatility:number(volatility?.volatilityIndex??race.volatilityIndex),raceConfidence:number(axis?.raceConfidence??race.raceConfidence),predictionConsensus:mean(horses.map(h=>number(h.predictionAxes?.predictionConsensus))),placeStabilityTop:mean(rows.places.slice(0,3).map(h=>number(h.predictionAxes?.placeStabilityScore))),paceFitTop:mean(rows.places.slice(0,3).map(h=>number(h.predictionAxes?.paceFitScore??h.paceFitScore)))};
@@ -70,7 +66,9 @@ export function similarityScore(target,candidate,{weights=SIMILARITY_WEIGHTS}={}
 function candidateEligible(targetItem,candidateItem,targetMode='original',candidateMode='original'){
   const targetRecord=targetItem?.record||targetItem||{},candidateRecord=candidateItem?.record||candidateItem||{},targetTime=layerTime(targetRecord,targetMode),candidateTime=layerTime(candidateRecord,candidateMode),settledAt=resultAt(candidateRecord);
   const retrospective=candidateRecord?.predictionSnapshot?.historicalResearch===true||candidateRecord?.predictionSnapshot?.predictionKind==='backtest_prediction'||candidateRecord?.race?.predictionKind==='backtest_prediction';
-  return !retrospective&&!!targetTime&&!!candidateTime&&candidateTime<targetTime&&!!settledAt&&settledAt<targetTime&&candidateRecord?.resultSnapshot?.finishOrder?.length>=3&&layerHorses(candidateRecord,candidateMode).length>=2&&(targetItem?.raceId||'')!==(candidateItem?.raceId||'');
+  const org=r=>String(r.predictionSnapshot?.organization||r.race?.organization||r.race?.raceType||'').toUpperCase();
+  if(org(targetRecord)&&org(candidateRecord)&&org(targetRecord)!==org(candidateRecord))return false;
+  return !retrospective&&inspectRecordBinding(candidateRecord,candidateItem?.raceId).status==='READABLE'&&inspectRecordBinding(targetRecord,targetItem?.raceId).status==='READABLE'&&String(targetRecord.predictionSnapshot?.modelVersion??targetRecord.modelVersion??'Legacy')===String(candidateRecord.predictionSnapshot?.modelVersion??candidateRecord.modelVersion??'Legacy')&&!!targetTime&&!!candidateTime&&candidateTime<targetTime&&!!settledAt&&settledAt>candidateTime&&settledAt<targetTime&&hasCompleteReadResult(candidateRecord)&&layerHorses(candidateRecord,candidateMode).length>=2&&(targetItem?.raceId||'')!==(candidateItem?.raceId||'');
 }
 function weightedBoolean(rows,predicate){let denominator=0,numerator=0,sampleCount=0,hitCount=0;for(const row of rows){const result=predicate(row);if(result==null)continue;const w=row.similarityScore;denominator+=w;sampleCount++;if(result){numerator+=w;hitCount++}}return {rate:denominator?Number((numerator/denominator).toFixed(4)):null,numerator:hitCount,denominator:sampleCount}}
 function leader(record,sorter,mode='original'){const rows=horseRows(record,mode);return sorter(rows)?.[0]||null}
@@ -101,10 +99,10 @@ function patternRows(pool){
   const baseline=poolRate(pool,()=>true),definitions=[
     ['high_place_low_market','AI3着内率30%以上＋7人気以下',x=>number(x.h.place)>=30&&number(x.h.popularity)>=7,'success'],
     ['place_longshot_pace_fit','相手穴＋展開適性60以上',x=>x.h.valueType==='相手穴'&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)>=60,'success'],
-    ['ai_market_gap','AI上位3頭＋7人気以下',x=>x.winRank<=3&&number(x.h.popularity)>=7,'success'],
-    ['top_ability_pace_mismatch','能力1位＋上位人気＋展開不適合',x=>x.abilityRank===1&&number(x.h.popularity)<=3&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)<50,'failure'],
-    ['favorite_low_consensus','1人気＋モデル一致度50未満',x=>number(x.h.popularity)===1&&number(x.h.predictionAxes?.predictionConsensus)<50,'failure'],
-    ['time_leader_pace_mismatch','TIME1位＋展開不適合',x=>x.timeRank===1&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)<50,'failure']
+    ['ai_market_gap','AI上位3頭＋7人気以下',x=>x.winRank!=null&&x.winRank<=3&&number(x.h.popularity)>=7,'success'],
+    ['top_ability_pace_mismatch','能力1位＋上位人気＋展開不適合',x=>x.abilityRank===1&&number(x.h.popularity)!=null&&number(x.h.popularity)<=3&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)!=null&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)<50,'failure'],
+    ['favorite_low_consensus','1人気＋モデル一致度50未満',x=>number(x.h.popularity)===1&&number(x.h.predictionAxes?.predictionConsensus)!=null&&number(x.h.predictionAxes?.predictionConsensus)<50,'failure'],
+    ['time_leader_pace_mismatch','TIME1位＋展開不適合',x=>x.timeRank===1&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)!=null&&number(x.h.predictionAxes?.paceFitScore??x.h.paceFitScore)<50,'failure']
   ];
   const successPatterns=[],failurePatterns=[];for(const [pattern,label,filter,type] of definitions){const rate=poolRate(pool,filter),enough=rate.denominator>=10;if(!enough)continue;if(type==='success'){successPatterns.push({pattern,label,sampleCount:rate.denominator,top3Rate:rate.rate,baselineTop3Rate:baseline.rate,lift:rate.rate!=null&&baseline.rate?Number((rate.rate/baseline.rate).toFixed(2)):null})}else failurePatterns.push({pattern,label,sampleCount:rate.denominator,failureRate:rate.rate==null?null:Number((1-rate.rate).toFixed(4))})}
   successPatterns.sort((a,b)=>(b.lift||0)-(a.lift||0));failurePatterns.sort((a,b)=>(b.failureRate||0)-(a.failureRate||0));return {successPatterns:successPatterns.slice(0,3),failurePatterns:failurePatterns.slice(0,3),baselineTop3Rate:baseline}
@@ -119,6 +117,8 @@ function confidenceValue(rows,target){const countScore=clamp(rows.length/50),ave
 function compactSimilarRace(row,mode){const race=row.item.record?.race||row.item.record?.predictionSnapshot?.race||{};return {raceId:row.item.raceId||race.raceId||'',similarityScore:row.similarityScore,track:race.track||null,distance:number(race.distance),fieldSize:layerHorses(row.item.record,mode).length,result:(row.item.record.resultSnapshot?.finishOrder||[]).slice(0,3).map(Number)}}
 
 export function analyzeHistoricalSimilarity(targetItem,allItems,{mode='original',limit=50,weights=SIMILARITY_WEIGHTS,includeDebug=false}={}){
+  if(inspectRecordBinding(targetItem?.record||targetItem,targetItem?.raceId).status==='HOLD')return {available:false,error:'snapshot_binding_conflict',similarityVersion:SIMILARITY_VERSION,mode:'shadow',adopted:false};
+  allItems=uniqueSimilarityItems(allItems);
   const targetRecord=targetItem?.record||targetItem||{},target=extractSimilarityFeatures(targetItem,{mode});if(!target.at)return {available:false,error:'prediction_snapshot_time_missing',similarityVersion:SIMILARITY_VERSION,mode:'shadow',adopted:false};
   const scored=[];for(const item of allItems||[]){if(!candidateEligible(targetItem,item,mode,mode))continue;const features=extractSimilarityFeatures(item,{mode}),similarity=similarityScore(target,features,{weights});if(similarity.hardExcluded||similarity.score<.35)continue;scored.push({item,features,similarityScore:similarity.score,components:similarity.components,weightCoverage:similarity.weightCoverage})}
   scored.sort((a,b)=>b.similarityScore-a.similarityScore);const strict=scored.filter(x=>x.similarityScore>=.5),selected=(strict.length>=20?strict:scored).slice(0,Math.max(20,Math.min(50,Number(limit)||50))),confidence=confidenceValue(selected,target),pool=horsePool(selected,mode),metrics=raceMetrics(selected,mode),patterns=patternRows(pool),baseline=patterns.baselineTop3Rate.rate??(target.fieldSize?Math.min(1,3/target.fieldSize):.25),supports=horseSupport(targetItem,pool,mode,baseline),style=styleMetrics(pool),leader=target.rows.ability[0],leaderSupport=supports.find(x=>x.horseNo===Number(leader?.horseNo)),favoriteCollapse=metrics.favoriteCollapseRate.rate,historicalConflict=!!(favoriteCollapse!=null&&favoriteCollapse>=.4&&leader&&number(leader.popularity)<=3&&(number(leader.predictionAxes?.paceFitScore??leader.paceFitScore)??100)<55),historicalConsensus=historicalConflict?'low':leaderSupport?.classification==='support'?'high':'neutral';
@@ -126,9 +126,15 @@ export function analyzeHistoricalSimilarity(targetItem,allItems,{mode='original'
   if(includeDebug)output.debug=selected.slice(0,10).map(x=>({raceId:x.item.raceId,similarityScore:x.similarityScore,weightCoverage:x.weightCoverage,components:x.components}));return output
 }
 
+function uniqueSimilarityItems(items=[]){
+ const groups=new Map(),unkeyed=[];
+ for(const item of items||[]){const key=item?.raceId||item?.record?.predictionSnapshot?.raceId;if(!key){unkeyed.push(item);continue;}const group=groups.get(key)||[];group.push(item);groups.set(key,group);}
+ return [...groups.values()].filter(group=>group.every(x=>JSON.stringify(x.record)===JSON.stringify(group[0].record))).map(group=>group[0]).concat(unkeyed);
+}
 function metricCounts(items,predicate){let denominator=0,numerator=0;for(const item of items){const value=predicate(item);if(value==null)continue;denominator++;if(value)numerator++}return {rate:safeRate(numerator,denominator),numerator,denominator}}
 export function walkForwardSimilarity(allItems,{maxTargets=200}={}){
-  const settled=(allItems||[]).filter(item=>item?.record?.resultSnapshot?.finishOrder?.length>=3&&item?.record?.predictionSnapshot?.horses?.length&&item.record.predictionSnapshot?.historicalResearch!==true&&item.record.predictionSnapshot?.predictionKind!=='backtest_prediction'&&item.record.race?.predictionKind!=='backtest_prediction').sort((a,b)=>predictionAt(a.record)-predictionAt(b.record)).slice(-Math.max(1,Math.min(500,Number(maxTargets)||200))),evaluated=[];
+  allItems=uniqueSimilarityItems(allItems);
+  const settled=(allItems||[]).filter(item=>inspectRecordBinding(item?.record,item?.raceId).status==='READABLE'&&hasCompleteReadResult(item?.record)&&item?.record?.predictionSnapshot?.horses?.length&&item.record.predictionSnapshot?.historicalResearch!==true&&item.record.predictionSnapshot?.predictionKind!=='backtest_prediction'&&item.record.race?.predictionKind!=='backtest_prediction').sort((a,b)=>predictionAt(a.record)-predictionAt(b.record)).slice(-Math.max(1,Math.min(500,Number(maxTargets)||200))),evaluated=[];
   for(const item of settled){const analysis=analyzeHistoricalSimilarity(item,allItems,{mode:'original',limit:50});if(!analysis.available)continue;const record=item.record,actual=new Set(record.resultSnapshot.finishOrder.slice(0,3).map(Number)),official=(record.finalSnapshot?.top3||[]).map(x=>Number(x.horseNo)),horses=originalHorses(record),supportNos=new Set(analysis.horseSupport.filter(x=>x.classification==='support').map(x=>x.horseNo)),conflictNos=new Set(analysis.horseSupport.filter(x=>x.classification==='conflict').map(x=>x.horseNo)),actualLong=horses.filter(h=>actual.has(Number(h.horseNo))&&number(h.popularity)>=7),actualDeep=horses.filter(h=>actual.has(Number(h.horseNo))&&number(h.popularity)>=10),diamonds=horses.filter(h=>h.valueMark),warnings=horses.filter(h=>h.warningMark);evaluated.push({officialCapture:official.some(no=>actual.has(no)),supportCapture:[...supportNos].some(no=>actual.has(no)),target7:actualLong.length>0,official7:actualLong.some(h=>diamonds.some(d=>Number(d.horseNo)===Number(h.horseNo))),support7:actualLong.some(h=>supportNos.has(Number(h.horseNo))),target10:actualDeep.length>0,official10:actualDeep.some(h=>diamonds.some(d=>Number(d.horseNo)===Number(h.horseNo))),support10:actualDeep.some(h=>supportNos.has(Number(h.horseNo))),diamondHit:diamonds.length?diamonds.some(h=>actual.has(Number(h.horseNo))):null,warningCorrect:warnings.length?warnings.some(h=>!actual.has(Number(h.horseNo))):null,conflictCorrect:conflictNos.size?[...conflictNos].some(no=>!actual.has(no)):null})}
   const officialTop3=metricCounts(evaluated,x=>x.officialCapture),supportTop3=metricCounts(evaluated,x=>x.supportCapture),official7=metricCounts(evaluated.filter(x=>x.target7),x=>x.official7),support7=metricCounts(evaluated.filter(x=>x.target7),x=>x.support7),official10=metricCounts(evaluated.filter(x=>x.target10),x=>x.official10),support10=metricCounts(evaluated.filter(x=>x.target10),x=>x.support10);return {similarityVersion:SIMILARITY_VERSION,mode:'walk_forward_shadow',adopted:false,targetCount:settled.length,evaluatedCount:evaluated.length,baseline:{top3CaptureRate:officialTop3,sevenPlusCaptureRate:official7,tenPlusCaptureRate:official10,diamondTop3Rate:metricCounts(evaluated,x=>x.diamondHit),warningAccuracy:metricCounts(evaluated,x=>x.warningCorrect)},similarityEvidence:{supportTop3Rate:supportTop3,sevenPlusSupportCaptureRate:support7,tenPlusSupportCaptureRate:support10,conflictWarningAccuracy:metricCounts(evaluated,x=>x.conflictCorrect)},officialPredictionDelta:{top3CaptureRate:0,brierScore:0,timeMae:0,reason:'shadow補助のため既存確率・TIME・印は未変更'}}
 }
