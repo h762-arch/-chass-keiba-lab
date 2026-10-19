@@ -1,0 +1,92 @@
+name: CHASS Full Integration Gate v1
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open, ready PR number to validate (not main)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: chass-full-integration-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  full-integration:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve open ready PR and record exact revisions
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > /tmp/pr-before.json
+          jq -e '.state == "open" and .draft == false and .base.ref == "main"' /tmp/pr-before.json
+          echo "head_sha=$(jq -r .head.sha /tmp/pr-before.json)" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r .base.sha /tmp/pr-before.json)" >> "$GITHUB_OUTPUT"
+          echo "merge_ref=refs/pull/$PR_NUMBER/merge" >> "$GITHUB_OUTPUT"
+      - name: Check out PR merge revision read-only
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.merge_ref }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify merge contains the selected PR head and base
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ steps.pr.outputs.head_sha }}
+          EXPECTED_BASE: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies without lifecycle scripts
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mcp --ignore-scripts
+      - name: Full repository regression before merge
+        run: npm run check
+      - name: Reject a result made stale by PR or main updates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > /tmp/pr-after.json
+          jq -e '.state == "open" and .draft == false and .base.ref == "main"' /tmp/pr-after.json
+          test "$(jq -r .head.sha /tmp/pr-before.json)" = "$(jq -r .head.sha /tmp/pr-after.json)"
+          test "$(jq -r .base.sha /tmp/pr-before.json)" = "$(jq -r .base.sha /tmp/pr-after.json)"
+      - name: Integration summary
+        if: always()
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          {
+            echo '## Full integration gate'
+            echo '- Scope: npm run check (syntax + full regressions)'
+            echo "- PR head: $HEAD_SHA"
+            echo "- Main base: $BASE_SHA"
+            echo '- Merge only after this job succeeds for the current head/base.'
+            echo '- Production deploy / D1 writes: NOT PERFORMED'
+          } >> "$GITHUB_STEP_SUMMARY"

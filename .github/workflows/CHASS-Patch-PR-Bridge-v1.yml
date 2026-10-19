@@ -226,11 +226,11 @@ jobs:
           npm ci --ignore-scripts
           npm ci --prefix mcp --ignore-scripts
 
-      - name: Full repository check
+      - name: Change-scoped regression check
         shell: bash
         run: |
           set -euo pipefail
-          npm run check
+          node scripts/run-affected-tests.mjs --staged
 
       - name: Record validated diff
         shell: bash
@@ -340,7 +340,8 @@ jobs:
           ### Validation
           - Base SHA: \`$EXPECTED_BASE_SHA\`
           - Patch SHA-256: \`$PATCH_SHA256\`
-          - Full repository check: PASS
+          - Scoped validation: PASS (full integration check still required)
+          - Full regression check: PENDING until PR is marked ready for review
           - Exact path allowlist: PASS
           - Branch overwrite / force-push: NOT USED
 
@@ -359,6 +360,7 @@ jobs:
             --base main \
             --head "$BRANCH_NAME" \
             --title "$PR_TITLE" \
+            --draft \
             --body-file /tmp/pr-body.md 2>&1)"
           PR_RC=$?
           set -e
