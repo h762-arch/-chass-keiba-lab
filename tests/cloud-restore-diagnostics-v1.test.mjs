@@ -23,6 +23,23 @@ test('restore network error remains visible alongside durable holds, with no raw
 test('HTTP and malformed JSON failures have safe distinct diagnostics',async()=>{
  for(const [fetchImpl,code] of [[async()=>response({ok:false,error:'PRIVATE'},503),'HTTP_ERROR'],[async()=>new Response('not json'),'INVALID_JSON']]){const {c}=core(fetchImpl);await assert.rejects(c.restoreResearchFromCloud());assert.equal(c.getCloudReadOperation().code,code);}
 });
+test('body transport failures, aborted reads, and non-JSON HTTP errors are not INVALID_JSON',async()=>{
+ for(const [name,status,expected] of [['TypeError',200,'NETWORK_ERROR'],['AbortError',200,'CLOUD_READ_TIMEOUT'],['SyntaxError',503,'HTTP_ERROR']]){
+  for(const action of ['restoreResearchFromCloud','recheckCloudSyncHolds']){const {c}=core(async()=>({ok:status===200,status,json:async()=>{const error=new Error('PRIVATE_BODY');error.name=name;throw error;}}));
+   await assert.rejects(c[action]());assert.equal(c.getCloudReadOperation().code,expected);
+  }
+ }
+});
+test('deadline abort during response body read remains TIMEOUT, not INVALID_JSON',async()=>{
+ const {c,timers}=core(async(u,o)=>({ok:true,status:200,json:()=>new Promise((_,reject)=>o.signal.addEventListener('abort',()=>{const e=new Error('PRIVATE');e.name='AbortError';reject(e)}))}));
+ const p=c.recheckCloudSyncHolds();await Promise.resolve();await Promise.resolve();timers.at(-1)();await assert.rejects(p);assert.equal(c.getCloudReadOperation().code,'CLOUD_READ_TIMEOUT');
+});
+test('cloud controls stack status above buttons and cover 440px phone widths',()=>{
+ const css=readFileSync(new URL('../styles.css',import.meta.url),'utf8');
+ assert.match(css,/\.cloud-sync-bar\{display:grid;grid-template-columns:minmax\(0,1fr\);align-items:stretch\}/);
+ assert.match(css,/@media\(max-width:600px\)\{\.cloud-sync-bar \.cloud-sync-actions\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/);
+ assert.match(css,/\.cloud-sync-bar \.cloud-sync-actions button\{width:100%;min-width:0;white-space:normal/);
+});
 test('known server DB failure codes stay actionable without exposing server detail',async()=>{
  const {c,nodes}=core(async()=>response({ok:false,error:'d1_research_read_failed',detail:'PRIVATE_SQL_OR_TOKEN'},500));await assert.rejects(c.restoreResearchFromCloud());assert.equal(c.getCloudReadOperation().code,'DATABASE_READ_FAILED');assert.match(nodes.cloudOperationStatus.textContent,/読み出せません/);assert.doesNotMatch(nodes.cloudOperationStatus.textContent,/PRIVATE_SQL_OR_TOKEN/);
 });

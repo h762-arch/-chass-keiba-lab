@@ -306,7 +306,11 @@ function recheckCloudSyncHolds(){
 }
 async function cloudRequest(path,options={}){
  const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}});
- const data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));
+ let data;try{data=await response.json();}catch(error){
+  // Body reads can fail after headers arrive: do not label transport failures as malformed JSON.
+  const code=options.signal?.aborted||error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error?.name==='SyntaxError'?(response.ok?'invalid_response':'HTTP_ERROR'):'NETWORK_ERROR';
+  throw Object.assign(new Error(code),{status:response.status,code});
+ }
  if(!response.ok||data?.ok!==true){const sync=path==='/api/db/sync',code=data?.error||(sync&&response.status===409?'SYNC_CONFLICT':`HTTP ${response.status}`);throw Object.assign(new Error(code),{status:response.status,code,...(sync&&Array.isArray(data?.records)?{syncResponse:data}:{})});}
  return data;
 }
