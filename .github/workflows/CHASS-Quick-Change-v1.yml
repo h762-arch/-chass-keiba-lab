@@ -79,13 +79,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm ci --prefix mcp --ignore-scripts
 
-      - name: Full regression check
+      - name: Change-scoped regression check
         shell: bash
         run: |
           set -euo pipefail
-          npm run check 2>&1 | tee /tmp/npm-check.log
-          grep -E 'fail 0$' /tmp/npm-check.log
-          grep -E 'skipped 0$' /tmp/npm-check.log
+          node scripts/run-affected-tests.mjs --working 2>&1 | tee /tmp/npm-check.log
 
       - name: Save validated patch
         shell: bash
@@ -178,9 +176,11 @@ jobs:
           - No Production deploy in this PR.
           - NAR unchanged.
 
+          Validation: change-scoped checks passed; full integration is required after marking ready for review.
+
           After merge:
           1. Deploy with mode `deploy`.
           2. Verify v2 DATA coverage and integrity.
           3. Only then create a separate Viewer ON PR.
           EOF_PR
-          gh pr create             --repo "${{ github.repository }}"             --base main             --head "$BRANCH_NAME"             --title "$PR_TITLE"             --body-file /tmp/pr-body.md
+          gh pr create             --repo "${{ github.repository }}"             --base main             --head "$BRANCH_NAME"             --title "$PR_TITLE"             --draft             --body-file /tmp/pr-body.md
