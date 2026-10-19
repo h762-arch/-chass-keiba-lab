@@ -1,22 +1,25 @@
-# PR #265 runtime evidence audit v1
+# Runtime evidence audit v1
 
-Baseline main: `065852fa52e1a3c27492e0f8f045835406747fef`.
+Offline capture baseline: `065852fa52e1a3c27492e0f8f045835406747fef`.
+The production probe uses the selected checkout's Git HEAD; see below.
 
-This adds an operator CLI and offline capture comparison. App.js, Worker routes,
-deployment, migrations, runtime flags, prediction and sync logic are unchanged.
+This describes the operator CLI and offline capture comparison originally added
+in PR #266. Subsequent app restore improvements are documented separately in
+CLOUD_RESTORE_DIAGNOSTICS_V1.md. The CLI does not deploy, migrate or change flags.
 Scripts and docs stay excluded from public assets by existing .assetsignore.
 Every report retains Formal KPI HOLD / Probability MODEL_HOLD / Production NO-GO.
 
 ## Read-only probe
 
-From a checkout containing the exact PR #265 browser files:
+From the intended reviewed Git checkout, with clean tracked browser files:
 
 ```sh
 node scripts/audit-cloud-sync-runtime-v1.mjs --probe-source . > runtime-probe.json
 ```
 
-Both local Git blob IDs must match the independently fetched PR #265 tree before
-any requests. The command then issues exactly four GETs to the fixed production
+Both local Git blob IDs must match the selected checkout's HEAD commit before
+any requests. The report identifies that commit and LOCAL_GIT_COMMIT authority.
+Confirm its SHA against the intended reviewed GitHub main separately. The command then issues exactly four GETs to the fixed production
 origin: /app.js, / (the canonical HTML route), public health and DB health. Both health handlers use
 SELECT 1. No manifest, research, race acquisition, POST, migration, deployment,
 token or D1 record access is used. Redirects and credentials are disabled. Bodies
@@ -24,9 +27,11 @@ are capped at 2 MB and each request/body operation has a 15-second deadline.
 Reports omit raw response bodies and transport error details.
 
 Exact SHA-256 asset agreement proves only those two fetched browser assets match
-the baseline. Health proves only its response contract, not Worker source revision
+the selected local Git commit. Health proves only its response contract, not Worker source revision
 or DB row contents. Device/browser caches may still serve different bytes.
-Later browser revisions deliberately fail this PR-specific reference check.
+Dirty or uncommitted browser files fail before network access. Caller-supplied
+test references are explicitly marked CALLER_SUPPLIED. Local Git is not an
+independently authenticated deployment/source authority.
 
 Worker revision requires independent Cloudflare deployment/version evidence.
 The existing Production Finalize + Deploy workflow has validate_only, deploy and
