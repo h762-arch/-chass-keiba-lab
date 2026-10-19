@@ -164,7 +164,7 @@ function queueCloudStatus(record){
 }
 function cloudDescriptor(raceId,record){const racePayload={...(record?.race||record?.predictionSnapshot?.race||{}),...(record?.snapshotIntegrity||record?.race?.snapshotIntegrity?{snapshotIntegrity:record.snapshotIntegrity||record.race.snapshotIntegrity}:{}),resultQueue:record?.resultQueue||null,liveAdjustedPrediction:record?.liveAdjustedPrediction||null,scratchAudit:record?.scratchAudit||null};return {raceId,modelVersion:String(record?.predictionSnapshot?.modelVersion||record?.modelVersion||'Legacy'),updatedAt:stableRecordUpdatedAt(record),status:queueCloudStatus(record),raceFingerprint:cloudFingerprint(racePayload),predictionFingerprint:cloudFingerprint(record?.predictionSnapshot),marketFingerprint:cloudFingerprint(record?.marketSnapshot),finalFingerprint:cloudFingerprint(record?.finalSnapshot),resultFingerprint:cloudFingerprint(record?.resultSnapshot),validationFingerprint:cloudFingerprint(record?.validationSnapshot),liveFingerprint:cloudFingerprint({liveAdjustedPrediction:record?.liveAdjustedPrediction||null,scratchAudit:record?.scratchAudit||null})}}
 function manifestKey(item){return `${item?.raceId||''}|${item?.modelVersion||'Legacy'}`}
-function manifestMatches(local,remote){return !!remote&&['raceFingerprint','predictionFingerprint','marketFingerprint','finalFingerprint','resultFingerprint','validationFingerprint','liveFingerprint'].every(key=>(local[key]||null)===(remote[key]||null))&&local.status===remote.status}
+function manifestMatches(local,remote){return !!remote&&(!remote.fingerprintStatus||remote.fingerprintStatus==='stored')&&['raceFingerprint','predictionFingerprint','marketFingerprint','finalFingerprint','resultFingerprint','validationFingerprint','liveFingerprint'].every(key=>(local[key]||null)===(remote[key]||null))&&local.status===remote.status}
 function researchContentFingerprint(record){return snapshotFingerprint({race:record?.race||null,predictionSnapshot:record?.predictionSnapshot||null,marketSnapshot:record?.marketSnapshot||null,finalSnapshot:record?.finalSnapshot||null,resultSnapshot:record?.resultSnapshot||null,validationSnapshot:record?.validationSnapshot||null,resultQueue:record?.resultQueue||null,liveAdjustedPrediction:record?.liveAdjustedPrediction||null,scratchAudit:record?.scratchAudit||null,validationCompleted:!!record?.validationCompleted})}
 function idbRequest(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB request failed'))})}
 function openResearchDb(){return new Promise((resolve,reject)=>{if(!('indexedDB' in window)){reject(new Error('IndexedDB unavailable'));return}const req=indexedDB.open(RESEARCH_DB,RESEARCH_DB_VERSION);req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('races'))db.createObjectStore('races',{keyPath:'id'});if(!db.objectStoreNames.contains('oddsHistory'))db.createObjectStore('oddsHistory',{keyPath:'raceId'});if(!db.objectStoreNames.contains('settings'))db.createObjectStore('settings',{keyPath:'key'})};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB open failed'));req.onblocked=()=>reject(new Error('IndexedDB upgrade blocked'))})}
@@ -243,7 +243,7 @@ let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CL
 function readCloudOperation(value){
  if(!value||!['restore','recheck'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
  const out={action:value.action,status:value.status==='running'?'interrupted':value.status,phase:['fetch','validate','save','complete','render'].includes(value.phase)?value.phase:'fetch',startedAt:typeof value.startedAt==='string'?value.startedAt.slice(0,40):'',finishedAt:typeof value.finishedAt==='string'?value.finishedAt.slice(0,40):'',code:value.code?cloudReadErrorCode({code:value.code}):''};
- if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining'].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
+ if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining','unverifiable'].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
  return out;
 }
 function cloudReadErrorCode(error){const code=error?.code,mapped={d1_binding_unavailable:'DATABASE_UNAVAILABLE',d1_read_failed:'DATABASE_READ_FAILED',d1_research_read_failed:'DATABASE_READ_FAILED',d1_schema_error:'DATABASE_SCHEMA_ERROR'};return Object.hasOwn(mapped,code)?mapped[code]:['RESTORE_RESPONSE_INVALID','MANIFEST_RESPONSE_INVALID','CLOUD_READ_TIMEOUT','LOCAL_SAVE_FAILED','NETWORK_ERROR','INVALID_JSON','HTTP_ERROR','RENDER_FAILED','CLOUD_SYNC_BUSY','DATABASE_UNAVAILABLE','DATABASE_READ_FAILED','DATABASE_SCHEMA_ERROR'].includes(code)?code:code==='invalid_response'?'INVALID_JSON':error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error instanceof TypeError?'NETWORK_ERROR':Number(error?.status)>=400?'HTTP_ERROR':'NETWORK_ERROR';}
@@ -300,7 +300,8 @@ function recheckCloudSyncHolds(){
    const holds=cloudSyncActiveHolds();let cleared=0;
    for(const h of holds){const record=raceCache[h.raceId],key=manifestKey(h);if(record&&!record.cloudConflict&&!cloudMergeBindingIssue(record,h.raceId)&&manifestMatches(cloudDescriptor(h.raceId,record),remote.get(key))){cloudSyncClearHold(key);setCloudPending(h.raceId,false);cleared++;}}
    cloudState={...cloudState,available:true,source:'cloud',error:'',...(cleared?{lastSyncedAt:new Date().toISOString()}:{})};settleCloudSyncState('connected');
-   const counts={checked:holds.length,cleared,remaining:cloudSyncActiveHolds().length};setCloudReadOperation({status:'success',phase:'complete',code:'',counts,finishedAt:new Date().toISOString()});return counts;
+   const unverifiable=holds.filter(h=>remote.get(manifestKey(h))?.fingerprintStatus==='unavailable').length;
+   const counts={checked:holds.length,cleared,remaining:cloudSyncActiveHolds().length,...(unverifiable?{unverifiable}:{})};setCloudReadOperation({status:'success',phase:'complete',code:'',counts,finishedAt:new Date().toISOString()});return counts;
   }catch(e){const code=cloudReadErrorCode(e);cloudState={...cloudState,status:'error',error:code};setCloudReadOperation({status:'error',code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
  })().finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
 }
@@ -317,7 +318,7 @@ async function cloudRequest(path,options={}){
 const CLOUD_SYNC_HOLD_KEY='chass_cloud_sync_holds_v1';
 const cloudSyncHolds=new Map(Object.entries(localStore.get(CLOUD_SYNC_HOLD_KEY,{})||{}));
 const cloudSyncFlights=new Map();let cloudBulkFlight=null;
-const cloudSyncReasonLabels={PREDICTION_SNAPSHOT_CONFLICT:'元予測の不一致',FROZEN_SIGNAL_CONFLICT:'凍結Signalの不一致',FROZEN_WARNING_CONFLICT:'凍結警告の不一致',snapshot_binding_conflict:'レース・モデルの不一致',LOCAL_CLOUD_CONFLICT:'復元時の競合',REMOTE_RESULT_PRESERVED:'クラウドの結果を保持',REMOTE_STATE_DIFFERENT:'クラウドの保存内容を要確認',SYNC_RESPONSE_INVALID:'保存応答を確認できない',SYNC_OUTCOME_UNKNOWN:'保存成否が不明',SYNC_CONFLICT:'保存内容の競合',duplicate_sync_identity:'同期対象の重複'};
+const cloudSyncReasonLabels={PREDICTION_SNAPSHOT_CONFLICT:'元予測の不一致',FROZEN_SIGNAL_CONFLICT:'凍結Signalの不一致',FROZEN_WARNING_CONFLICT:'凍結警告の不一致',snapshot_binding_conflict:'レース・モデルの不一致',LOCAL_CLOUD_CONFLICT:'復元時の競合',REMOTE_RESULT_PRESERVED:'クラウドの結果を保持',REMOTE_STATE_DIFFERENT:'クラウドの保存内容を要確認',SYNC_RESPONSE_INVALID:'保存応答を確認できない',SYNC_OUTCOME_UNKNOWN:'保存成否が不明',SYNC_CONFLICT:'保存内容の競合',duplicate_sync_identity:'同期対象の重複',MANIFEST_FINGERPRINT_UNAVAILABLE:'クラウドの照合情報不足（送信停止）'};
 function cloudSyncReason(code,fallback='SYNC_CONFLICT'){return Object.hasOwn(cloudSyncReasonLabels,code)?code:fallback;}
 function cloudSyncCurrent(id,fallback){return raceCache[id]||fallback;}
 function cloudSyncSameRevision(id,record){const current=cloudSyncCurrent(id,record);return manifestKey(cloudDescriptor(id,current))===manifestKey(cloudDescriptor(id,record))&&researchContentFingerprint(current)===researchContentFingerprint(record);}
@@ -363,6 +364,7 @@ async function sendCloudSyncBatch(entries){
   if(record.cloudConflict){cloudSyncHold(id,record,'LOCAL_CLOUD_CONFLICT');skipped.push({raceId:id,modelVersion:local.modelVersion,status:'held',reason:'LOCAL_CLOUD_CONFLICT'});continue;}
   if(manifestMatches(local,cloudManifestCache.get(key))){cloudSyncClearHold(key);setCloudPending(id,false);skipped.push({raceId:id,modelVersion:local.modelVersion,status:'unchanged',written:false,confirmation:'ACK_OR_MANIFEST_CACHE'});continue;}
   const hold=cloudSyncHolds.get(key);if(hold){skipped.push({raceId:id,modelVersion:local.modelVersion,status:'held',reason:hold.reason});continue;}
+  if(cloudManifestCache.get(key)?.fingerprintStatus==='unavailable'){cloudSyncHold(id,record,'MANIFEST_FINGERPRINT_UNAVAILABLE');skipped.push({raceId:id,modelVersion:local.modelVersion,status:'held',reason:'MANIFEST_FINGERPRINT_UNAVAILABLE'});continue;}
   batch.push({raceId:id,record});setCloudPending(id,true);
  }
  if(!batch.length)return skipped;
@@ -486,7 +488,7 @@ function renderCloudReadOperation(){
   text=`${action}失敗｜${labels[op.code]||'処理を完了できませんでした。'}｜${op.code}`;
  }else if(op.code==='RENDER_FAILED')text=`${action}の保存は完了しましたが、画面更新に失敗しました。`;
  else if(op.action==='restore')text=`復元完了｜受信 ${counts.received||0}件・追加 ${counts.added||0}件・補完 ${counts.enriched||0}件（結果補完 ${counts.resultAdded||0}件）・変更なし ${counts.unchanged||0}件・今回の競合 ${counts.conflicts||0}件${counts.deferred?`・端末の新しい変更を保持 ${counts.deferred}件`:''}｜同期保留は別途再確認してください。`;
- else text=`保留の再確認完了｜確認 ${counts.checked||0}件・一致して解除 ${counts.cleared||0}件・保留継続 ${counts.remaining||0}件｜クラウドへの送信なし`;
+ else text=`保留の再確認完了｜確認 ${counts.checked||0}件・一致して解除 ${counts.cleared||0}件・保留継続 ${counts.remaining||0}件${counts.unverifiable?`（照合情報不足 ${counts.unverifiable}件）`:''}｜クラウドへの送信なし`;
  node.textContent=text+(at?`｜${at}`:'');node.className=['error','interrupted','partial'].includes(op.status)?'muted is-error':'muted';
 }
 async function runCloudReadAction(action){
