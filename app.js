@@ -188,6 +188,11 @@ function hydrateCloudRecord(record){if(!record)return record;if(!record.snapshot
 function cloudMergeBindingIssue(record,expectedRaceId=''){
  const identity=activeRaceIdentity(record);
  if(expectedRaceId&&identity.raceId!==expectedRaceId)return 'CLOUD_RACE_MISMATCH';
+ const declared=record?.race?.raceId,p=record?.predictionSnapshot;
+ if(declared&&identity.raceId&&declared!==identity.raceId)return 'CLOUD_RACE_MISMATCH';
+ if(p?.raceId&&expectedRaceId&&p.raceId!==expectedRaceId)return 'CLOUD_RACE_MISMATCH';
+ if(p?.modelVersion!=null&&record?.modelVersion!=null&&String(p.modelVersion)!==String(record.modelVersion))return 'CLOUD_LAYER_BINDING_MISMATCH';
+ if(p?.race&&raceId(p.race)&&identity.raceId&&raceId(p.race)!==identity.raceId)return 'CLOUD_RACE_MISMATCH';
  if(identity.raceId)for(const [key,kind] of [['predictionSnapshot','prediction'],['marketSnapshot','market'],['finalSnapshot','final'],['resultSnapshot','result'],['validationSnapshot','validation']])
   if(record?.[key]&&!layerMatchesActive(record,record[key],kind))return 'CLOUD_LAYER_BINDING_MISMATCH';
  return null;
@@ -197,6 +202,8 @@ function mergeCloudResearchRecord(local,cloud,meta={}){
  const quarantine=reason=>hydrateCloudRecord({...cloneData(local||incoming||{}),cloudConflict:true,cloudConflictReason:reason,cloudEligible:false,cloudExclusionReason:reason});
  if(!incoming)return quarantine('CLOUD_RECORD_MISSING');
  let issue=cloudMergeBindingIssue(incoming,meta.raceId||'');if(issue)return quarantine(issue);
+ if(!incoming.predictionSnapshot?.horses?.length)return quarantine('CLOUD_PREDICTION_MISSING');
+ if(incoming.resultSnapshot){const order=incoming.resultSnapshot.finishOrder,known=new Set(incoming.predictionSnapshot.horses.map(h=>Number(h.horseNo)));if(!Array.isArray(order)||order.length<3||order.some(n=>!['number','string'].includes(typeof n)||String(n).trim()===''||!Number.isInteger(Number(n))||Number(n)<=0||!known.has(Number(n)))||new Set(order.map(Number)).size!==order.length)return quarantine('CLOUD_RESULT_INCOMPLETE');}
  if(local){
   issue=cloudMergeBindingIssue(local);if(issue)return quarantine(issue);
   const a=activeRaceIdentity(local),b=activeRaceIdentity(incoming);
@@ -213,14 +220,17 @@ function mergeCloudResearchRecord(local,cloud,meta={}){
  merged.cloudEligible=!merged.cloudConflict&&meta.eligible!==false;merged.cloudExclusionReason=merged.cloudConflict?merged.cloudConflictReason:meta.exclusionReason||null;
  merged.updatedAt=merged.updatedAt||incoming.updatedAt;return hydrateCloudRecord(merged);
 }
-function applyCloudResearchDataset(data,{merge=true}={}){
- const records=Array.isArray(data?.records)?data.records:[],conflicts=[];
- if(merge)for(const item of records){if(!item?.raceId||!item.record)continue;const local=raceCache[item.raceId],merged=mergeCloudResearchRecord(local,item.record,item);
+function buildCloudResearchDataset(data,{merge=true,cache=raceCache}={}){
+ const records=Array.isArray(data?.records)?data.records:[],conflicts=[],next={...cache};
+ if(merge)for(const item of records){if(!item?.raceId||!item.record)continue;const local=next[item.raceId],merged=mergeCloudResearchRecord(local,item.record,item);
   if(merged.cloudConflict){conflicts.push({raceId:item.raceId,modelVersion:item.record?.predictionSnapshot?.modelVersion||item.record?.modelVersion,reason:merged.cloudConflictReason});if(!local)continue;}
-  raceCache[item.raceId]=merged;
+  next[item.raceId]=merged;
  }
- const eligibleRaceIds=[...new Set(records.filter(x=>x?.eligible&&(!merge||!!raceCache[x.raceId]&&raceCache[x.raceId].cloudEligible!==false&&!raceCache[x.raceId].cloudConflict)).map(x=>x.raceId))];
- cloudResearchAudit={counts:data?.counts||null,exclusions:data?.exclusions||[],missingResults:data?.missingResults||[],warnings:data?.warnings||[],conflicts,eligibleRaceIds,datasetRaceIds:records.map(x=>x?.raceId).filter(Boolean),loadedAt:new Date().toISOString()};return records;
+ const eligibleRaceIds=[...new Set(records.filter(x=>x?.eligible&&(!merge||!!next[x.raceId]&&next[x.raceId].cloudEligible!==false&&!next[x.raceId].cloudConflict)).map(x=>x.raceId))];
+ return {cache:next,records,audit:{counts:data?.counts||null,exclusions:data?.exclusions||[],missingResults:data?.missingResults||[],warnings:data?.warnings||[],conflicts,eligibleRaceIds,datasetRaceIds:records.map(x=>x?.raceId).filter(Boolean),loadedAt:new Date().toISOString()}};
+}
+function applyCloudResearchDataset(data,{merge=true}={}){
+ const staged=buildCloudResearchDataset(data,{merge});raceCache=staged.cache;cloudResearchAudit=staged.audit;return staged.records;
 }
 async function refreshCloudResearchDataset({persist=false,render=true}={}){if(typeof fetch!=='function'||!cloudState.available)return false;storageDiagnostic('researchRefresh');storageDiagnostic('d1Read');const generation=++cloudAuditRefreshGeneration;cloudState.status='refreshing';renderCloudSyncState();try{const data=await cloudRequest('/api/db/research');if(generation!==cloudAuditRefreshGeneration)return false;applyCloudResearchDataset(data,{merge:true});if(persist){if(researchDb){await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));storageDiagnostic('indexedDbWrite',Object.keys(raceCache).length)}else localStore.set(KEY,raceCache)}cloudState={...cloudState,available:true,source:'cloud',status:'synced',error:''};settleCloudSyncState('synced');if(render){renderCloudDatasetSummary();renderDashboard()}return data}catch(e){if(generation===cloudAuditRefreshGeneration){cloudState={...cloudState,status:'error',error:e.code||e.message};renderCloudSyncState()}return false}}
 function cloudRestoreChangeCounts(previous,cache,records){
@@ -228,7 +238,72 @@ function cloudRestoreChangeCounts(previous,cache,records){
  for(const id of ids){const record=cache[id];if(!record||record.cloudConflict){conflicts++;continue;}if(!previous.has(id))added++;else if(researchContentFingerprint(record)!==previous.get(id))enriched++;}
  return {added,enriched,conflicts};
 }
-async function restoreResearchFromCloud(){const data=await cloudRequest('/api/db/research'),before=Object.keys(raceCache).length,previous=new Map(Object.entries(raceCache).map(([id,record])=>[id,researchContentFingerprint(record)]));applyCloudResearchDataset(data,{merge:true});const changes=cloudRestoreChangeCounts(previous,raceCache,data.records);if(researchDb)await idbPutMany('races',Object.entries(raceCache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));else localStore.set(KEY,raceCache);renderCloudDatasetSummary();return {...changes,total:Object.keys(raceCache).length,before,counts:data.counts||{}}}
+const CLOUD_READ_OPERATION_KEY='chass_cloud_read_operation_v1';
+let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CLOUD_READ_OPERATION_KEY,null));
+function readCloudOperation(value){
+ if(!value||!['restore','recheck'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
+ const out={action:value.action,status:value.status==='running'?'interrupted':value.status,phase:['fetch','validate','save','complete','render'].includes(value.phase)?value.phase:'fetch',startedAt:typeof value.startedAt==='string'?value.startedAt.slice(0,40):'',finishedAt:typeof value.finishedAt==='string'?value.finishedAt.slice(0,40):'',code:value.code?cloudReadErrorCode({code:value.code}):''};
+ if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining'].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
+ return out;
+}
+function cloudReadErrorCode(error){const code=error?.code,mapped={d1_binding_unavailable:'DATABASE_UNAVAILABLE',d1_read_failed:'DATABASE_READ_FAILED',d1_research_read_failed:'DATABASE_READ_FAILED',d1_schema_error:'DATABASE_SCHEMA_ERROR'};return Object.hasOwn(mapped,code)?mapped[code]:['RESTORE_RESPONSE_INVALID','MANIFEST_RESPONSE_INVALID','CLOUD_READ_TIMEOUT','LOCAL_SAVE_FAILED','NETWORK_ERROR','INVALID_JSON','HTTP_ERROR','RENDER_FAILED','CLOUD_SYNC_BUSY','DATABASE_UNAVAILABLE','DATABASE_READ_FAILED','DATABASE_SCHEMA_ERROR'].includes(code)?code:code==='invalid_response'?'INVALID_JSON':error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error instanceof TypeError?'NETWORK_ERROR':Number(error?.status)>=400?'HTTP_ERROR':'NETWORK_ERROR';}
+function setCloudReadOperation(patch){cloudReadOperation={...cloudReadOperation,...patch};localStore.set(CLOUD_READ_OPERATION_KEY,cloudReadOperation);renderCloudSyncState();}
+async function cloudReadRequest(path){
+ const controller=new AbortController();let timer;
+ try{return await Promise.race([cloudRequest(path,{method:'GET',signal:controller.signal}),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Object.assign(new Error('cloud_read_timeout'),{code:'CLOUD_READ_TIMEOUT'}));},20000);})]);}
+ finally{clearTimeout(timer);}
+}
+function validCloudReadRecords(data,{manifest=false}={}){
+ if(!Array.isArray(data?.records)||data.records.length>5000)return false;
+ const keys=new Set();return data.records.every(item=>{
+  if(!item||typeof item.raceId!=='string'||!item.raceId||item.raceId.length>512)return false;
+  if(manifest&&(typeof item.modelVersion!=='string'||!item.modelVersion))return false;
+  if(!manifest&&(!item.record||typeof item.record!=='object'||Array.isArray(item.record)))return false;
+  const key=manifest?manifestKey(item):item.raceId;if(keys.has(key))return false;keys.add(key);return true;
+ });
+}
+function restoreResearchFromCloud(){
+ if(cloudReadFlight)return cloudReadFlight;
+ cloudReadFlight=(async()=>{
+  setCloudReadOperation({action:'restore',status:'running',phase:'fetch',startedAt:new Date().toISOString(),finishedAt:'',code:'',counts:null});
+  try{
+   if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
+   const data=await cloudReadRequest('/api/db/research');
+   setCloudReadOperation({phase:'validate'});
+   if(!validCloudReadRecords(data))throw Object.assign(new Error('restore_response_invalid'),{code:'RESTORE_RESPONSE_INVALID'});
+   const base={...raceCache},before=Object.keys(base).length,previous=new Map(Object.entries(base).map(([id,r])=>[id,researchContentFingerprint(r)])),staged=buildCloudResearchDataset(data,{cache:base});
+   setCloudReadOperation({phase:'save'});
+   if(researchDb)await idbPutMany('races',Object.entries(staged.cache).map(([id,record])=>({id,data:record,updatedAt:stableRecordUpdatedAt(record)})));
+   else if(!localStore.set(KEY,staged.cache))throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});
+   // Saves completed while IndexedDB was pending keep their newer in-memory revision.
+   const targets=new Set(data.records.map(x=>x.raceId)),deferredIds=new Set();const next={...raceCache};for(const [id,record] of Object.entries(staged.cache)){
+    if(researchContentFingerprint(raceCache[id])===previous.get(id)||!raceCache[id]&&!base[id])next[id]=record;else if(targets.has(id))deferredIds.add(id);
+   }
+   raceCache=next;cloudResearchAudit=staged.audit;
+   cloudResearchAudit.eligibleRaceIds=cloudResearchAudit.eligibleRaceIds.filter(id=>researchContentFingerprint(next[id])===researchContentFingerprint(staged.cache[id]));
+   const effective=data.records.filter(x=>!deferredIds.has(x.raceId)),deferred=deferredIds.size,changes=cloudRestoreChangeCounts(previous,next,effective),resultAdded=effective.filter(x=>!base[x.raceId]?.resultSnapshot&&next[x.raceId]?.resultSnapshot&&!next[x.raceId]?.cloudConflict).length;
+   const result={...changes,resultAdded,deferred,received:data.records.length,unchanged:Math.max(0,effective.length-changes.added-changes.enriched-changes.conflicts),total:Object.keys(next).length,before,counts:data.counts||{}};
+   cloudState={...cloudState,available:true,source:'cloud',error:''};settleCloudSyncState('synced');
+   setCloudReadOperation({status:deferred?'partial':'success',phase:'complete',finishedAt:new Date().toISOString(),counts:Object.fromEntries(Object.entries(result).filter(([k])=>k!=='counts')),code:''});
+   return result;
+  }catch(e){const code=cloudReadOperation?.phase==='save'?'LOCAL_SAVE_FAILED':cloudReadErrorCode(e);cloudState={...cloudState,status:'error',error:code};setCloudReadOperation({status:'error',code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
+ })().finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
+}
+function recheckCloudSyncHolds(){
+ if(cloudReadFlight)return cloudReadFlight;
+ cloudReadFlight=(async()=>{
+  setCloudReadOperation({action:'recheck',status:'running',phase:'fetch',startedAt:new Date().toISOString(),finishedAt:'',code:'',counts:null});
+  try{
+   if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
+   const data=await cloudReadRequest('/api/db/manifest');if(!validCloudReadRecords(data,{manifest:true}))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
+   const remote=new Map(data.records.map(x=>[manifestKey(x),x]));cloudManifestCache.clear();for(const [key,value] of remote)cloudManifestCache.set(key,value);
+   const holds=cloudSyncActiveHolds();let cleared=0;
+   for(const h of holds){const record=raceCache[h.raceId],key=manifestKey(h);if(record&&!record.cloudConflict&&!cloudMergeBindingIssue(record,h.raceId)&&manifestMatches(cloudDescriptor(h.raceId,record),remote.get(key))){cloudSyncClearHold(key);setCloudPending(h.raceId,false);cleared++;}}
+   cloudState={...cloudState,available:true,source:'cloud',error:'',...(cleared?{lastSyncedAt:new Date().toISOString()}:{})};settleCloudSyncState('connected');
+   const counts={checked:holds.length,cleared,remaining:cloudSyncActiveHolds().length};setCloudReadOperation({status:'success',phase:'complete',code:'',counts,finishedAt:new Date().toISOString()});return counts;
+  }catch(e){const code=cloudReadErrorCode(e);cloudState={...cloudState,status:'error',error:code};setCloudReadOperation({status:'error',code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
+ })().finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
+}
 async function cloudRequest(path,options={}){
  const response=await fetch(path,{cache:'no-store',...options,headers:{'content-type':'application/json',...(options.headers||{})}});
  const data=await response.json().catch(()=>({ok:false,error:'invalid_response'}));
@@ -275,6 +350,7 @@ function applyCloudSyncResponse(batch,payload,{unknown=false}={}){
  });
 }
 async function sendCloudSyncBatch(entries){
+ if(cloudReadFlight){return entries.map(({raceId,record})=>{setCloudPending(raceId,true);return {raceId,modelVersion:cloudDescriptor(raceId,record).modelVersion,status:'pending',written:false,reason:'CLOUD_READ_IN_PROGRESS'};});}
  const waiting=[...new Set(entries.map(x=>cloudSyncFlights.get(manifestKey(cloudDescriptor(x.raceId,x.record)))).filter(Boolean))];
  if(waiting.length){await Promise.allSettled(waiting);return sendCloudSyncBatch(entries);}
  const skipped=[],batch=[];
@@ -380,16 +456,39 @@ function renderCloudSyncState(){
   status.className='';const s=cloudState.summary;
   if(cloudBulkFlight||cloudState.status==='syncing')status.textContent='差分確認中';
   else if(cloudState.status==='refreshing')status.textContent='D1再集計中';
-  else if(holds.length){status.textContent=`同期保留 ${holds.length}件｜${cloudSyncReasonLabels[holds[0].reason]||'保存内容を要確認'}${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error';}
+  else if(holds.length){status.textContent=`${cloudState.status==='error'?'同期エラー｜':''}同期保留 ${holds.length}件｜${cloudSyncReasonLabels[holds[0].reason]||'保存内容を要確認'}${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error';}
   else if(cloudState.status==='error'){status.textContent=`同期エラー${cloudPending.size?`｜待ち ${cloudPending.size}件`:''}`;status.className='is-error';}
   else if(cloudPending.size)status.textContent=`同期待ち ${cloudPending.size}件`;
   else if(cloudState.status==='synced')status.textContent=s?`☁ 確認完了｜新規 ${s.created}件・更新 ${s.updated}件・変更なし ${s.unchanged}件`:'☁ 同期済';
   else status.textContent=cloudState.available?'クラウド接続済':'ローカルのみ';
  }
+ renderCloudReadOperation();
+ const readBusy=!!cloudReadFlight||cloudReadOperation?.status==='running';
+ for(const id of ['cloudRestoreButton','cloudRecheckButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
  const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount');
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
  if(list)list.innerHTML=holds.map(h=>`<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}</small></div>`).join('');
- if(button)button.disabled=!!cloudBulkFlight||cloudState.status==='syncing';
+ if(button)button.disabled=readBusy||!!cloudBulkFlight||cloudState.status==='syncing';
+}
+function renderCloudReadOperation(){
+ const node=$('cloudOperationStatus');if(!node)return;
+ const op=cloudReadOperation;node.hidden=!op;if(!op)return;
+ const action=op.action==='restore'?'復元':'保留の再確認',counts=op.counts||{},at=op.finishedAt||op.startedAt;
+ let text;
+ if(op.status==='running')text=`${action}中｜${{fetch:'クラウドへ接続中',validate:'受信内容を確認中',save:'端末へ保存中'}[op.phase]||'処理中'}`;
+ else if(op.status==='interrupted')text=`前回の${action}は完了を確認できませんでした。再操作前に保存状態を確認してください。`;
+ else if(op.status==='error'){
+  const labels={RESTORE_RESPONSE_INVALID:'復元データの形式が不正です。端末データは変更していません。',MANIFEST_RESPONSE_INVALID:'差分応答の形式が不正です。保留は解除していません。',CLOUD_READ_TIMEOUT:'通信が時間内に完了しませんでした。',LOCAL_SAVE_FAILED:'端末への保存に失敗しました。復元成功にはしていません。',NETWORK_ERROR:'クラウドとの通信に失敗しました。',INVALID_JSON:'クラウドの応答を読み取れませんでした。',HTTP_ERROR:'クラウドがエラーを返しました。',DATABASE_UNAVAILABLE:'クラウドの保存先に接続できませんでした。',DATABASE_READ_FAILED:'クラウドの保存データを読み出せませんでした。',DATABASE_SCHEMA_ERROR:'クラウドの保存形式を確認できませんでした。',CLOUD_SYNC_BUSY:'同期処理中です。終了後に操作してください。'};
+  text=`${action}失敗｜${labels[op.code]||'処理を完了できませんでした。'}｜${op.code}`;
+ }else if(op.code==='RENDER_FAILED')text=`${action}の保存は完了しましたが、画面更新に失敗しました。`;
+ else if(op.action==='restore')text=`復元完了｜受信 ${counts.received||0}件・追加 ${counts.added||0}件・補完 ${counts.enriched||0}件（結果補完 ${counts.resultAdded||0}件）・変更なし ${counts.unchanged||0}件・今回の競合 ${counts.conflicts||0}件${counts.deferred?`・端末の新しい変更を保持 ${counts.deferred}件`:''}｜同期保留は別途再確認してください。`;
+ else text=`保留の再確認完了｜確認 ${counts.checked||0}件・一致して解除 ${counts.cleared||0}件・保留継続 ${counts.remaining||0}件｜クラウドへの送信なし`;
+ node.textContent=text+(at?`｜${at}`:'');node.className=['error','interrupted','partial'].includes(op.status)?'muted is-error':'muted';
+}
+async function runCloudReadAction(action){
+ try{await (action==='restore'?restoreResearchFromCloud():recheckCloudSyncHolds());try{renderCloudDatasetSummary();renderDashboard();}catch{setCloudReadOperation({status:'partial',phase:'render',code:'RENDER_FAILED'});}}
+ catch{/* Safe diagnostic state is retained independently from sync holds. */}
+ finally{renderCloudSyncState();}
 }
 function renderCloudDatasetSummary(){if(typeof document==='undefined')return;const target=$('cloudDatasetSummary'),list=$('cloudExclusionList'),details=$('cloudExclusions'),c=cloudResearchAudit.counts;if(!target)return;if(!c){target.innerHTML='<span>Source: Local Cache｜クラウド未接続・ローカル集計</span>';if(details)details.hidden=true;return}const consistent=(c.consistency?.predictionBalance??(c.d1PredictionSaved===c.d1ResultFetched+c.resultMissing))&&(c.consistency?.resultBalance??(c.d1ResultFetched===c.validationEligible+c.excluded));target.innerHTML=`<div class="cloud-source-label">Source: Cloudflare D1（サーバー側の保存件数・参考）</div><p>端末への結合で競合保留：${new Set((cloudResearchAudit.conflicts||[]).map(x=>x.raceId)).size}R</p><div class="cloud-summary-grid"><div class="cloud-stat"><span>予想保存</span><strong>${Number(c.d1PredictionSaved)||0}R</strong></div><div class="cloud-stat"><span>結果取得済</span><strong>${Number(c.d1ResultFetched)||0}R</strong></div><div class="cloud-stat"><span>検証可能</span><strong>${Number(c.validationEligible)||0}R</strong></div><div class="cloud-stat"><span>結果未取得</span><strong>${Number(c.resultMissing)||0}R</strong><small>予想保存済・結果待ち</small></div><div class="cloud-stat cloud-stat-wide"><span>データ不備除外</span><strong>${Number(c.excluded)||0}R</strong></div></div>${consistent?'':'<p class="cloud-consistency-warning">⚠ 集計整合性に差異あり</p>'}<div class="cloud-sync-help"><span>クラウドへ同期：端末の新規データをD1へ送信</span><span>クラウドから復元：D1のみのデータを端末キャッシュへ追加</span></div>`;const reasonLabel={CLOUD_MODEL_MISMATCH:'モデル版の不一致',CLOUD_RACE_MISMATCH:'レースの不一致',CLOUD_LAYER_BINDING_MISMATCH:'Snapshotのレース・モデル不一致',CLOUD_RECORD_MISSING:'復元レコードなし',PREDICTION_MISSING:'予想Snapshotなし',SNAPSHOT_INCOMPLETE:'Snapshot不完全',RESULT_INCOMPLETE:'結果不完全',LEGACY_UNVERIFIED:'旧データ未検証',DATA_QUALITY:'データ品質',DUPLICATE_OR_CONFLICT:'重複・競合',SCHEMA_MISMATCH:'スキーマ不一致'};const exclusions=[...(cloudResearchAudit.exclusions||[]),...(cloudResearchAudit.conflicts||[])];if(list)list.innerHTML=exclusions.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.raceId)}</strong><span>${reasonLabel[x.reason]||esc(x.reason)}</span><small>${esc(x.date||'')} ${esc(x.track||'')} ${esc(x.raceNo||'')}R｜${esc(x.modelVersion||'Legacy')}</small></div>`).join('')||'<p class="muted">検証除外はありません。</p>';if(details)details.hidden=false;let missing=$('cloudMissingResults');if(!missing){target.insertAdjacentHTML('afterend','<details id="cloudMissingResults" class="cloud-exclusions"><summary>結果未取得の一覧</summary><div id="cloudMissingList"></div></details>');missing=$('cloudMissingResults')}const missingList=$('cloudMissingList'),items=cloudResearchAudit.missingResults||[];missing.querySelector('summary').textContent=`結果未取得の一覧 ${items.length}R`;missingList.innerHTML=items.map(x=>`<div class="cloud-exclusion-row"><strong>${esc(x.date)}｜${esc(x.track)} ${esc(x.raceNo)}R</strong><span>${esc(x.modelVersion||'Legacy')}</span><button type="button" class="cloud-open-missing" data-race-id="${esc(x.raceId)}">結果を取得</button></div>`).join('')||'<p class="muted">結果未取得はありません。</p>';missing.querySelectorAll('.cloud-open-missing').forEach(b=>b.onclick=()=>openMissingResultRace(b.dataset.raceId))}
 function openMissingResultRace(id){const saved=raceCache[id];if(!saved)return;activeRaceGeneration++;state=restoreSavedRace(saved);setRaceMode(raceTypeOf(state),{announce:false,preserveState:true});fillRace(state.race);render();setView('prediction');if($('narStatus'))$('narStatus').textContent='結果を取得中…';requestAnimationFrame(()=>{$('resultCard')?.scrollIntoView({behavior:'smooth',block:'start'});syncNar({auto:false})})}
@@ -1811,7 +1910,7 @@ function bindHistoricalCollector(){
 }
 
 function createResearchBackup(){
- return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||''};
+ return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||'',syncDiagnostics:{schemaVersion:1,operation:cloneData(cloudReadOperation),holds:cloudSyncActiveHolds().map(h=>({raceId:h.raceId,modelVersion:h.modelVersion,reason:cloudSyncReason(h.reason),heldAt:typeof h.heldAt==='string'?h.heldAt:''}))}};
 }
 function validateResearchBackup(data){
  if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('バックアップ形式が不正です。');
@@ -2363,7 +2462,8 @@ if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.sta
 if($('publicApiCheck'))$('publicApiCheck').onclick=checkPublicApi;
 if($('publicApiCopy'))$('publicApiCopy').onclick=copyCurrentPublicApiUrl;
 if($('publicApiDayCopy'))$('publicApiDayCopy').onclick=copyCurrentPublicDayApiUrl;
-if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=async()=>{setButtonBusy('cloudRestoreButton',true,'復元中');try{const result=await restoreResearchFromCloud();cloudState={...cloudState,available:true,source:'cloud',status:'synced'};settleCloudSyncState('synced');renderDashboard();$('cloudSyncStatus').textContent=`☁ 復元完了｜追加 ${result.added}件・補完 ${result.enriched}件・競合保留 ${(result.conflicts||0)+cloudSyncActiveHolds().length}件`}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudRestoreButton',false)} };
+if($('cloudRestoreButton'))$('cloudRestoreButton').onclick=()=>runCloudReadAction('restore');
+if($('cloudRecheckButton'))$('cloudRecheckButton').onclick=()=>runCloudReadAction('recheck');
 if($('quickPredict'))$('quickPredict').onclick=()=>raceTypeOf(state)==='JRA'?(jraNormalizedDraft?$('jraAnalyze')?.click():$('jraOfficialLoad')?.click()):$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;

@@ -1,11 +1,12 @@
 import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 export const ORIGIN='https://chass-keiba-lab7.h7625421.workers.dev';
 export const BASE='065852fa52e1a3c27492e0f8f045835406747fef';
-const expectedBlobs={'app.js':'45be5ab821ac0d0faa653e96380891c90f1e04df','index.html':'1485f7e958f269633e65a0bfc737ee85b0656287'};
+const assetPaths=['app.js','index.html'];
 const gates={formalKpi:'HOLD',probability:'MODEL_HOLD',production:'NO-GO'};
 const hash=(b,algorithm='sha256')=>createHash(algorithm).update(b).digest('hex');
 const blobHash=b=>createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
@@ -62,13 +63,20 @@ async function boundedGet(url,fetchImpl){
  }finally{clearTimeout(timer);}
 }
 
-export async function probeRuntime({sourceDir,fetchImpl=fetch,readImpl=readFile}={}){
- const report={schema:'chass-runtime-probe-v1',origin:ORIGIN,expectedSourceCommit:BASE,startedAt:new Date().toISOString(),gates,checks:[],workerRevision:'UNVERIFIED',deviceEvidence:'UNVERIFIED',dbRecordComparison:'UNVERIFIED'};
+export function gitSourceReference(sourceDir){
+ const cwd=resolve(sourceDir||'.'),options={cwd,encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:5000};
+ const commit=execFileSync('git',['rev-parse','--verify','HEAD'],options).trim();if(!/^[a-f0-9]{40}$/.test(commit))throw Error('INVALID_GIT_REFERENCE');
+ const blobs=Object.fromEntries(assetPaths.map(path=>[path,execFileSync('git',['rev-parse',`${commit}:${path}`],options).trim()]));
+ return {commit,blobs};
+}
+export async function probeRuntime({sourceDir,fetchImpl=fetch,readImpl=readFile,reference=null}={}){
+ const report={schema:'chass-runtime-probe-v1',origin:ORIGIN,expectedSourceCommit:null,referenceAuthority:reference?'CALLER_SUPPLIED':'LOCAL_GIT_COMMIT',startedAt:new Date().toISOString(),gates,checks:[],workerRevision:'UNVERIFIED',deviceEvidence:'UNVERIFIED',dbRecordComparison:'UNVERIFIED'};
+ try{reference=reference||gitSourceReference(sourceDir);if(!/^[a-f0-9]{40}$/.test(reference.commit)||!assetPaths.every(p=>/^[a-f0-9]{40}$/.test(reference.blobs?.[p])))throw Error();report.expectedSourceCommit=reference.commit;}catch{report.status='LOCAL_REFERENCE_INVALID';report.checks.push({status:'GIT_REFERENCE_UNAVAILABLE'});return report;}
  const assets=[];
  // Validate ALL local reference bytes before contacting production.
- for(const [path,expected] of Object.entries(expectedBlobs)){
+ for(const path of assetPaths){const expected=reference.blobs[path];
   let bytes;try{bytes=Buffer.from(await readImpl(resolve(sourceDir||'.',path)));}catch{report.checks.push({path,status:'LOCAL_SOURCE_UNAVAILABLE'});}
-  if(bytes){const actual=blobHash(bytes);if(actual!==expected)report.checks.push({path,status:'LOCAL_SOURCE_NOT_PR265',expectedBlob:expected,actualBlob:actual});else assets.push({path,bytes});}
+  if(bytes){const actual=blobHash(bytes);if(actual!==expected)report.checks.push({path,status:'LOCAL_SOURCE_NOT_REFERENCE_COMMIT',expectedBlob:expected,actualBlob:actual});else assets.push({path,bytes});}
  }
  if(assets.length!==2){report.status='LOCAL_REFERENCE_INVALID';return report;}
  for(const asset of assets){const requestPath=asset.path==='index.html'?'/':'/'+asset.path;try{const live=await boundedGet(ORIGIN+requestPath,fetchImpl),actual=hash(live.bytes),expected=hash(asset.bytes);report.checks.push({path:asset.path,requestPath,status:actual===expected?'MATCH':'MISMATCH',expectedSha256:expected,actualSha256:actual,bytes:live.bytes.length});}catch(e){report.checks.push({path:asset.path,requestPath,status:'UNAVAILABLE',reason:safeError(e)});}}
