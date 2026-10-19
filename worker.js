@@ -73,6 +73,18 @@ export function d1RecordRows(raceId,record){const prediction=record?.predictionS
 const d1RecordRowsBase=d1RecordRows;
 d1RecordRows=function(raceId,record){assertWritableRecordBinding(record,raceId);const rows=d1RecordRowsBase(raceId,record),race=parseJson(rows.race.raceJson)||{};Object.assign(race,integrityMetadata(record));race.liveAdjustedPrediction=record?.liveAdjustedPrediction||null;race.scratchAudit=reconciledScratchAudit(record,race);rows.race.raceJson=JSON.stringify(race);const originals=new Map(bridgeOriginalHorses(record).map(h=>[h.horseNo,h]));for(const p of rows.predictions){const h=originals.get(p.horseNo);Object.assign(p,{mark:h.final?.mark||h.mark||h.abilityMark||'',popularity:h.popularity??null,odds:h.odds??null,expectedValue:h.ev??null,longshotScore:h.longshotScore??null,valueType:h.valueType??'',marketGapScore:h.marketGapScore??null,snapshotJson:JSON.stringify(h)});}return rows};
 async function persistD1Fingerprints(DB,r,descriptor){try{await DB.batch([DB.prepare(`UPDATE races SET race_fp=?,prediction_fp=?,market_fp=?,final_fp=?,result_fp=?,validation_fp=?,live_fp=? WHERE race_id=? AND model_version=?`).bind(descriptor.raceFingerprint,descriptor.predictionFingerprint,descriptor.marketFingerprint,descriptor.finalFingerprint,descriptor.resultFingerprint,descriptor.validationFingerprint,descriptor.liveFingerprint,r.raceId,r.modelVersion)])}catch{/* Migration 0003 may not be deployed yet; core save remains compatible. */}}
+export async function readD1ResultRepairRecord(DB,raceId,modelVersion){
+ const error=code=>Object.assign(new Error(code),{code});
+ if(typeof raceId!=='string'||!/^\d{4}-\d{2}-\d{2}\|[^|\u0000-\u001f]{1,80}\|[1-9]\d?$/.test(raceId)||typeof modelVersion!=='string'||!modelVersion.trim()||modelVersion.length>128||/[\u0000-\u001f]/.test(modelVersion))throw error('repair_invalid_identity');
+ if(!DB)throw error('d1_binding_unavailable');
+ let row;try{row=await DB.prepare(`SELECT race_id,model_version,race_json,prediction_json,result_json,result_acquired_at FROM races WHERE race_id=? AND model_version=? LIMIT 1`).bind(raceId,modelVersion).first();}catch{throw error('d1_read_failed');}
+ if(!row)throw error('repair_record_not_found');
+ if(row.race_id!==raceId||row.model_version!==modelVersion)throw error('repair_response_invalid');
+ let race,prediction,result;try{race=JSON.parse(row.race_json);prediction=JSON.parse(row.prediction_json);result=row.result_json?JSON.parse(row.result_json):null;}catch{throw error('repair_response_invalid');}
+ if(!race||typeof race!=='object'||Array.isArray(race)||!prediction||typeof prediction!=='object'||Array.isArray(prediction))throw error('repair_response_invalid');
+ const resultQueue=race.resultQueue||null;delete race.resultQueue;
+ return {raceId,modelVersion,record:{race,resultQueue,predictionSnapshot:prediction,resultSnapshot:result,resultAcquiredAt:row.result_acquired_at||null,modelVersion}};
+}
 export async function readD1Manifest(DB){
  if(!DB)throw Object.assign(new Error('d1_binding_unavailable'),{code:'d1_binding_unavailable'});
  // A differential GET must not initialize schemas, read snapshot bodies or hash legacy JSON.
@@ -923,6 +935,12 @@ export default{
   if(u.pathname==="/api/db/similarity"&&request.method==="GET"){
     const DB=getResearchDb(env),raceId=String(u.searchParams.get('raceId')||''),detail=u.searchParams.get('detail')==='full'?'full':'compact';if(!DB)return json({ok:false,error:"d1_binding_unavailable"},503);if(!raceId)return json({ok:false,error:'race_id_required'},400);
     try{const dataset=await readD1ResearchDataset(DB),items=dataset.records||[],item=items.find(x=>x.raceId===raceId);if(!item)return json({ok:false,error:'race_not_found'},404);return json({ok:true,schemaVersion:CHASS_BRIDGE_SCHEMA_VERSION,modelVersion:VERSION,source:'cloudflare_d1',generatedAt:new Date().toISOString(),raceId,historicalSimilarity:buildHistoricalSimilarityForItem(item,items,{detail})})}catch(e){return json({ok:false,error:e?.code||"similarity_unavailable"},503)}
+  }
+  if(u.pathname==="/api/db/result-repair"){
+    if(request.method!=="GET")return json({ok:false,error:'method_not_allowed'},405);
+    if(u.searchParams.getAll('raceId').length!==1||u.searchParams.getAll('modelVersion').length!==1)return json({ok:false,error:'repair_invalid_identity'},400);
+    try{return json({ok:true,source:'cloudflare_d1',...await readD1ResultRepairRecord(getResearchDb(env),u.searchParams.get('raceId'),u.searchParams.get('modelVersion'))})}
+    catch(e){const code=e?.code||'d1_read_failed';return json({ok:false,error:code},code==='repair_invalid_identity'?400:code==='repair_record_not_found'?404:code==='d1_binding_unavailable'?503:500)}
   }
   if(u.pathname==="/api/db/manifest"&&request.method==="GET"){
     const DB=getResearchDb(env);if(!DB)return json({ok:false,error:"d1_binding_unavailable"},503);
