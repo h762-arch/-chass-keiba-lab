@@ -5,6 +5,19 @@
   "branch": "chass-data",
   "snapshots": [
     {
+      "date": "2026-10-19",
+      "track": "浦和",
+      "trackSlug": "urawa",
+      "organization": "NAR",
+      "raceCount": 1,
+      "totalHorseCount": 8,
+      "latestPredictionAt": "2026-10-18T23:40:40.519Z",
+      "latestOddsAt": "2026-10-18T23:40:40.519Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-10-19/urawa/day.json"
+    },
+    {
       "date": "2026-10-18",
       "track": "金沢",
       "trackSlug": "kanazawa",
@@ -181,9 +194,9 @@
       "status": "CAPTURED",
       "date": "2026-10-19",
       "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-19&format=compact",
-      "attemptedAt": "2026-10-18T16:08:09.625Z",
-      "capturedAt": "2026-10-18T16:08:10.555Z",
-      "payloadSha256": "b77c7313d7749105793f2cd7b2952b653708a930e43d2c67a9cfc0742fd40583",
+      "attemptedAt": "2026-10-19T00:33:51.671Z",
+      "capturedAt": "2026-10-19T00:33:52.495Z",
+      "payloadSha256": "2202b79d6d75e959ff20472a2477a3643849ba1910fe5c7363f255d4c3f42739",
       "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
       "readOnlyCapture": true,
       "snapshotPath": "chat-snapshot/status/2026-10-19/nar-precompute-status.json"
