@@ -71,7 +71,7 @@ export async function probeRuntime({sourceDir,fetchImpl=fetch,readImpl=readFile}
   if(bytes){const actual=blobHash(bytes);if(actual!==expected)report.checks.push({path,status:'LOCAL_SOURCE_NOT_PR265',expectedBlob:expected,actualBlob:actual});else assets.push({path,bytes});}
  }
  if(assets.length!==2){report.status='LOCAL_REFERENCE_INVALID';return report;}
- for(const asset of assets){try{const live=await boundedGet(ORIGIN+'/'+asset.path,fetchImpl),actual=hash(live.bytes),expected=hash(asset.bytes);report.checks.push({path:asset.path,status:actual===expected?'MATCH':'MISMATCH',expectedSha256:expected,actualSha256:actual,bytes:live.bytes.length});}catch(e){report.checks.push({path:asset.path,status:'UNAVAILABLE',reason:safeError(e)});}}
+ for(const asset of assets){const requestPath=asset.path==='index.html'?'/':'/'+asset.path;try{const live=await boundedGet(ORIGIN+requestPath,fetchImpl),actual=hash(live.bytes),expected=hash(asset.bytes);report.checks.push({path:asset.path,requestPath,status:actual===expected?'MATCH':'MISMATCH',expectedSha256:expected,actualSha256:actual,bytes:live.bytes.length});}catch(e){report.checks.push({path:asset.path,requestPath,status:'UNAVAILABLE',reason:safeError(e)});}}
  for(const path of ['/api/chass/v1/public/health','/api/db/health']){
   try{const response=await boundedGet(ORIGIN+path,fetchImpl),data=JSON.parse(response.bytes.toString('utf8'));
    const valid=object(data)&&data.ok===true&&(path.includes('/public/')?data.database===true&&data.version==='10.0.1'&&data.mode==='read-only':data.database==='connected');

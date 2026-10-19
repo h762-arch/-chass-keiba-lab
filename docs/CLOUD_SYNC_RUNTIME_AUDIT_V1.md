@@ -17,7 +17,7 @@ node scripts/audit-cloud-sync-runtime-v1.mjs --probe-source . > runtime-probe.js
 
 Both local Git blob IDs must match the independently fetched PR #265 tree before
 any requests. The command then issues exactly four GETs to the fixed production
-origin: app.js, index.html, public health and DB health. Both health handlers use
+origin: /app.js, / (the canonical HTML route), public health and DB health. Both health handlers use
 SELECT 1. No manifest, research, race acquisition, POST, migration, deployment,
 token or D1 record access is used. Redirects and credentials are disabled. Bodies
 are capped at 2 MB and each request/body operation has a 15-second deadline.
@@ -87,6 +87,15 @@ and cookies. A screenshot alone does not prove POST deduplication.
 
 ## Validation
 
-46 existing cloud-sync-outcomes tests plus 14 new audit tests passed locally.
+46 existing cloud-sync-outcomes tests plus 16 audit tests passed locally.
 VM/mock-D1 and deterministic probes are not real iPhone or production DB evidence.
 The full repository check remains a separate Bridge CI requirement.
+
+## Canonical HTML route correction after PR #266
+
+Live observation on 2026-10-19: /index.html returns HTTP 307 with Location: /.
+The root route returns the exact baseline index.html bytes. The probe now calls
+/ directly and records requestPath separately from the source path. Redirects
+remain disabled, including redirects from /. No fallback or arbitrary Location
+following is introduced. This fixes the audit target, not application behavior.
+Worker revision, device state and DB-record comparison remain unverified.
