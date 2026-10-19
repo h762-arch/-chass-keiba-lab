@@ -3,9 +3,9 @@
   "status": "CAPTURED",
   "date": "2026-10-19",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-19&format=compact",
-  "attemptedAt": "2026-10-19T00:33:51.671Z",
-  "capturedAt": "2026-10-19T00:33:52.495Z",
-  "payloadSha256": "2202b79d6d75e959ff20472a2477a3643849ba1910fe5c7363f255d4c3f42739",
+  "attemptedAt": "2026-10-19T03:16:00.558Z",
+  "capturedAt": "2026-10-19T03:16:01.329Z",
+  "payloadSha256": "525d6a03827ce902a4e68dcf11f1ad03d1872a3378698f0d0c0538e765e89238",
   "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
   "readOnlyCapture": true,
   "payload": {
@@ -50,7 +50,7 @@
     "selectedRaceNo": null,
     "narRunAudit": {
       "status": "RECORDED",
-      "scheduledAt": "2026-10-19T00:30:18.556Z",
+      "scheduledAt": "2026-10-19T03:15:18.556Z",
       "runDate": "2026-10-19",
       "runStatus": "COMPLETED",
       "reason": null,
@@ -64,24 +64,21 @@
           "meetingAttempts": [
             {
               "route": "RaceList",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
+              "reason": "MEETING_UNCONFIRMED"
             },
             {
               "route": "RaceList_ipat",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
+              "reason": "MEETING_UNCONFIRMED"
             },
             {
               "route": "RaceList_mobile",
-              "reason": "SOURCE_HTTP",
-              "httpStatus": 404
+              "reason": "MEETING_UNCONFIRMED"
             }
           ]
         }
       ]
     },
-    "lastNarRunAt": "2026-10-19T00:30:18.556Z",
+    "lastNarRunAt": "2026-10-19T03:15:18.556Z",
     "lastNarStatus": "COMPLETED",
     "lastNarReason": null,
     "lastNarAttempted": 0,
@@ -93,18 +90,15 @@
         "meetingAttempts": [
           {
             "route": "RaceList",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
+            "reason": "MEETING_UNCONFIRMED"
           },
           {
             "route": "RaceList_ipat",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
+            "reason": "MEETING_UNCONFIRMED"
           },
           {
             "route": "RaceList_mobile",
-            "reason": "SOURCE_HTTP",
-            "httpStatus": 404
+            "reason": "MEETING_UNCONFIRMED"
           }
         ]
       }
