@@ -103,3 +103,19 @@ test('recheck and restore are blocked while a cloud POST is in flight',async()=>
 test('automatic local save during a read operation remains pending instead of sending concurrently',async()=>{
  const item=fixture(),calls=[];let release;const gate=new Promise(r=>release=r),{c}=core(async(u,o)=>{calls.push([u,o.method||'GET']);await gate;return response(dataset([]));});cache(c,[item]);const p=c.restoreResearchFromCloud();const saved=await c.syncRaceToCloud(item.raceId,item.record);assert.equal(saved,false);assert.deepEqual(calls,[['/api/db/research','GET']]);assert.equal(c.getCloudState().pending,1);release();await p;assert.equal(c.getCloudState().pending,1);
 });
+test('unavailable manifest cannot release a hold even when all supplied hashes match',async()=>{
+ const item=fixture();let mode='sync';const first=core(async()=>mode==='sync'?response(conflict(item),409):response({ok:true,records:[{...first.c.cloudDescriptor(item.raceId,item.record),fingerprintStatus:'unavailable'}]}));cache(first.c,[item]);await held(first.c,item);mode='recheck';const before=plain(first.c.getCloudSyncHolds());
+ const r=await first.c.recheckCloudSyncHolds();assert.equal(r.cleared,0);assert.equal(r.unverifiable,1);assert.deepEqual(plain(first.c.getCloudSyncHolds()),before);assert.match(first.nodes.cloudOperationStatus.textContent,/照合情報不足 1件/);
+ const next=core(()=>{throw Error('NO_NETWORK')},{memory:first.memory});next.c.renderCloudSyncState();assert.match(next.nodes.cloudOperationStatus.textContent,/照合情報不足 1件/);
+});
+test('bulk sync holds unverified cloud rows without POST or changing original signals',async()=>{
+ const item=fixture(),calls=[],{c}=core(async(u,o)=>{calls.push([u,o.method||'GET']);return response({ok:true,records:[{raceId:item.raceId,modelVersion:'A',fingerprintStatus:'unavailable'}]});});cache(c,[item]);const before=plain(c.getRaceCache()),r=await c.syncAllResearchToCloud();
+ assert.equal(r.target,0);assert.equal(r.held,1);assert.deepEqual(calls,[['/api/db/manifest','GET']]);assert.equal(c.getCloudSyncHolds()[0].reason,'MANIFEST_FINGERPRINT_UNAVAILABLE');assert.deepEqual(plain(c.getRaceCache()),before);
+ calls.length=0;await c.syncRaceToCloud(item.raceId,item.record);assert.equal(calls.length,0);
+});
+test('initialization never posts legacy rows and records why they are held',async()=>{
+ const item=fixture(),calls=[],{c}=core(async(u,o)=>{calls.push([u,o.method||'GET']);return response(u.endsWith('/health')?{ok:true}:{ok:true,records:[{raceId:item.raceId,modelVersion:'A',fingerprintStatus:'unavailable'}]});});cache(c,[item]);await c.initCloudResearch();assert.ok(calls.every(([,method])=>method==='GET'));assert.equal(c.getCloudSyncHolds()[0].reason,'MANIFEST_FINGERPRINT_UNAVAILABLE');
+});
+test('mixed manifest only releases stored exact matches and never sends a repair upload',async()=>{
+ const a=fixture(),b=fixture(2);let mode='sync';const calls=[],{c}=core(async(u,o)=>{calls.push([u,o.method||'GET']);return mode==='sync'?response(conflict(JSON.parse(o.body).records[0]),409):response({ok:true,records:[{...c.cloudDescriptor(a.raceId,a.record),fingerprintStatus:'stored'},{...c.cloudDescriptor(b.raceId,b.record),fingerprintStatus:'unavailable'}]});});cache(c,[a,b]);await c.syncRaceToCloud(a.raceId,a.record);await c.syncRaceToCloud(b.raceId,b.record);assert.equal(c.getCloudSyncHolds().length,2);mode='recheck';calls.length=0;const r=await c.recheckCloudSyncHolds();assert.deepEqual(plain(r),{checked:2,cleared:1,remaining:1,unverifiable:1});assert.deepEqual(calls,[['/api/db/manifest','GET']]);
+});
