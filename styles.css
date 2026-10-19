@@ -483,6 +483,10 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 
 /* JRA J1: compact selector and preserved manual fallback */
 #jraInputPanel > .jra-race-grid{grid-template-columns:repeat(3,minmax(0,1fr))} #jraInputPanel label,#jraInputPanel select{min-width:0} #jraManualFallback{margin-top:12px} #jraManualFallback summary{padding:12px 0;cursor:pointer} @media(max-width:430px){#jraInputPanel > .jra-race-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#jraInputPanel > .jra-race-grid > label:first-child{grid-column:1/-1}}
-.cloud-sync-bar .cloud-sync-actions{flex-wrap:wrap}
+.cloud-sync-bar{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch}
+.cloud-sync-bar>div{width:100%;min-width:0}
+.cloud-sync-bar strong,.cloud-sync-bar span{overflow-wrap:anywhere}
+.cloud-sync-bar .cloud-sync-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;min-width:0}
+.cloud-sync-bar .cloud-sync-actions button{width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere}
 #cloudOperationStatus{white-space:normal;overflow-wrap:anywhere;line-height:1.6;padding:10px;border:1px solid var(--line);border-radius:10px}
-@media(max-width:430px){.cloud-sync-bar #cloudRecheckButton{grid-column:1/-1}}
+@media(max-width:600px){.cloud-sync-bar .cloud-sync-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.cloud-sync-bar #cloudRecheckButton{grid-column:1/-1}}
