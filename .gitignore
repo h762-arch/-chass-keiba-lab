@@ -8,3 +8,6 @@ mcp/.env
 mcp/.env.local
 npm-debug.log*
 *.log
+
+# Local Chrome for Testing binaries and machine-specific paths
+.cache/chass-browser/

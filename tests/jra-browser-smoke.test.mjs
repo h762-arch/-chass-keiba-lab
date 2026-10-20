@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,writeFile,unlink,mkdtemp,rm} from 'node:fs/promises';
-import {execFileSync,spawn} from 'node:child_process';
+import {spawn} from 'node:child_process';
+import {resolveChrome} from '../scripts/browser-runtime.mjs';
 import {createServer} from 'node:net';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
@@ -11,12 +12,6 @@ import {readJraOfficialRaceCache} from '../jra-official-cache.mjs';
 
 const ROOT=fileURLToPath(new URL('..',import.meta.url));
 
-function chromePath(){
-  for(const name of ['google-chrome','google-chrome-stable','chromium','chromium-browser']){
-    try{return execFileSync('which',[name],{encoding:'utf8'}).trim()}catch{}
-  }
-  throw new Error('CHASS_BROWSER_SMOKE_CHROME_NOT_FOUND');
-}
 
 async function freePort(){
   return await new Promise((resolve,reject)=>{
@@ -58,6 +53,7 @@ async function browserDom(chrome,url){
     }
   });
   const fail=error=>{for(const request of pending.values()){clearTimeout(request.timer);request.reject(error)}pending.clear()};
+  child.stdio[4].on('error',fail);
   child.on('error',fail);
   child.on('exit',(code,signal)=>fail(new Error(`CHASS_BROWSER_SMOKE_CHROME_EXIT:${code}:${signal}:${stderr.slice(-1000)}`)));
   const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
@@ -87,7 +83,7 @@ async function browserDom(chrome,url){
 }
 
 test('real Chromium boots shared JRA Ability Core browser chain',{timeout:60000},async t=>{
-  const chrome=chromePath();
+  const chrome=resolveChrome().executable;
   const port=await freePort();
   const smokeName=`chass-browser-smoke-${process.pid}-${Date.now()}.html`;
   const smokePath=path.join(ROOT,smokeName);
