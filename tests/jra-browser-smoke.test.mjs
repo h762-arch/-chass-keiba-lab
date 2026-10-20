@@ -36,7 +36,7 @@ async function waitFor(url,timeoutMs=8000){
 }
 
 // Use wall-clock polling: virtual time can expire before IndexedDB boot completes.
-async function browserDom(chrome,url){
+async function browserDom(chrome,url,width=390){
   const profile=await mkdtemp(path.join(tmpdir(),'chass-smoke-'));
   const child=spawn(chrome,['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage',
     '--remote-debugging-pipe',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe','pipe','pipe']});
@@ -66,7 +66,7 @@ async function browserDom(chrome,url){
   try{
     const {targetId}=await call('Target.createTarget',{url});
     const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
-    await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},sessionId);
+    await call('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true},sessionId);
     const started=Date.now();let dom='';
     while(Date.now()-started<12000){
       const result=await call('Runtime.evaluate',{expression:'document.documentElement.outerHTML',returnByValue:true},sessionId);
@@ -163,4 +163,38 @@ test('real Chromium boots shared JRA Ability Core browser chain',{timeout:60000}
 
   assert.match(dom,/data-chass-browser-smoke="pass"/,`browser bootstrap failed\n${dom.slice(-4000)}\nserver stdout:${stdout.join('')}\nserver stderr:${stderr.join('')}`);
   assert.match(dom,/data-chass-browser-smoke-errors="0"/);
+});
+
+
+test('phone result retry guidance uses the real delegated action without bulk fetching',{timeout:90000},async t=>{
+ const chrome=resolveChrome().executable,port=await freePort();
+ const smokeName=`chass-result-retry-smoke-${process.pid}.html`,smokePath=path.join(ROOT,smokeName);
+ const records={};
+ for(const raceNo of [1,2]){
+  const race={category:'地方競馬',raceDate:'2026-01-01',track:'大井',raceNo,postTime:'10:00'},id=`2026-01-01|大井|${raceNo}`,horses=[1,2,3,4].map(horseNo=>({horseNo,horseName:'合成テスト馬'+horseNo,win:25,place:60,overall:70}));
+  records[id]={race,horses,modelVersion:'10.0.1',predictionSaved:true,predictionSnapshot:{schemaVersion:3,modelVersion:'10.0.1',createdAt:'2025-12-31T00:00:00Z',race:{...race},horses},resultQueue:{schemaVersion:1,raceId:id,organization:'NAR',raceDate:race.raceDate,track:race.track,raceNo,postTime:race.postTime,modelVersion:'10.0.1',enabled:true,status:'result_retry',resultStatus:'retry',attempts:6,retryLimitReached:true,lastResultError:'network_error',nextCheckAt:null,lastResultCheckAt:'2026-01-01T01:00:00Z'}};
+ }
+ const probe=`<script>
+ (()=>{
+ localStorage.clear();localStorage.setItem('chass_v90_races',JSON.stringify(${JSON.stringify(records)}));
+ const originalFetch=fetch.bind(window);let resultCalls=0,otherResultCalls=0,started=false,observedBusy=false;
+ window.fetch=(input,options)=>{const url=new URL(String(input),location.href);if(url.pathname==='/api/nar/sync'){resultCalls++;if(url.searchParams.get('race')!=='1')otherResultCalls++;return new Promise(resolve=>setTimeout(()=>resolve(Response.json({ok:false,errorCode:'network_error'},{status:503})),100));}if(url.pathname.startsWith('/api/'))return Promise.resolve(Response.json({ok:false,error:'SMOKE_OFFLINE'},{status:503}));return originalFetch(input,options);};
+ const errors=[];addEventListener('error',e=>errors.push(e.message));addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));
+ const begin=Date.now(),timer=setInterval(()=>{try{
+  const details=document.getElementById('autoResultDetails'),button=document.querySelector('[data-result-retry="2026-01-01|大井|1"]'),notice=document.getElementById('autoResultActionStatus');
+  if(!started&&details&&!details.hidden&&button&&!button.disabled){started=true;details.open=true;button.click();}
+  if(started&&notice.textContent.includes('確認中'))observedBusy=!!document.querySelector('[data-result-retry][disabled]');
+  if(started&&notice.textContent.includes('確認しました')){
+   const body=document.getElementById('autoResultDetailsBody'),buttonAfter=document.querySelector('[data-result-retry="2026-01-01|大井|1"]');
+   const fits=[...body.querySelectorAll('li')].every(el=>el.scrollWidth<=el.clientWidth+1)&&document.documentElement.scrollWidth<=innerWidth+1;
+   const ok=resultCalls===1&&otherResultCalls===0&&observedBusy&&buttonAfter.disabled&&body.textContent.includes('通信に失敗')&&body.textContent.includes('上限に到達')&&body.textContent.includes('1分以上')&&fits&&errors.length===0;
+   clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke=ok?'pass':'fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({resultCalls,otherResultCalls,observedBusy,fits,errors});return;
+  }
+  if(Date.now()-begin>9000){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=errors.join('|')+'timeout:'+notice?.textContent+':'+details?.textContent;}
+ }catch(e){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=String(e.stack);}},20);
+ })();</script>`;
+ const index=await readFile(path.join(ROOT,'index.html'),'utf8');await writeFile(smokePath,index.replace('<head>','<head>'+probe));
+ const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});
+ t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
+ for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1800)}\n${dom.slice(-2000)}`);}
 });
