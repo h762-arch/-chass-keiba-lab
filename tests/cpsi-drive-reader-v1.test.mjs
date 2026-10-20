@@ -19,9 +19,9 @@ const registry=(org='NAR',kind='drive_json')=>({version:1,sources:[{sourceId:org
 function environment(org='NAR',kind='drive_json'){return {ENABLE_CPSI_DRIVE_READ:'true',CHASS_CPSI_DRIVE_READER_TOKEN:TOKEN,CHASS_CPSI_DRIVE_SERVICE_ACCOUNT_JSON:JSON.stringify(credentials),CHASS_CPSI_DRIVE_SOURCES_JSON:JSON.stringify(registry(org,kind)),DB:new Proxy({},{get(){throw Error('D1 must not be touched');}})};}
 function request(org='NAR',init={}){return new Request(BASE+CPSI_DRIVE_PATH+'?'+new URLSearchParams({organization:org,raceId:`2026-10-21|${org==='NAR'?'浦和':'東京'}|1`}),{headers:{authorization:'Bearer '+TOKEN},...init});}
 function provider({payload=input(),kind='drive_json',mutate=false,mediaStatus=200,metadataStatus=200,sheetData,tokenBody,networkError,oversize=false,onMedia}={}){
- const calls=[];let metaCount=0;return {calls,async fetch(url,init){calls.push({url:String(url),init});if(networkError)throw networkError;
+ const calls=[];let metaCount=0;return {calls,async fetch(url,init){calls.push({url:String(url),init});if(init.redirect!=='follow'&&init.redirect!=='manual')throw TypeError('Invalid redirect value: workerd supports follow/manual only');if(networkError)throw networkError;
   if(String(url)==='https://oauth2.googleapis.com/token')return Response.json(tokenBody||{access_token:'SYNTHETIC_GOOGLE_TOKEN',token_type:'Bearer',expires_in:3600});
-  assert.equal(init.method,'GET');assert.equal(init.headers.authorization,'Bearer SYNTHETIC_GOOGLE_TOKEN');assert.equal(init.redirect,'error');assert.equal(init.headers['cache-control'],'no-cache');
+  assert.equal(init.method,'GET');assert.equal(init.headers.authorization,'Bearer SYNTHETIC_GOOGLE_TOKEN');assert.equal(init.redirect,'manual');assert.equal(init.headers['cache-control'],'no-cache');
   if(String(url).includes('?fields=')){metaCount++;return Response.json({id:'SYNTHETIC_FILE_12345',mimeType:kind==='sheets_feed'?'application/vnd.google-apps.spreadsheet':'application/json',version:mutate&&metaCount>1?'8':'7',modifiedTime:'2026-10-20T10:00:00.000Z',size:'1000',trashed:false},{status:metadataStatus});}
   onMedia?.();
   if(oversize)return new Response('x',{headers:{'content-length':'2097153'}});
@@ -104,4 +104,18 @@ test('app never displays unknown or prototype-named server codes',async()=>{
 test('app empty-feed response identifies missing source without reporting a successful retrieval',async()=>{
  const h=appClient({fetchImpl:async()=>Response.json({ok:false,code:'DRIVE_SOURCE_NOT_FOUND'},{status:404})});await h.app.loadCpsiFromDrive();
  const text=h.el('cpsiDriveStatus').textContent;assert.match(text,/DRIVE_SOURCE_NOT_FOUND／API応答確認／HTTP 404/);assert.doesNotMatch(text,/端末読戻完了/);assert.equal(h.writes.length,0);
+});
+
+for(const status of [301,302,303,307,308])for(const stage of ['token','metadata','drive-body','sheets-body'])test(`Google ${stage} redirect ${status} is rejected without following Location or exposing credentials`,async()=>{
+ const kind=stage==='sheets-body'?'sheets_feed':'drive_json',base=provider({kind}),calls=[];
+ const mock={calls,async fetch(url,init){
+  calls.push({url:String(url),init});assert.equal(init.redirect,'manual');
+  const target=stage==='token'?String(url)==='https://oauth2.googleapis.com/token':stage==='metadata'?String(url).includes('?fields='):stage==='drive-body'?String(url).includes('?alt=media'):String(url).startsWith('https://sheets.googleapis.com/');
+  if(target)return new Response('PRIVATE_REDIRECT_BODY',{status,headers:{location:'https://foreign.example/PRIVATE_REDIRECT_TARGET'}});
+  return base.fetch(url,init);
+ }};
+ const x=await run({env:environment('NAR',kind),mock});
+ assert.equal(x.r.status,502);assert.equal(x.data.code,stage==='token'?'DRIVE_GOOGLE_TOKEN_FAILED':'DRIVE_GOOGLE_READ_FAILED');
+ assert.equal(calls.length,stage==='token'?1:stage==='metadata'?2:3);assert.ok(calls.every(c=>!c.url.startsWith('https://foreign.example')));
+ assert.doesNotMatch(JSON.stringify(x.data),/PRIVATE_|SYNTHETIC_GOOGLE_TOKEN|private_key|assertion/);assert.equal(x.data.sources,undefined);
 });
