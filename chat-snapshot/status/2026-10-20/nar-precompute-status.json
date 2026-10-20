@@ -3,9 +3,9 @@
   "status": "CAPTURED",
   "date": "2026-10-20",
   "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-20&format=compact",
-  "attemptedAt": "2026-10-20T03:24:30.296Z",
-  "capturedAt": "2026-10-20T03:24:31.122Z",
-  "payloadSha256": "565bf42639df2a6b47f70e8d36ff592eb46d29dbd737dedef0c42421467dffa7",
+  "attemptedAt": "2026-10-20T08:47:18.285Z",
+  "capturedAt": "2026-10-20T08:47:19.163Z",
+  "payloadSha256": "e4eb01249e35d88dbb9be3a715b13e8bf7899bdc12b4539196e460fd72ee4315",
   "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
   "readOnlyCapture": true,
   "payload": {
@@ -16,10 +16,10 @@
     "historyStoreEnabled": true,
     "canaryDate": null,
     "stopAt": "2026-10-20T05:55:00.000Z",
-    "active": true,
+    "active": false,
     "scheduleMode": "daily",
-    "scheduleStatus": "ACTIVE",
-    "scheduleReason": null,
+    "scheduleStatus": "SKIPPED",
+    "scheduleReason": "DAILY_WINDOW_CLOSED",
     "dailyFrom": "2026-10-14",
     "dailyUntil": "2026-10-20",
     "dailyStartJst": "07:00",
@@ -50,58 +50,20 @@
     "selectedRaceNo": null,
     "narRunAudit": {
       "status": "RECORDED",
-      "scheduledAt": "2026-10-20T03:20:18.556Z",
+      "scheduledAt": "2026-10-20T08:45:18.556Z",
       "runDate": "2026-10-20",
-      "runStatus": "COMPLETED",
-      "reason": null,
+      "runStatus": "SKIPPED",
+      "reason": "DAILY_WINDOW_CLOSED",
       "attempted": 0,
       "saved": 0,
       "autoResultProcessed": 0,
-      "events": [
-        {
-          "track": "川崎",
-          "reason": "MEETING_SOURCE_UNAVAILABLE",
-          "meetingAttempts": [
-            {
-              "route": "RaceList",
-              "reason": "MEETING_UNCONFIRMED"
-            },
-            {
-              "route": "RaceList_ipat",
-              "reason": "MEETING_UNCONFIRMED"
-            },
-            {
-              "route": "RaceList_mobile",
-              "reason": "MEETING_UNCONFIRMED"
-            }
-          ]
-        }
-      ]
+      "events": []
     },
-    "lastNarRunAt": "2026-10-20T03:20:18.556Z",
-    "lastNarStatus": "COMPLETED",
-    "lastNarReason": null,
+    "lastNarRunAt": "2026-10-20T08:45:18.556Z",
+    "lastNarStatus": "SKIPPED",
+    "lastNarReason": "DAILY_WINDOW_CLOSED",
     "lastNarAttempted": 0,
     "lastNarSaved": 0,
-    "lastNarEvents": [
-      {
-        "track": "川崎",
-        "reason": "MEETING_SOURCE_UNAVAILABLE",
-        "meetingAttempts": [
-          {
-            "route": "RaceList",
-            "reason": "MEETING_UNCONFIRMED"
-          },
-          {
-            "route": "RaceList_ipat",
-            "reason": "MEETING_UNCONFIRMED"
-          },
-          {
-            "route": "RaceList_mobile",
-            "reason": "MEETING_UNCONFIRMED"
-          }
-        ]
-      }
-    ]
+    "lastNarEvents": []
   }
 }
