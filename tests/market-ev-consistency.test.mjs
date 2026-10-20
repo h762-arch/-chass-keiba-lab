@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 const src = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
 
@@ -26,6 +27,7 @@ test('expected-value semantics remain odds times win-percent', () => {
 });
 
 test('validated historical records are protected from repair', () => {
-  assert.match(src, /lockedMarketHistory/);
-  assert.match(src, /!lockedMarketHistory&&r\.race\?\.oddsType==='実オッズ'/);
+  const window={__CHASS_TEST__:true},ctx={window,console,Date,Math,JSON,Map,Set,URL,TextEncoder,structuredClone,Promise,localStorage:{getItem:()=>null,setItem(){}},setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,clearInterval(){}};
+  vm.createContext(ctx);vm.runInContext(src,ctx);const r={race:{oddsType:'実オッズ'},validated:true,validationCompleted:true,horses:[{horseNo:1,win:50,odds:5}],predictionSnapshot:{horses:[{horseNo:1,win:50}]},marketSnapshot:{schemaVersion:1,horses:[{horseNo:1,ev:123,warningMark:'⚠️'}]},finalSnapshot:{top3:[{horseNo:1}]}},market=JSON.stringify(r.marketSnapshot);
+  window.CHASS_TEST.migrateSnapshotRecord(r);assert.equal(JSON.stringify(r.marketSnapshot),market);
 });

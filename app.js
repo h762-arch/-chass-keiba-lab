@@ -254,6 +254,22 @@ function cloudAuditChangedPaths(a,b){
  };
  for(const k of cloudAuditFields)walk(a[k],b[k],k,0);return paths;
 }
+function cloudAuditIntegrityDetails(record){
+ const i=verifySnapshotIntegrity(record),text=v=>typeof v==='string'?v.slice(0,80):null;
+ return {mismatches:i.mismatches.filter(k=>['snapshotIntegrity','predictionSnapshot','marketSnapshot','finalSnapshot'].includes(k)),temporalInvalid:i.temporalInvalid,chronology:i.chronology,predictionAt:text(record?.predictionCreatedAt||record?.predictionSnapshot?.createdAt||record?.predictionSnapshot?.generatedAt),resultAt:text(record?.resultAcquiredAt||record?.resultSnapshot?.fetchedAt||record?.resultFetchedAt)};
+}
+function sanitizeCloudIntegrityDetails(value){
+ if(!value||typeof value!=='object'||Array.isArray(value))return null;
+ const out={};for(const side of ['local','remote']){const x=value[side];if(!x||!Array.isArray(x.mismatches)||typeof x.temporalInvalid!=='boolean'||!['ordered','unknown','historical_post_result','result_before_prediction'].includes(x.chronology))return null;
+ out[side]={mismatches:[...new Set(x.mismatches.filter(k=>['snapshotIntegrity','predictionSnapshot','marketSnapshot','finalSnapshot'].includes(k)))],temporalInvalid:x.temporalInvalid,chronology:x.chronology,predictionAt:typeof x.predictionAt==='string'?x.predictionAt.slice(0,80):null,resultAt:typeof x.resultAt==='string'?x.resultAt.slice(0,80):null};}return out;
+}
+function cloudIntegrityExplanationHtml(details){
+ if(!details)return '';return ['local','remote'].map(side=>{const d=details[side];if(!d||!d.mismatches.length&&!d.temporalInvalid)return '';const reasons=[];
+ if(d.mismatches.length)reasons.push(`ハッシュ不一致：${d.mismatches.map(k=>cloudAuditFieldLabels[k]||k).join('・')}`);
+ if(d.temporalInvalid)reasons.push('結果取得日時が予想生成日時より前');
+ return `<small>${side==='local'?'端末':'クラウド'}の要確認理由：${esc(reasons.join('／'))}${d.temporalInvalid?`<br>予想 ${esc(d.predictionAt||'不明')}／結果 ${esc(d.resultAt||'不明')}`:''}</small>`;
+ }).join('');
+}
 function sanitizeCloudHoldAudit(value){
  if(value?.schemaVersion!==1||!Array.isArray(value.entries))return null;
  const pathPattern=/^(?:race|predictionSnapshot|marketSnapshot|finalSnapshot|resultSnapshot|validationSnapshot|resultQueue|snapshotIntegrity|liveAdjustedPrediction|scratchAudit|validated|validationCompleted|status)(?:\.[a-zA-Z][a-zA-Z0-9_]*|\[\d+\])*$/;
@@ -265,6 +281,7 @@ function sanitizeCloudHoldAudit(value){
   return {raceId:x.raceId.slice(0,512),modelVersion:x.modelVersion.slice(0,128),category,differences,
    changedPaths:Array.isArray(x.changedPaths)?x.changedPaths.filter(p=>typeof p==='string'&&p.length<=180&&pathPattern.test(p)).slice(0,24):[],
    ...(x.integrity&&integrityStates.includes(x.integrity.local)&&integrityStates.includes(x.integrity.remote)?{integrity:{local:x.integrity.local,remote:x.integrity.remote}}:{}),
+   ...(sanitizeCloudIntegrityDetails(x.integrityDetails)?{integrityDetails:sanitizeCloudIntegrityDetails(x.integrityDetails)}:{}),
    ...(x.identityIssue&&['local','remote'].includes(x.identityIssue.side)&&['CLOUD_RACE_MISMATCH','CLOUD_LAYER_BINDING_MISMATCH','CLOUD_MODEL_MISMATCH','CLOUD_IDENTITY_MISSING'].includes(x.identityIssue.code)?{identityIssue:{side:x.identityIssue.side,code:x.identityIssue.code}}:{})};
  })};
 }
@@ -343,7 +360,7 @@ function compareCloudHoldRecord(local,item,id,model){
  const signalDifference=stableStringify(a.marketSnapshot?.signalSnapshot??null)!==stableStringify(b.marketSnapshot?.signalSnapshot??null);
  const category=cloudAuditCategory(differences,{identityIssue:!!identityIssue,signalDifference});
  const localIssue=cloudMergeBindingIssue(local,id),remoteIssue=cloudMergeBindingIssue(item.record,id);
- return {raceId:id,modelVersion:model,category,differences,changedPaths:cloudAuditChangedPaths(a,b),integrity:{local:verifySnapshotIntegrity(local).status,remote:verifySnapshotIntegrity(item.record).status},...(identityIssue?{identityIssue:{side:localIssue?'local':'remote',code:localIssue||remoteIssue||'CLOUD_MODEL_MISMATCH'}}:{})};
+ return {raceId:id,modelVersion:model,category,differences,changedPaths:cloudAuditChangedPaths(a,b),integrityDetails:{local:cloudAuditIntegrityDetails(local),remote:cloudAuditIntegrityDetails(item.record)},integrity:{local:verifySnapshotIntegrity(local).status,remote:verifySnapshotIntegrity(item.record).status},...(identityIssue?{identityIssue:{side:localIssue?'local':'remote',code:localIssue||remoteIssue||'CLOUD_MODEL_MISMATCH'}}:{})};
 }
 function auditCloudSyncHolds(){
  if(cloudReadFlight)return cloudReadFlight;
@@ -606,7 +623,7 @@ function renderCloudSyncState(){
  const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount'),auditSummary=$('cloudHoldAuditSummary');
  if(auditSummary){const active=new Set(holds.map(manifestKey)),entries=(cloudHoldAudit?.entries||[]).filter(x=>active.has(manifestKey(x))),totals=entries.reduce((out,x)=>(out[x.category]=(out[x.category]||0)+1,out),{});auditSummary.hidden=!entries.length;auditSummary.textContent=entries.length?`診断時点 ${cloudHoldAudit.generatedAt}｜現在の保留のうち ${entries.length}/${holds.length}件｜${Object.entries(totals).map(([k,n])=>`${cloudAuditLabels[k]} ${n}件`).join('・')}｜診断では原本・保留を変更しません。`:'';}
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
- if(list){const audits=new Map((cloudHoldAudit?.entries||[]).map(x=>[manifestKey(x),x]));list.innerHTML=holds.map(h=>{const a=audits.get(manifestKey(h));return `<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}${a?`｜診断時点：${esc(cloudAuditLabels[a.category])}｜差分 ${esc(a.differences.map(k=>cloudAuditFieldLabels[k]).join('・')||'なし')}｜${esc(cloudHoldAudit.generatedAt)}`:''}</small>${a?.integrity?`<small>固定確認：端末 ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.local])}／クラウド ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.remote])}（EARLYの正式性は別判定）</small>`:''}${a?.identityIssue?`<small>識別不備：${a.identityIssue.side==='local'?'端末':'クラウド'}｜${esc(a.identityIssue.code)}</small>`:''}${a?.changedPaths?.length?`<details class="cloud-audit-paths"><summary>差分の項目（最大24件）</summary><ul>${a.changedPaths.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></details>`:''}</div>`}).join('');}
+ if(list){const audits=new Map((cloudHoldAudit?.entries||[]).map(x=>[manifestKey(x),x]));list.innerHTML=holds.map(h=>{const a=audits.get(manifestKey(h));return `<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}${a?`｜診断時点：${esc(cloudAuditLabels[a.category])}｜差分 ${esc(a.differences.map(k=>cloudAuditFieldLabels[k]).join('・')||'なし')}｜${esc(cloudHoldAudit.generatedAt)}`:''}</small>${a?.integrity?`<small>固定確認：端末 ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.local])}／クラウド ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.remote])}（EARLYの正式性は別判定）</small>`:''}${cloudIntegrityExplanationHtml(a?.integrityDetails)}${a?.identityIssue?`<small>識別不備：${a.identityIssue.side==='local'?'端末':'クラウド'}｜${esc(a.identityIssue.code)}</small>`:''}${a?.changedPaths?.length?`<details class="cloud-audit-paths"><summary>差分の項目（最大24件）</summary><ul>${a.changedPaths.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></details>`:''}</div>`}).join('');}
  if(button)button.disabled=readBusy||!!cloudBulkFlight||cloudState.status==='syncing';
 }
 function renderCloudReadOperation(){
@@ -2135,22 +2152,16 @@ function modelPerformance(races,pick){
 }
 function migrateSnapshotRecord(r){
  if(!r||typeof r!=='object')return false;
- let changed=false;const now=r.updatedAt||r.result?.at||r.predictionCreatedAt||r.resultAcquiredAt||'1970-01-01T00:00:00.000Z',horses=r.horses||[];
- if(!r.predictionSnapshot?.horses?.length){r.predictionSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,race:snapshotRace(r.race||{}),horses:horses.map(predictionHorse),locked:true,legacyDerived:true};changed=true}
- if(!r.marketSnapshot?.horses?.length){r.marketSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',acquiredAt:r.race?.oddsUpdatedAt||now,createdAt:r.race?.oddsUpdatedAt||now,oddsSnapshotType:r.race?.oddsSnapshotType||'unknown',horses:horses.map(marketHorse),legacyDerived:true};changed=true}
- if(!r.finalSnapshot?.top3?.length){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
+ let changed=false;const hadResultSnapshot=r.resultSnapshot!=null,fillMissingSnapshots=!r.snapshotIntegrity,now=r.updatedAt||r.result?.at||r.predictionCreatedAt||r.resultAcquiredAt||'1970-01-01T00:00:00.000Z',horses=r.horses||[];
+ if(fillMissingSnapshots&&r.predictionSnapshot==null){r.predictionSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,race:snapshotRace(r.race||{}),horses:horses.map(predictionHorse),locked:true,legacyDerived:true};changed=true}
+ if(fillMissingSnapshots&&r.marketSnapshot==null){r.marketSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',acquiredAt:r.race?.oddsUpdatedAt||now,createdAt:r.race?.oddsUpdatedAt||now,oddsSnapshotType:r.race?.oddsSnapshotType||'unknown',horses:horses.map(marketHorse),legacyDerived:true};changed=true}
+ if(fillMissingSnapshots&&r.finalSnapshot==null){const ranked=rankFinalFor(horses);r.finalSnapshot={schemaVersion:2,modelVersion:r.modelVersion||'legacy-unknown',generatedAt:now,createdAt:now,top3:ranked.slice(0,3).map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,mark:['◎','○','▲'][i],rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),ranking:ranked.map((h,i)=>({horseNo:Number(h.horseNo),horseName:h.horseName,rank:i+1,finalScore:finalScore(h),win:h.win,place:h.place,overall:h.overall,ev:h.ev,predictedTime:h.predictedTime})),legacyDerived:true};changed=true}
  if(r.result?.finishOrder?.length>=3&&!r.resultSnapshot){r.resultSnapshot={schemaVersion:2,source:r.result.source||'legacy',fetchedAt:r.resultFetchedAt||r.result.at||now,finishOrder:r.result.finishOrder.map(Number),actualTimes:{...(r.result.actualTimes||r.actualTimes||{})},legacyDerived:true};changed=true}
- if(r.resultSnapshot&&!Array.isArray(r.resultSnapshot.horses)){const times=r.resultSnapshot.actualTimes||r.result?.actualTimes||r.actualTimes||{};r.resultSnapshot.horses=(r.resultSnapshot.finishOrder||[]).map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo:Number(horseNo),time:times[String(horseNo)]||''}));r.resultSnapshot.legacyDerived=true;changed=true}
- const lockedMarketHistory=!!(r.validationCompleted||r.validated&&r.result?.finishOrder?.length>=3);
- if(!lockedMarketHistory&&r.race?.oddsType==='実オッズ'&&horses.length){
-   const before=JSON.stringify(horses.map(h=>[Number(h.horseNo),num(h.ev),h.valueMark||'',h.warningMark||'']));
-   reconcileMarketDerivedValues(horses,r.race||{},r.marketSnapshot?.signalSnapshot||null);
-   const after=JSON.stringify(horses.map(h=>[Number(h.horseNo),num(h.ev),h.valueMark||'',h.warningMark||'']));
-   r.race.marketDerivedVersion='MDV-2';
-   r.marketSnapshot={...(r.marketSnapshot||{}),schemaVersion:2,modelVersion:r.modelVersion||APP_VERSION,marketDerivedVersion:'MDV-2',predictionBasisSignature:marketPredictionBasisSignature(horses),signalSnapshot:r.marketSnapshot?.signalSnapshot||buildSignalSnapshot(horses,r.race||{},r.race?.oddsUpdatedAt||r.updatedAt||new Date().toISOString()),horses:horses.map(marketHorse)};
-   if(before!==after||r.marketSnapshot?.marketDerivedVersion!=='MDV-2')changed=true;
- }
- r.modelVersion=r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown';r.predictionCreatedAt=r.predictionCreatedAt||r.predictionSnapshot?.createdAt||r.predictionSnapshot?.generatedAt||null;r.resultAcquiredAt=r.resultAcquiredAt||r.resultSnapshot?.fetchedAt||r.resultFetchedAt||null;r.updatedAt=r.updatedAt||now;r.snapshotSchemaVersion=2;
+ if(!hadResultSnapshot&&r.resultSnapshot&&!Array.isArray(r.resultSnapshot.horses)){const times=r.resultSnapshot.actualTimes||r.result?.actualTimes||r.actualTimes||{};r.resultSnapshot.horses=(r.resultSnapshot.finishOrder||[]).map((horseNo,i)=>({position:i+1,positionText:String(i+1),horseNo:Number(horseNo),time:times[String(horseNo)]||''}));r.resultSnapshot.legacyDerived=true;changed=true}
+ // Migration fills absent legacy layers only. Never recalculate an existing
+ // market, add Signal, reseal evidence, or rewrite source timestamps on load.
+ const metadata={modelVersion:r.modelVersion||r.predictionSnapshot?.modelVersion||'legacy-unknown',predictionCreatedAt:r.predictionCreatedAt||r.predictionSnapshot?.createdAt||r.predictionSnapshot?.generatedAt||null,resultAcquiredAt:r.resultAcquiredAt||r.resultSnapshot?.fetchedAt||r.resultFetchedAt||null,updatedAt:r.updatedAt||now,snapshotSchemaVersion:r.snapshotSchemaVersion??2};
+ for(const [key,value]of Object.entries(metadata))if(r[key]!==value){r[key]=value;changed=true;}
  return changed;
 }
 function horsePosition(r,h){const no=Number(h?.horseNo),i=resultOrder(r).indexOf(no);return i>=0?i+1:null}
