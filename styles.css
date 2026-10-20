@@ -492,3 +492,9 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 .cloud-sync-bar #cloudFingerprintRecoverButton{grid-column:1/-1}
 #cloudOperationStatus{white-space:normal;overflow-wrap:anywhere;line-height:1.6;padding:10px;border:1px solid var(--line);border-radius:10px}
 @media(max-width:600px){.cloud-sync-bar .cloud-sync-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.cloud-sync-bar #cloudRecheckButton{grid-column:1/-1}}
+
+/* Diagnostic field paths contain no source values and must wrap on phones. */
+.cloud-audit-paths{grid-column:1/-1;min-width:0;font-size:9px;color:var(--muted)}
+.cloud-audit-paths summary{min-height:36px;display:flex;align-items:center;cursor:pointer}
+.cloud-audit-paths ul{margin:4px 0;padding-left:18px}
+.cloud-audit-paths li,#cloudHoldAuditSummary{overflow-wrap:anywhere}
