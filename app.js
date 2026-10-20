@@ -285,6 +285,31 @@ function sanitizeCloudHoldAudit(value){
    ...(x.identityIssue&&['local','remote'].includes(x.identityIssue.side)&&['CLOUD_RACE_MISMATCH','CLOUD_LAYER_BINDING_MISMATCH','CLOUD_MODEL_MISMATCH','CLOUD_IDENTITY_MISSING'].includes(x.identityIssue.code)?{identityIssue:{side:x.identityIssue.side,code:x.identityIssue.code}}:{})};
  })};
 }
+// Remote bodies are temporary diagnostic material, never restoration/KPI input.
+const CLOUD_HOLD_EVIDENCE_MAX_BYTES=8*1024*1024,CLOUD_HOLD_EVIDENCE_ITEM_BYTES=262144;
+let cloudHoldEvidence=null;
+function captureCloudHoldEvidence(local,item,entry){
+ if(!cloudHoldEvidence||entry.category!=='integrityDifferences')return;
+ cloudHoldEvidence.eligible++;
+ if(item?.ok!==true){cloudHoldEvidence.omitted.invalid++;return;}
+ const localRevision=stableStringify(cloudAuditParts(local,queueCloudStatus(local)));
+ const evidence={raceId:entry.raceId,modelVersion:entry.modelVersion,capturedAt:new Date().toISOString(),localPartsFingerprint:snapshotFingerprint(cloudAuditParts(local,queueCloudStatus(local))),response:{ok:true,raceId:item.raceId,modelVersion:item.modelVersion,status:item.status,updatedAt:item.updatedAt??null,record:item.record}};
+ const bytes=new TextEncoder().encode(JSON.stringify(evidence)).length,localBytes=new TextEncoder().encode(localRevision).length;
+ if(bytes>CLOUD_HOLD_EVIDENCE_ITEM_BYTES||localBytes>CLOUD_HOLD_EVIDENCE_ITEM_BYTES){cloudHoldEvidence.omitted.oversize++;return;}
+ if(cloudHoldEvidence.entries.length>=100||cloudHoldEvidence.bytes+bytes>CLOUD_HOLD_EVIDENCE_MAX_BYTES||cloudHoldEvidence.revisionBytes+localBytes>CLOUD_HOLD_EVIDENCE_MAX_BYTES){cloudHoldEvidence.omitted.budget++;return;}
+ cloudHoldEvidence.entries.push({evidence:cloneData(evidence),localRevision});cloudHoldEvidence.bytes+=bytes;cloudHoldEvidence.revisionBytes+=localBytes;
+}
+function exportCloudHoldEvidence(){
+ const e=cloudHoldEvidence;
+ if(!e)return null;
+ const active=new Set(cloudSyncActiveHolds().map(manifestKey)),audit=new Set((cloudHoldAudit?.entries||[]).filter(x=>x.category==='integrityDifferences').map(manifestKey));
+ let stale=0;const entries=[];
+ for(const row of e.entries){const x=row.evidence,local=raceCache[x.raceId];
+  if(!local||!active.has(manifestKey(x))||!audit.has(manifestKey(x))||e.auditGeneratedAt!==cloudHoldAudit?.generatedAt||stableStringify(cloudAuditParts(local,queueCloudStatus(local)))!==row.localRevision){stale++;continue;}
+  entries.push(cloneData(x));
+ }
+ return {schemaVersion:1,purpose:'diagnostic_only',formalEarlyEvidence:false,startedAt:e.startedAt,finishedAt:e.finishedAt,auditGeneratedAt:e.auditGeneratedAt,complete:e.complete,scope:'integrityDifferences',targetCount:e.targetCount,holdsAtStart:e.holdsAtStart,eligible:e.eligible,captured:entries.length,omitted:{...e.omitted,stale},entries};
+}
 let cloudHoldAudit=sanitizeCloudHoldAudit(localStore.get(CLOUD_HOLD_AUDIT_KEY,null));
 let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CLOUD_READ_OPERATION_KEY,null));
 function readCloudOperation(value){
@@ -366,20 +391,21 @@ function auditCloudSyncHolds(){
  if(cloudReadFlight)return cloudReadFlight;
  cloudReadFlight=Promise.resolve().then(async()=>{
   const counts={total:0,checked:0,...Object.fromEntries(Object.keys(cloudAuditLabels).map(k=>[k,0]))},entries=[];
-  const saveAudit=()=>{const next={schemaVersion:1,generatedAt:new Date().toISOString(),entries:cloneData(entries)};if(!localStore.set(CLOUD_HOLD_AUDIT_KEY,next))throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});cloudHoldAudit=next;};
+  const saveAudit=()=>{const next={schemaVersion:1,generatedAt:new Date().toISOString(),entries:cloneData(entries)};if(!localStore.set(CLOUD_HOLD_AUDIT_KEY,next))throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});cloudHoldAudit=next;if(cloudHoldEvidence)cloudHoldEvidence.auditGeneratedAt=next.generatedAt;};
   setCloudReadOperation({action:'audit',status:'running',phase:'fetch',startedAt:new Date().toISOString(),finishedAt:'',code:'',counts:{...counts}});
   try{
    if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
-   const targets=cloudSyncActiveHolds().slice(0,100);counts.total=targets.length;
+   cloudHoldEvidence={startedAt:new Date().toISOString(),finishedAt:'',auditGeneratedAt:'',complete:false,eligible:0,bytes:0,revisionBytes:0,omitted:{invalid:0,oversize:0,budget:0},entries:[]};
+   const activeHolds=cloudSyncActiveHolds(),targets=activeHolds.slice(0,100);counts.total=targets.length;cloudHoldEvidence.targetCount=targets.length;cloudHoldEvidence.holdsAtStart=activeHolds.length;
    for(const h of targets){
     const before=stableStringify(raceCache[h.raceId]);let entry;
-    try{const item=await cloudReadRequest(`/api/db/hold-audit?raceId=${encodeURIComponent(h.raceId)}&modelVersion=${encodeURIComponent(h.modelVersion)}`);entry=stableStringify(raceCache[h.raceId])===before?compareCloudHoldRecord(raceCache[h.raceId],item,h.raceId,h.modelVersion):{raceId:h.raceId,modelVersion:h.modelVersion,category:'deferred',differences:[]};}
+    try{const item=await cloudReadRequest(`/api/db/hold-audit?raceId=${encodeURIComponent(h.raceId)}&modelVersion=${encodeURIComponent(h.modelVersion)}`);entry=stableStringify(raceCache[h.raceId])===before?compareCloudHoldRecord(raceCache[h.raceId],item,h.raceId,h.modelVersion):{raceId:h.raceId,modelVersion:h.modelVersion,category:'deferred',differences:[]};captureCloudHoldEvidence(raceCache[h.raceId],item,entry);}
     catch(e){if(e?.code==='CLOUD_READ_TIMEOUT'||e?.name==='TypeError'||e?.code==='NETWORK_ERROR')throw e;entry={raceId:h.raceId,modelVersion:h.modelVersion,category:'failed',differences:[]};}
     entries.push(entry);counts.checked++;counts[entry.category]++;saveAudit();setCloudReadOperation({counts:{...counts}});
    }
-   saveAudit();setCloudReadOperation({status:counts.failed||counts.deferred?'partial':'success',phase:'complete',counts:{...counts},finishedAt:new Date().toISOString()});return counts;
+   saveAudit();cloudHoldEvidence.complete=!counts.failed&&!counts.deferred&&cloudHoldEvidence.targetCount===cloudHoldEvidence.holdsAtStart;cloudHoldEvidence.finishedAt=new Date().toISOString();setCloudReadOperation({status:counts.failed||counts.deferred?'partial':'success',phase:'complete',counts:{...counts},finishedAt:new Date().toISOString()});return counts;
   }catch(e){const code=cloudReadErrorCode(e);setCloudReadOperation({status:counts.checked?'partial':'error',counts:{...counts},code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
- }).finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
+ }).finally(()=>{if(cloudHoldEvidence&&!cloudHoldEvidence.finishedAt)cloudHoldEvidence.finishedAt=new Date().toISOString();cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
 }
 function recoverCloudFingerprintMetadata(){
  if(cloudReadFlight)return cloudReadFlight;
@@ -691,6 +717,7 @@ function renderCloudSyncState(){
  const readBusy=!!cloudReadFlight||cloudReadOperation?.status==='running';
  for(const id of ['cloudRestoreButton','cloudRecheckButton','cloudResultRepairButton','cloudFingerprintRecoverButton','cloudHoldAuditButton','cloudReferenceRestoreButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
  const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount'),auditSummary=$('cloudHoldAuditSummary');
+ const evidenceStatus=$('cloudHoldEvidenceStatus');if(evidenceStatus){const e=cloudHoldEvidence,n=e?.entries.length||0;evidenceStatus.textContent=n?`照合資料を ${n}件取得しました。画面を再読込せず、研究データのバックアップを書き出してください。資料は診断専用で、原本・保留は変更しません。${e.omitted.oversize+e.omitted.budget+e.omitted.invalid?'容量制限などにより一部の資料は含まれません。':''}`:'照合資料が必要な場合は「保留の差分を確認」を実行してから、画面を再読込せずバックアップを書き出してください。固定確認情報が異なる記録のクラウド本文を診断用に含めます。';}
  if(auditSummary){const active=new Set(holds.map(manifestKey)),entries=(cloudHoldAudit?.entries||[]).filter(x=>active.has(manifestKey(x))),totals=entries.reduce((out,x)=>(out[x.category]=(out[x.category]||0)+1,out),{});auditSummary.hidden=!entries.length;auditSummary.textContent=entries.length?`診断時点 ${cloudHoldAudit.generatedAt}｜現在の保留のうち ${entries.length}/${holds.length}件｜${Object.entries(totals).map(([k,n])=>`${cloudAuditLabels[k]} ${n}件`).join('・')}｜診断では原本・保留を変更しません。`:'';}
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
  if(list){const audits=new Map((cloudHoldAudit?.entries||[]).map(x=>[manifestKey(x),x]));list.innerHTML=holds.map(h=>{const a=audits.get(manifestKey(h));return `<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}${a?`｜診断時点：${esc(cloudAuditLabels[a.category])}｜差分 ${esc(a.differences.map(k=>cloudAuditFieldLabels[k]).join('・')||'なし')}｜${esc(cloudHoldAudit.generatedAt)}`:''}</small>${a?.integrity?`<small>固定確認：端末 ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.local])}／クラウド ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.remote])}（EARLYの正式性は別判定）</small>`:''}${cloudIntegrityExplanationHtml(a?.integrityDetails)}${a?.identityIssue?`<small>識別不備：${a.identityIssue.side==='local'?'端末':'クラウド'}｜${esc(a.identityIssue.code)}</small>`:''}${a?.changedPaths?.length?`<details class="cloud-audit-paths"><summary>差分の項目（最大24件）</summary><ul>${a.changedPaths.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></details>`:''}</div>`}).join('');}
@@ -2143,7 +2170,7 @@ function bindHistoricalCollector(){
 }
 
 function createResearchBackup(){
- return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||'',syncDiagnostics:{schemaVersion:1,operation:cloneData(cloudReadOperation),holdAudit:cloneData(cloudHoldAudit),holds:cloudSyncActiveHolds().map(h=>({raceId:h.raceId,modelVersion:h.modelVersion,reason:cloudSyncReason(h.reason),heldAt:typeof h.heldAt==='string'?h.heldAt:''}))}};
+ return {format:'CHASS_KEIBA_RESEARCH_BACKUP',schemaVersion:BACKUP_SCHEMA_VERSION,appVersion:APP_VERSION,exportedAt:new Date().toISOString(),counts:{races:Object.keys(raceCache).length,oddsHistories:Object.keys(oddsHistoryCache).length},races:cloneData(raceCache),oddsHistory:cloneData(oddsHistoryCache),currentRace:currentRaceCache||'',syncDiagnostics:{schemaVersion:1,operation:cloneData(cloudReadOperation),holdAudit:cloneData(cloudHoldAudit),holdEvidence:exportCloudHoldEvidence(),holds:cloudSyncActiveHolds().map(h=>({raceId:h.raceId,modelVersion:h.modelVersion,reason:cloudSyncReason(h.reason),heldAt:typeof h.heldAt==='string'?h.heldAt:''}))}};
 }
 function validateResearchBackup(data){
  if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('バックアップ形式が不正です。');
@@ -2165,7 +2192,7 @@ function mergeResearchBackup(data,existing=raceCache){
  return {merged,imported,skipped,invalid};
 }
 function downloadResearchBackup(){
- const data=createResearchBackup(),blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a'),stamp=data.exportedAt.slice(0,10).replaceAll('-','');a.href=url;a.download=`CHASS-research-backup-${stamp}-v${APP_VERSION}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);return data.counts;
+ const data=createResearchBackup(),blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a'),stamp=data.exportedAt.slice(0,10).replaceAll('-','');a.href=url;a.download=`CHASS-research-backup-${stamp}-v${APP_VERSION}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);return {...data.counts,holdEvidence:data.syncDiagnostics.holdEvidence?.captured||0};
 }
 async function importResearchBackup(file){
  if(!file)throw new Error('ファイルを選択してください。');if(file.size>50*1024*1024)throw new Error('バックアップが50MBを超えています。');
@@ -2683,7 +2710,7 @@ $('themeToggle').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=async()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id===b.dataset.view));if(b.dataset.view==='dashboardView'){renderDashboard();if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:true})}});
 bindHistoricalCollector();
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);setAutoOdds(false);if($('autoResultToggle'))$('autoResultToggle').onchange=e=>setAutoResult(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
-if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
+if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件・照合資料 ${counts.holdEvidence}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
 if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.status==='syncing')return;setButtonBusy('cloudSyncButton',true,'差分確認中');try{await syncAllResearchToCloud();renderCloudSyncState();renderDashboard()}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudSyncButton',false)} };
 if($('publicApiCheck'))$('publicApiCheck').onclick=checkPublicApi;
