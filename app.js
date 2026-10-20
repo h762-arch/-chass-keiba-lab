@@ -4,6 +4,7 @@ let jraMeetingSelector=null,jraRaceClient=null,jraOddsClient=null,jraResultClien
 const APP_VERSION='10.0.1';
 let cpsiFirstPreview=null,cpsiFirstFileGeneration=0;
 let cpsiSourceRoot=null,cpsiSourceGeneration=0,cpsiSourceBusy=false;
+let cpsiDriveReaderToken='',cpsiDriveController=null;
 // CHASS-JRA-AUTO-LOAD-v1.5.2
 if(typeof window!=='undefined'){
   window.CHASS_FEATURES=window.CHASS_FEATURES||{};
@@ -225,7 +226,7 @@ function previewCpsiFirst(root){
  cpsiSourceGeneration++;cpsiSourceRoot=null;
  cpsiFirstPreview=calculateCpsiFirst(root);
  try{const source=window.CHASS_CPSI_SOURCE_RECOVERY;if(source)cpsiSourceRoot=source.sourceRootFromInput(source.sourceInputFromRoot(root));}catch{/* Missing identities remain NA; never manufacture them. */}
- if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料は未保存です。Drive自動接続・出所認証は未接続です。';
+ if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料は未保存です。Drive接続状態は取得時に確認します。出所の正式認証は別です。';
  renderCpsiFirstPreview();return cpsiFirstPreview;
 }
 function cpsiSourceMessage(code){
@@ -238,7 +239,7 @@ async function runCpsiSourceAction(action,file=null){
  let store,completed=0;cpsiSourceBusy=true;
  const fresh=()=>generation===cpsiSourceGeneration;
  const message=text=>{if(fresh()&&$('cpsiSourceStatus'))$('cpsiSourceStatus').textContent=text;};
- for(const id of ['cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,true);
+ for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,true);
  message('元資料を確認中…');
  try{
   if(!source)throw Error('SOURCE_MODULE_UNAVAILABLE');
@@ -275,7 +276,71 @@ async function runCpsiSourceAction(action,file=null){
   message(`${labels[recovery.status]}照合${recovery.candidateCount}件｜クラウド送信・元予想の変更なし。`);
   return recovery;
  }catch(error){message(`元資料処理失敗｜${cpsiSourceMessage(error.code||error.message)}${completed?` 読戻確認済み${completed}件。`:''}`);return null;}
- finally{store?.close();cpsiSourceBusy=false;for(const id of ['cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,false);}
+ finally{store?.close();cpsiSourceBusy=false;for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,false);}
+}
+function cancelCpsiDriveRead(){if(cpsiDriveController){cpsiDriveController.abort();if($('cpsiDriveStatus'))$('cpsiDriveStatus').textContent='Drive取得を中断しました。現在の選択で再取得できます。';}}
+function cpsiDriveSelection(){
+ const organization=$('raceMode')?.value==='JRA'?'JRA':'NAR';
+ const raceDate=$(organization==='JRA'?'jraDate':'autoRaceDate')?.value,track=$(organization==='JRA'?'jraCourse':'autoTrack')?.value,raceNo=Number($(organization==='JRA'?'jraRaceNo':'autoRaceNo')?.value);
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(raceDate||'')||!track||!Number.isInteger(raceNo)||raceNo<1||raceNo>12)throw Error('DRIVE_SELECTION_INVALID');
+ return {organization,raceId:`${raceDate}|${track}|${raceNo}`};
+}
+function cpsiDriveMessage(code){
+ return ({DRIVE_NOT_CONFIGURED:'本番のDrive接続設定が未完了です。',DRIVE_CONFIG_INVALID:'本番のDrive接続設定を確認してください。',DRIVE_CREDENTIALS_INVALID:'Worker側のGoogle認証設定を確認してください。',DRIVE_READER_UNAUTHORIZED:'接続キーが未入力か一致しません。',DRIVE_SOURCE_NOT_FOUND:'選択したレース・Runの正規PRE元資料がありません。',DRIVE_SOURCE_PRE_EVIDENCE_INVALID:'元資料のRun・Snapshot・馬ID・発走前証跡を確認できません。',DRIVE_SOURCE_RUN_AMBIGUOUS:'複数のRun・固定単位があり、自動選択できません。',DRIVE_SOURCE_CONFLICT:'元資料の内容が相違しています。回復を中止しました。',DRIVE_SOURCE_CHANGED_DURING_READ:'取得中に元資料が更新されました。再取得してください。',DRIVE_SOURCE_FEED_REQUIRED:'Sheetsに正規CPSI元資料の配信表がありません。',DRIVE_SOURCE_FORMAT_REQUIRED:'Driveファイルが正規CPSI元資料の形式ではありません。',DRIVE_FILE_NOT_READABLE:'登録元資料へのGoogle読み取り権限を確認してください。',DRIVE_GOOGLE_AUTH_REJECTED:'GoogleがWorkerの認証を拒否しました。',DRIVE_SELECTION_INVALID:'日付・競馬種別・競馬場・レースを選択してください。',DRIVE_REQUEST_ABORTED:'Drive取得を中断しました。',DRIVE_GOOGLE_RATE_LIMITED:'Googleの取得上限です。時間をおいて再実行してください。',DRIVE_CONTEXT_MISMATCH:'現在の入力と元資料の固定単位・馬IDが一致しません。',DRIVE_RESPONSE_INVALID:'Drive取得応答を確認できません。'})[code]||'Drive元資料を取得・確認できません。端末保存の失敗も含め、成功扱いにはしていません。';
+}
+async function loadCpsiFromDrive(){
+ if(cpsiSourceBusy)return null;
+ const generation=cpsiSourceGeneration,source=window.CHASS_CPSI_SOURCE_RECOVERY;
+ let store,selection,controller,timer,completed=0;cpsiSourceBusy=true;
+ const message=text=>{if($('cpsiDriveStatus'))$('cpsiDriveStatus').textContent=text;};
+ const fresh=()=>generation===cpsiSourceGeneration&&!controller?.signal.aborted&&JSON.stringify(selection)===JSON.stringify(cpsiDriveSelection());
+ for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,true);
+ try{
+  if(!source)throw Error('DRIVE_RESPONSE_INVALID');
+  selection=cpsiDriveSelection();
+  const entered=$('cpsiDriveReaderKey')?.value||'';if(entered)cpsiDriveReaderToken=entered;
+  if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';
+  if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken))throw Error('DRIVE_READER_UNAUTHORIZED');
+  controller=new AbortController();cpsiDriveController=controller;timer=setTimeout(()=>controller.abort(),20000);
+  let target=null;
+  if(cpsiSourceRoot){const input=source.sourceInputFromRoot(cpsiSourceRoot);if(input.organization===selection.organization&&input.raceId===selection.raceId)target=cloneData(cpsiSourceRoot);}
+  const params=new URLSearchParams(selection);
+  if(target)for(const k of ['runId','inputSnapshotId','indexSnapshotId'])params.set(k,target.race.metricInputFreeze[k]);
+  message(`${selection.raceId}（${selection.organization}）のDrive元資料を取得中…`);
+  const r=await fetch('/api/cpsi/sources/drive?'+params.toString(),{method:'GET',credentials:'same-origin',cache:'no-store',headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},signal:controller.signal});
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
+  const length=Number(r.headers.get('content-length'));if(length>2097152)throw Error('DRIVE_RESPONSE_INVALID');
+  // Bound decoded response too; Content-Length alone is not trusted.
+  if(!r.body)throw Error('DRIVE_RESPONSE_INVALID');
+  const reader=r.body.getReader(),parts=[];let size=0;
+  try{for(;;){const p=await reader.read();if(p.done)break;size+=p.value.byteLength;if(size>2097152)throw Error('DRIVE_RESPONSE_INVALID');parts.push(p.value);}}
+  catch(e){await reader.cancel().catch(()=>{});throw e;}
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
+  const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}
+  let data;try{data=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw Error('DRIVE_RESPONSE_INVALID');}
+  if(!r.ok||data.ok!==true)throw Error(typeof data.code==='string'?data.code:'DRIVE_RESPONSE_INVALID');
+  if(data.status!=='DRIVE_SOURCE_READY'||data.organization!==selection.organization||data.raceId!==selection.raceId||data.format!==source.BUNDLE_FORMAT||data.transportAuthenticated!==true||data.sourceOriginAuthenticated!==false)throw Error('DRIVE_RESPONSE_INVALID');
+  const artifacts=await source.artifactsFromSourceFile(JSON.stringify({format:data.format,sources:data.sources}),{sourceRef:'drive-read'});
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
+  if(artifacts.some(a=>a.input.organization!==selection.organization||a.input.raceId!==selection.raceId))throw Error('DRIVE_CONTEXT_MISMATCH');
+  const seed=target||source.sourceRootFromInput(artifacts[0].input),context=source.sourceContextKey(source.sourceInputFromRoot(seed));
+  if(artifacts.some(a=>a.contextKey!==context))throw Error('DRIVE_CONTEXT_MISMATCH');
+  const recovery=await source.recoverCpsiSources(seed,artifacts);
+  if(recovery.status==='SOURCE_CONFLICT')throw Error('DRIVE_SOURCE_CONFLICT');
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}store=await source.openDeviceSourceStore();
+  for(const a of artifacts){if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}await source.saveSourceAndReadback(store,a);completed++;}
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
+  // Time is checked again after physical storage/readback, never backdated to request start.
+  source.sourceInputFromRoot(recovery.root);
+  previewCpsiFirst(recovery.root);
+  const rows=cpsiFirstPreview?.result?.cpsi;
+  message(`Drive取得・端末読戻完了｜${completed}資料｜CPSI ${rows?.numericMaterializedCount??0}/${rows?.activeRunnerCount??0}頭｜Google読取接続済み・出所の正式認証は別です。`);
+  if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent=`元資料${completed}件の件数・馬ID・SHA-256を読戻確認済み。元EARLY・Signal・D1は変更していません。`;
+  return {status:'DRIVE_DEVICE_READBACK_VERIFIED',completed,recovery};
+ }catch(e){
+  if(generation===cpsiSourceGeneration){const code=controller?.signal.aborted||e.name==='AbortError'?'DRIVE_REQUEST_ABORTED':e.message;message(`Drive取得未完了｜${cpsiDriveMessage(code)}${completed?` 読戻確認済み${completed}資料。`:''}`);}
+  return null;
+ }finally{clearTimeout(timer);store?.close();if(cpsiDriveController===controller)cpsiDriveController=null;cpsiSourceBusy=false;for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,false);}
 }
 async function importCpsiFirstFile(file){
  const generation=++cpsiFirstFileGeneration;cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent='指数を読み込み中…';
@@ -835,7 +900,7 @@ function layerMatchesActive(record=state,layer,kind='prediction'){
  const active=activeRaceIdentity(record),identity=snapshotIdentity(layer,record,kind);return !!active.raceId&&identity.raceId===active.raceId&&identity.organization===active.organization;
 }
 function activeRaceContext(record=state){const identity=activeRaceIdentity(record),hasPrediction=layerMatchesActive(record,record?.predictionSnapshot,'prediction'),hasResult=hasPrediction&&layerMatchesActive(record,record?.resultSnapshot,'result'),hasValidation=hasResult&&layerMatchesActive(record,record?.validationSnapshot,'validation');return {...identity,generation:activeRaceGeneration,hasPrediction,hasResult,hasValidation}}
-function beginActiveRaceTransition(mode,race=null){cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料の対象を切り替えました。';cpsiFirstPreview=null;cpsiFirstFileGeneration++;if(typeof document!=='undefined')renderCpsiFirstPreview();activeRaceGeneration++;lastRaceFetchAudit=null;predictionViewMode='original';jraNormalizedDraft=null;state=emptyRaceState(mode);if(race)state.race={...state.race,...cloneData(race),raceType:mode,category:mode==='JRA'?'中央競馬':'地方競馬'};clearValidationTransient(state);renderRaceFetchDiagnostics(null);return state}
+function beginActiveRaceTransition(mode,race=null){cancelCpsiDriveRead();cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料の対象を切り替えました。';cpsiFirstPreview=null;cpsiFirstFileGeneration++;if(typeof document!=='undefined')renderCpsiFirstPreview();activeRaceGeneration++;lastRaceFetchAudit=null;predictionViewMode='original';jraNormalizedDraft=null;state=emptyRaceState(mode);if(race)state.race={...state.race,...cloneData(race),raceType:mode,category:mode==='JRA'?'中央競馬':'地方競馬'};clearValidationTransient(state);renderRaceFetchDiagnostics(null);return state}
 function activeRequestMatches(request){const active=activeRaceIdentity();return request?.generation===activeRaceGeneration&&request?.raceId===active.raceId&&request?.organization===active.organization}
 function restoreSavedRace(record,expected=null){const next=cloneData(record||emptyRaceState()),identity=activeRaceIdentity(next);if(expected&&(identity.raceId!==expected.raceId||identity.organization!==expected.organization))return emptyRaceState(expected.organization||'NAR');const unidentifiedLegacy=!identity.raceId&&!expected,resultValid=unidentifiedLegacy?!!next.resultSnapshot:layerMatchesActive(next,next.resultSnapshot,'result'),validationValid=resultValid&&(unidentifiedLegacy?!!next.validationSnapshot:layerMatchesActive(next,next.validationSnapshot,'validation'));if(!resultValid){next.result=null;next.resultSnapshot=null;next.actualTimes={};next.resultStatus='waiting';next.validationCompleted=false;next.validated=false}else next.actualTimes=next.resultSnapshot?.actualTimes||next.result?.actualTimes||{};if(!validationValid){next.validationSnapshot=null;next.validationCompleted=false;next.validated=false}if(next.predictionSnapshot?.horses?.length)next.horses=restoredHorseView(next);return next}
 
@@ -2857,7 +2922,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,calculateCpsiFirst,previewCpsiFirst,runCpsiSourceAction,importCpsiFirstFile,renderCpsiFirstPreview,getCpsiFirstPreview(){return cloneData(cpsiFirstPreview)},resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,calculateCpsiFirst,previewCpsiFirst,runCpsiSourceAction,loadCpsiFromDrive,cpsiDriveSelection,cancelCpsiDriveRead,importCpsiFirstFile,renderCpsiFirstPreview,getCpsiFirstPreview(){return cloneData(cpsiFirstPreview)},resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    historicalRecord,buildNarEarlyResearchRecord,acquireNarEarlyResearchRecord,normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,PREODDS_POLICY_VERSION,preOddsFrozen,preOddsStats,preOddsStamp,schedulePreOddsFallback,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
  };
  return;
@@ -2906,6 +2971,9 @@ bindHistoricalCollector();
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);setAutoOdds(false);if($('autoResultToggle'))$('autoResultToggle').onchange=e=>setAutoResult(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件・照合資料 ${counts.holdEvidence}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
+if($('cpsiDriveLoad'))$('cpsiDriveLoad').onclick=()=>loadCpsiFromDrive();
+for(const id of ['raceMode','autoRaceDate','autoTrack','autoRaceNo','jraDate','jraCourse','jraRaceNo'])$(id)?.addEventListener('change',cancelCpsiDriveRead);
+window.addEventListener('pagehide',()=>{cancelCpsiDriveRead();cpsiDriveReaderToken='';if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';});
 for(const [id,action] of [['cpsiSourceSave','save'],['cpsiSourceRecover','recover'],['cpsiSourceExport','export']])if($(id))$(id).onclick=()=>runCpsiSourceAction(action);
 if($('cpsiSourceFile'))$('cpsiSourceFile').onchange=event=>{const file=event.target.files?.[0];if(file)runCpsiSourceAction('import',file);event.target.value=''};
 if($('cpsiFirstFile'))$('cpsiFirstFile').onchange=event=>{const file=event.target.files?.[0];if(file)importCpsiFirstFile(file);event.target.value=''};

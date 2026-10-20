@@ -7,6 +7,7 @@ import {createServer} from 'node:net';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
+import {createSourceArtifact} from '../src/prediction/cpsi-source-recovery-v1.mjs';
 import {parseJraRaceCard} from '../jra-race-fetch.mjs';
 import {readJraOfficialRaceCache} from '../jra-official-cache.mjs';
 
@@ -253,4 +254,38 @@ test('CPSI source library physically survives reload and automatically recovers 
  const index=await readFile(path.join(ROOT,'index.html'),'utf8');await writeFile(smokePath,index.replace('<head>','<head>'+probe));
  const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
  for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1000)}\n${dom.slice(-2200)}`);}
+});
+
+
+test('Drive source control calculates and physically saves PRE inputs on phone widths without retaining the connection key',{timeout:90000},async t=>{
+ const chrome=resolveChrome().executable,port=await freePort(),smokeName=`chass-cpsi-drive-smoke-${process.pid}.html`,smokePath=path.join(ROOT,smokeName);
+ const date=new Date(Date.now()+24*3600000+9*3600000).toISOString().slice(0,10),raceId=`${date}|浦和|1`,capturedAt=new Date(Date.now()-2*3600000).toISOString(),freezeAt=new Date(Date.now()-3600000).toISOString();
+ const token='SYNTHETIC_BROWSER_CPSI_READER_0123456789';
+ const meta={organizer:'NAR',raceId,runId:'BROWSER-DRIVE',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt,authorityRef:'SYNTHETIC-INDEX'};
+ const root={format:'CHASS_CPSI_PRE_INPUT_V1',race:{category:'地方競馬',raceType:'NAR',raceDate:date,track:'浦和',raceNo:1,surface:'ダート',metricInputFreeze:{runId:meta.runId,inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',freezeAt,postAt:date+'T10:00:00+09:00'}},horses:[1,2,3,4].map(horseNo=>({horseNo,canonicalHorseKey:'NAR|synthetic-'+horseNo,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:100-horseNo,baseline5:90-horseNo,current:80-horseNo,distance:70-horseNo,course:60-horseNo}}))};
+ const artifact=await createSourceArtifact(root,{sourceRef:'drive:SYNTHETIC_FILE_12345@7'});
+ const payload={ok:true,status:'DRIVE_SOURCE_READY',organization:'NAR',raceId,format:'CHASS_CPSI_SOURCE_BUNDLE_V1',sources:[artifact],transportAuthenticated:true,sourceOriginAuthenticated:false,formalKpiEligible:false,originalEarlyMutation:false};
+ const probe=`<script>(()=>{
+ localStorage.clear();sessionStorage.clear();let sourceRequests=0,marketRequests=0,postRequests=0,loaded=false,busy=false,headerOK=false;const originalFetch=fetch.bind(window),errors=[];
+ window.fetch=(input,options)=>{const url=new URL(String(input),location.href);if(url.pathname.includes('/odds'))marketRequests++;if(options?.method==='POST')postRequests++;
+ if(url.pathname==='/api/cpsi/sources/drive'){sourceRequests++;headerOK=options?.headers?.authorization==='Bearer '+${JSON.stringify(token)}&&!url.href.includes(${JSON.stringify(token)});return Promise.resolve(Response.json(${JSON.stringify(payload)}));}
+ if(url.pathname.startsWith('/api/'))return Promise.resolve(Response.json({ok:false,error:'SMOKE_OFFLINE'},{status:503}));return originalFetch(input,options);};
+ addEventListener('error',e=>errors.push(e.message));addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));
+ const started=Date.now(),timer=setInterval(async()=>{if(busy)return;busy=true;try{
+ const button=document.getElementById('cpsiDriveLoad'),status=document.getElementById('cpsiDriveStatus');
+ if(!loaded&&typeof button?.onclick==='function'&&!document.getElementById('autoRaceLoad').disabled){loaded=true;document.getElementById('autoRaceDate').value=${JSON.stringify(date)};document.getElementById('autoTrack').value='浦和';document.getElementById('autoRaceNo').value='1';document.getElementById('cpsiDriveReaderKey').value=${JSON.stringify(token)};button.click();}
+ if(status?.textContent.includes('Drive取得・端末読戻完了')){
+  const s=window.CHASS_CPSI_SOURCE_RECOVERY,db=await s.openDeviceSourceStore(),rows=await db.list(s.sourceContextKey(s.sourceInputFromRoot(${JSON.stringify(root)})));db.close();
+  const noKey=!JSON.stringify({...localStorage,...sessionStorage,rows}).includes(${JSON.stringify(token)})&&document.getElementById('cpsiDriveReaderKey').value==='';
+  const fits=document.documentElement.scrollWidth<=innerWidth+1,unpredicted=document.getElementById('raceTitle').textContent.includes('未入力');
+  const ok=rows.length===1&&rows[0].sourceRef==='drive:SYNTHETIC_FILE_12345@7'&&document.getElementById('cpsiFirstPreview').textContent.includes('CPSI 80')&&headerOK&&sourceRequests===1&&marketRequests===0&&postRequests===0&&noKey&&fits&&unpredicted&&errors.length===0;
+  clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke=ok?'pass':'fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({sourceRequests,marketRequests,postRequests,noKey,headerOK,fits,unpredicted,errors});return;
+ }
+ if(Date.now()-started>11000){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({status:status?.textContent,errors});}
+ }catch(e){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=String(e.stack);}finally{busy=false;}},25);
+ })();</script>`;
+ const index=await readFile(path.join(ROOT,'index.html'),'utf8');await writeFile(smokePath,index.replace('<head>','<head>'+probe));
+ const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
+ const disabled=await fetch(`http://127.0.0.1:${port}/api/cpsi/sources/drive`);assert.equal(disabled.status,503);assert.equal((await disabled.json()).code,'DRIVE_NOT_CONFIGURED');assert.equal(disabled.headers.get('access-control-allow-origin'),null);
+ for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1000)}\n${dom.slice(-1800)}`);}
 });
