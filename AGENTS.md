@@ -8,3 +8,7 @@ Use current main and the current CHASS integration rules. Preserve Original EARL
 4. State scope, test files/results, base/head SHA and whether GitHub full integration passed. Distinguish local environment blockers from product failures and do not invent counts.
 
 See docs/TEST_STRATEGY.md for conservative fallbacks, manual revalidation and rollout. The first rollout changes workflows and dependencies and requires full integration verification. No production operation is authorized merely by a test-policy change.
+
+## Local browser prerequisite
+
+Before a local full integration check, run `npm run browser:check`. If Chrome is missing, use `npm run browser:install`; in a restricted container where full Chrome cannot launch, use the explicit `npm run browser:install -- --headless-shell` alternative and check again. Do not change host security policy, skip browser tests, or weaken their assertions. Report whether system/full Chrome or Headless Shell was used; GitHub full integration must still pass. See docs/BROWSER_RUNTIME_V1.md. Downloaded runtimes are local prerequisites and may need reinstalling in a fresh workspace.

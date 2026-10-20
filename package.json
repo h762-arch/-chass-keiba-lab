@@ -14,12 +14,16 @@
     "test:jra-j5": "node --test tests/jra-j5.test.mjs",
     "test:full": "node --test regression.test.mjs tests/*.test.mjs",
     "test:changed": "node scripts/run-affected-tests.mjs --working",
-    "check:changed": "node scripts/run-affected-tests.mjs --working"
+    "check:changed": "node scripts/run-affected-tests.mjs --working",
+    "browser:install": "node scripts/install-browser-runtime.mjs",
+    "browser:check": "node scripts/check-browser-runtime.mjs",
+    "test:browser": "node --test tests/jra-browser-smoke.test.mjs tests/viewer-nar-ability-browser.test.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@puppeteer/browsers": "2.13.2",
     "acorn": "8.15.0"
   }
 }
