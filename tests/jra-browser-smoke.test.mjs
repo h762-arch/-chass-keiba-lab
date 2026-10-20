@@ -224,3 +224,33 @@ test('CPSI FIRST file input calculates before prediction and market on phone wid
  const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
  for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1000)}\n${dom.slice(-1500)}`);}
 });
+
+test('CPSI source library physically survives reload and automatically recovers NAR inputs without writes to production',{timeout:90000},async t=>{
+ const chrome=resolveChrome().executable,port=await freePort(),smokeName=`chass-cpsi-source-smoke-${process.pid}.html`,smokePath=path.join(ROOT,smokeName);
+ const date=new Date(Date.now()+24*3600000+9*3600000).toISOString().slice(0,10),raceId=`${date}|浦和|1`,capturedAt=new Date(Date.now()-2*3600000).toISOString(),freezeAt=new Date(Date.now()-3600000).toISOString();
+ const meta={organizer:'NAR',raceId,runId:'BROWSER-SOURCE-RELOAD',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt,authorityRef:'SYNTHETIC-INDEX'};
+ const full={format:'CHASS_CPSI_PRE_INPUT_V1',race:{category:'地方競馬',raceType:'NAR',raceDate:date,track:'浦和',raceNo:1,surface:'ダート',metricInputFreeze:{runId:meta.runId,inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',freezeAt,postAt:date+'T10:00:00+09:00'}},horses:[1,2,3,4].map(horseNo=>({horseNo,canonicalHorseKey:'NAR|synthetic-'+horseNo,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:100-horseNo,baseline5:90-horseNo,current:80-horseNo,distance:70-horseNo,course:60-horseNo}}))};
+ const missing=JSON.parse(JSON.stringify(full));for(const h of missing.horses){h.canonicalIndex.current=null;h.canonicalIndex.course=null;}
+ const probe=`<script>(()=>{
+ localStorage.clear();let marketRequests=0,postRequests=0,phase=sessionStorage.getItem('source-phase')||'register',loaded=false,busy=false;const originalFetch=fetch.bind(window),errors=[];
+ window.fetch=(input,options)=>{const url=new URL(String(input),location.href);if(url.pathname.includes('/odds'))marketRequests++;if(options?.method==='POST')postRequests++;if(url.pathname.startsWith('/api/'))return Promise.resolve(Response.json({ok:false,error:'SMOKE_OFFLINE'},{status:503}));return originalFetch(input,options);};
+ addEventListener('error',e=>errors.push(e.message));addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));
+ function send(id,data){const transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify(data)],'source.json',{type:'application/json'}));const el=document.getElementById(id);el.files=transfer.files;el.dispatchEvent(new Event('change',{bubbles:true}));}
+ const started=Date.now(),timer=setInterval(async()=>{if(busy)return;busy=true;try{
+  const status=document.getElementById('cpsiSourceStatus');
+  if(!loaded&&typeof document.getElementById('cpsiFirstFile')?.onchange==='function'&&!document.getElementById('autoRaceLoad').disabled){loaded=true;if(phase==='register')send('cpsiSourceFile',${JSON.stringify(full)});else send('cpsiFirstFile',${JSON.stringify(missing)});}
+  if(phase==='register'&&status?.textContent.includes('登録完了')){sessionStorage.setItem('source-phase','recover');location.reload();clearInterval(timer);return;}
+  if(phase==='recover'&&status?.textContent.includes('不足8項目を回復')){
+   const s=window.CHASS_CPSI_SOURCE_RECOVERY,db=await s.openDeviceSourceStore();const input=s.sourceInputFromRoot(${JSON.stringify(full)});const rows=await db.list(s.sourceContextKey(input));db.close();
+   const panel=document.getElementById('cpsiFirstPreview'),fits=document.documentElement.scrollWidth<=innerWidth+1,unpredicted=document.getElementById('raceTitle').textContent.includes('未入力');
+   const noSavedRaces=Object.keys(JSON.parse(localStorage.getItem('chass_v90_races')||'{}')).length===0;
+   const ok=rows.length===1&&rows[0].input.horses.length===4&&rows[0].sourceOriginAuthenticated===false&&panel.textContent.includes('CPSI 80')&&unpredicted&&noSavedRaces&&fits&&marketRequests===0&&postRequests===0&&errors.length===0;
+   clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke=ok?'pass':'fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({rows:rows.length,unpredicted,noSavedRaces,fits,marketRequests,postRequests,errors});return;
+  }
+  if(Date.now()-started>11000){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({phase,status:status?.textContent,errors});}
+ }catch(e){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=String(e.stack);}finally{busy=false;}},25);
+})();</script>`;
+ const index=await readFile(path.join(ROOT,'index.html'),'utf8');await writeFile(smokePath,index.replace('<head>','<head>'+probe));
+ const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
+ for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1000)}\n${dom.slice(-2200)}`);}
+});
