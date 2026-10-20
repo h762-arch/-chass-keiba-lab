@@ -288,12 +288,12 @@ function sanitizeCloudHoldAudit(value){
 let cloudHoldAudit=sanitizeCloudHoldAudit(localStore.get(CLOUD_HOLD_AUDIT_KEY,null));
 let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CLOUD_READ_OPERATION_KEY,null));
 function readCloudOperation(value){
- if(!value||!['restore','recheck','repair','recover','audit'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
+ if(!value||!['restore','recheck','repair','recover','audit','reference'].includes(value.action)||!['running','success','error','partial','interrupted'].includes(value.status))return null;
  const out={action:value.action,status:value.status==='running'?'interrupted':value.status,phase:['fetch','validate','save','complete','render'].includes(value.phase)?value.phase:'fetch',startedAt:typeof value.startedAt==='string'?value.startedAt.slice(0,40):'',finishedAt:typeof value.finishedAt==='string'?value.finishedAt.slice(0,40):'',code:value.code?cloudReadErrorCode({code:value.code}):''};
- if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining','unverifiable','skipped','metadataRecovered','ready',...Object.keys(cloudAuditLabels)].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
+ if(value.counts&&typeof value.counts==='object')out.counts=Object.fromEntries(['received','added','enriched','conflicts','unchanged','resultAdded','deferred','before','total','checked','cleared','remaining','unverifiable','skipped','metadataRecovered','referenceAdded','ready',...Object.keys(cloudAuditLabels)].filter(k=>Number.isSafeInteger(value.counts[k])&&value.counts[k]>=0).map(k=>[k,value.counts[k]]));
  return out;
 }
-function cloudReadErrorCode(error){const code=error?.code,mapped={d1_binding_unavailable:'DATABASE_UNAVAILABLE',d1_read_failed:'DATABASE_READ_FAILED',d1_research_read_failed:'DATABASE_READ_FAILED',d1_schema_error:'DATABASE_SCHEMA_ERROR'};return Object.hasOwn(mapped,code)?mapped[code]:['RESTORE_RESPONSE_INVALID','MANIFEST_RESPONSE_INVALID','CLOUD_READ_TIMEOUT','LOCAL_SAVE_FAILED','NETWORK_ERROR','INVALID_JSON','HTTP_ERROR','RENDER_FAILED','CLOUD_SYNC_BUSY','DATABASE_UNAVAILABLE','DATABASE_READ_FAILED','DATABASE_SCHEMA_ERROR'].includes(code)?code:code==='invalid_response'?'INVALID_JSON':error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error instanceof TypeError?'NETWORK_ERROR':Number(error?.status)>=400?'HTTP_ERROR':'NETWORK_ERROR';}
+function cloudReadErrorCode(error){const code=error?.code,mapped={d1_binding_unavailable:'DATABASE_UNAVAILABLE',d1_read_failed:'DATABASE_READ_FAILED',d1_research_read_failed:'DATABASE_READ_FAILED',d1_schema_error:'DATABASE_SCHEMA_ERROR'};return Object.hasOwn(mapped,code)?mapped[code]:['REFERENCE_AUDIT_REQUIRED','RESTORE_RESPONSE_INVALID','MANIFEST_RESPONSE_INVALID','CLOUD_READ_TIMEOUT','LOCAL_SAVE_FAILED','NETWORK_ERROR','INVALID_JSON','HTTP_ERROR','RENDER_FAILED','CLOUD_SYNC_BUSY','DATABASE_UNAVAILABLE','DATABASE_READ_FAILED','DATABASE_SCHEMA_ERROR'].includes(code)?code:code==='invalid_response'?'INVALID_JSON':error?.name==='AbortError'?'CLOUD_READ_TIMEOUT':error instanceof TypeError?'NETWORK_ERROR':Number(error?.status)>=400?'HTTP_ERROR':'NETWORK_ERROR';}
 function setCloudReadOperation(patch){cloudReadOperation={...cloudReadOperation,...patch};localStore.set(CLOUD_READ_OPERATION_KEY,cloudReadOperation);renderCloudSyncState();}
 async function cloudReadRequest(path,options={}){
  const controller=new AbortController();let timer;
@@ -416,6 +416,76 @@ function recoverCloudFingerprintMetadata(){
    cloudState={...cloudState,available:true,source:'cloud',error:''};settleCloudSyncState('connected');
    setCloudReadOperation({status:counts.conflicts||counts.deferred||counts.skipped?'partial':'success',phase:'complete',counts:{...counts},finishedAt:new Date().toISOString()});return counts;
   }catch(e){counts.remaining=cloudSyncActiveHolds().length;const code=cloudReadErrorCode(e);setCloudReadOperation({status:counts.metadataRecovered||counts.cleared?'partial':'error',counts:{...counts},code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
+ }).finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
+}
+function buildReferenceRestoreRecord(local,item,id,model){
+ const reject=()=>{throw Object.assign(new Error('reference_restore_rejected'),{code:'REFERENCE_RESTORE_REJECTED'});};
+ const remote=item?.record;
+ if(!local||local.cloudConflict||item?.ok!==true||item?.raceId!==id||item?.modelVersion!==model||!remote||item.status!=='validated'||remote.validated!==true||remote.validationCompleted!==true)reject();
+ const audit=compareCloudHoldRecord(local,item,id,model);
+ if(!['referenceOnly','matched'].includes(audit.category)||audit.differences.some(k=>!['validationSnapshot','resultQueue','validated','validationCompleted','status'].includes(k)))reject();
+ for(const r of [local,remote]){const i=verifySnapshotIntegrity(r);if(i.status!=='verified'||i.chronology!=='ordered')reject();}
+ const validation=remote.validationSnapshot,queue=remote.resultQueue,order=remote.resultSnapshot?.finishOrder,known=new Set((local.predictionSnapshot?.horses||[]).map(h=>Number(h.horseNo)));
+ if(!validation||Array.isArray(validation)||validation.raceId!==id||String(validation.modelVersion)!==model||validation.automaticResultQueue!==true||!Array.isArray(validation.failures)||!Array.isArray(validation.checks)||!validation.checks.some(x=>x?.code==='AUTO_RESULT_QUEUE')||!Number.isFinite(Date.parse(validation.generatedAt))||!queue||queue.raceId!==id||String(queue.modelVersion)!==model||queue.status!=='validated')reject();
+ if(!Array.isArray(order)||order.length<3||order.some(n=>!['number','string'].includes(typeof n)||String(n).trim()===''||!Number.isInteger(Number(n))||Number(n)<=0||!known.has(Number(n)))||new Set(order.map(Number)).size!==order.length||stableStringify(validation.finishOrder)!==stableStringify(order))reject();
+ if(local.validationSnapshot!=null&&stableStringify(local.validationSnapshot)!==stableStringify(validation))reject();
+ const previous=local.resultQueue;
+ if(!previous||previous.enabled===false||previous.status==='paused'||previous.history?.length&&stableStringify(previous)!==stableStringify(queue))reject();
+ const operational=new Set(['status','resultStatus','attempts','totalAttempts','nextCheckAt','lastResultCheckAt','lastResultError','completedAt','history','retryLimitReached']);
+ for(const k of new Set([...Object.keys(previous),...Object.keys(queue)]))if(!operational.has(k)&&stableStringify(previous[k])!==stableStringify(queue[k]))reject();
+ // These legacy booleans describe completion of the reference result report.
+ // No authenticated EARLY receipt, original seal or KPI eligibility is created.
+ return {...cloneData(local),validationSnapshot:cloneData(validation),resultQueue:cloneData(queue),validated:true,validationCompleted:true};
+}
+async function persistReferenceRestore(id,next,revision){
+ if(stableStringify(raceCache[id])!==revision)return false;
+ if(!researchDb){if(!localStore.set(KEY,{...raceCache,[id]:next}))throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});return true;}
+ return new Promise((resolve,reject)=>{
+  let written=false;const tx=researchDb.transaction('races','readwrite'),objectStore=tx.objectStore('races'),request=objectStore.get(id);
+  request.onsuccess=()=>{try{if(stableStringify(raceCache[id])!==revision||stableStringify(request.result?.data)!==revision)return;objectStore.put({id,data:next,updatedAt:stableRecordUpdatedAt(next)});written=true;}catch(e){tx.abort();}};
+  tx.oncomplete=()=>resolve(written);tx.onerror=()=>reject(Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'}));tx.onabort=()=>reject(Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'}));
+ });
+}
+function clearReferenceRestoreHold(key,id){
+ if(cloudSyncHolds.get(key)?.reason!=='REMOTE_RESULT_PRESERVED')return false;
+ const holds=new Map(cloudSyncHolds),pending=new Set(cloudPending);holds.delete(key);pending.delete(id);
+ if(!localStore.set(CLOUD_PENDING_KEY,[...pending])||!localStore.set(CLOUD_SYNC_HOLD_KEY,Object.fromEntries(holds)))throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});
+ cloudSyncHolds.delete(key);cloudPending.delete(id);return true;
+}
+function restoreCloudReferenceValidation(){
+ if(cloudReadFlight)return cloudReadFlight;
+ cloudReadFlight=Promise.resolve().then(async()=>{
+  const counts={total:0,checked:0,referenceAdded:0,unchanged:0,cleared:0,conflicts:0,deferred:0,skipped:0,remaining:cloudSyncActiveHolds().length};
+  setCloudReadOperation({action:'reference',status:'running',phase:'fetch',startedAt:new Date().toISOString(),finishedAt:'',code:'',counts:{...counts}});
+  try{
+   if(cloudBulkFlight||cloudSyncFlights.size)throw Object.assign(new Error('cloud_sync_busy'),{code:'CLOUD_SYNC_BUSY'});
+   if(!cloudHoldAudit)throw Object.assign(new Error('reference_audit_required'),{code:'REFERENCE_AUDIT_REQUIRED'});
+   const diagnosed=new Set(cloudHoldAudit.entries.filter(x=>x.category==='referenceOnly').map(manifestKey)),targets=cloudSyncActiveHolds().filter(h=>h.reason==='REMOTE_RESULT_PRESERVED'&&diagnosed.has(manifestKey(h))).slice(0,100),staged=[];counts.total=targets.length;
+   for(const h of targets){
+    const original=raceCache[h.raceId],revision=stableStringify(original);counts.checked++;
+    const item=await cloudReadRequest(`/api/db/hold-audit?raceId=${encodeURIComponent(h.raceId)}&modelVersion=${encodeURIComponent(h.modelVersion)}`);
+    if(stableStringify(raceCache[h.raceId])!==revision){counts.deferred++;continue;}
+    let next;try{next=buildReferenceRestoreRecord(original,item,h.raceId,h.modelVersion);}catch{counts.conflicts++;continue;}
+    staged.push({h,revision,next});setCloudReadOperation({counts:{...counts}});
+   }
+   if(staged.length){
+    // Read current summaries after the selected bodies; never clear on an old cached manifest.
+    const manifest=await cloudReadRequest('/api/db/manifest');if(!validCloudReadRecords(manifest,{manifest:true}))throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
+    const descriptors=new Map(manifest.records.map(x=>[manifestKey(x),x]));if(descriptors.size!==manifest.records.length)throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
+    for(const {h,revision,next}of staged){const key=manifestKey(h),descriptor=descriptors.get(key);
+     if(stableStringify(raceCache[h.raceId])!==revision||cloudSyncHolds.get(key)?.reason!=='REMOTE_RESULT_PRESERVED'){counts.deferred++;continue;}
+     if(descriptor?.fingerprintStatus!=='stored'||!manifestMatches(cloudDescriptor(h.raceId,next),descriptor)){counts.conflicts++;continue;}
+     const changed=stableStringify(next)!==revision;setCloudReadOperation({phase:'save',counts:{...counts}});
+     let saved;try{saved=!changed||await persistReferenceRestore(h.raceId,next,revision);}catch{throw Object.assign(new Error('local_save_failed'),{code:'LOCAL_SAVE_FAILED'});}
+     if(!saved){counts.deferred++;continue;}
+     if(stableStringify(raceCache[h.raceId])!==revision){counts.deferred++;continue;}
+     raceCache[h.raceId]=next;if(changed)counts.referenceAdded++;else counts.unchanged++;
+     if(clearReferenceRestoreHold(key,h.raceId)){cloudManifestCache.set(key,cloneData(descriptor));counts.cleared++;}else counts.deferred++;
+     counts.remaining=cloudSyncActiveHolds().length;setCloudReadOperation({counts:{...counts}});
+    }
+   }
+   counts.remaining=cloudSyncActiveHolds().length;setCloudReadOperation({status:counts.conflicts||counts.deferred||counts.skipped?'partial':'success',phase:'complete',counts:{...counts},finishedAt:new Date().toISOString()});return counts;
+  }catch(e){counts.remaining=cloudSyncActiveHolds().length;const code=cloudReadErrorCode(e);setCloudReadOperation({status:counts.referenceAdded||counts.cleared?'partial':'error',counts:{...counts},code,finishedAt:new Date().toISOString()});throw Object.assign(new Error(code),{code});}
  }).finally(()=>{cloudReadFlight=null;renderCloudSyncState();});return cloudReadFlight;
 }
 function buildResultRepairRecord(local,item,id,model){
@@ -619,7 +689,7 @@ function renderCloudSyncState(){
  }
  renderCloudReadOperation();
  const readBusy=!!cloudReadFlight||cloudReadOperation?.status==='running';
- for(const id of ['cloudRestoreButton','cloudRecheckButton','cloudResultRepairButton','cloudFingerprintRecoverButton','cloudHoldAuditButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
+ for(const id of ['cloudRestoreButton','cloudRecheckButton','cloudResultRepairButton','cloudFingerprintRecoverButton','cloudHoldAuditButton','cloudReferenceRestoreButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
  const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount'),auditSummary=$('cloudHoldAuditSummary');
  if(auditSummary){const active=new Set(holds.map(manifestKey)),entries=(cloudHoldAudit?.entries||[]).filter(x=>active.has(manifestKey(x))),totals=entries.reduce((out,x)=>(out[x.category]=(out[x.category]||0)+1,out),{});auditSummary.hidden=!entries.length;auditSummary.textContent=entries.length?`診断時点 ${cloudHoldAudit.generatedAt}｜現在の保留のうち ${entries.length}/${holds.length}件｜${Object.entries(totals).map(([k,n])=>`${cloudAuditLabels[k]} ${n}件`).join('・')}｜診断では原本・保留を変更しません。`:'';}
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
@@ -629,14 +699,15 @@ function renderCloudSyncState(){
 function renderCloudReadOperation(){
  const node=$('cloudOperationStatus');if(!node)return;
  const op=cloudReadOperation;node.hidden=!op;if(!op)return;
- const action=op.action==='audit'?'保留の差分診断':op.action==='recover'?'クラウド照合情報の回復':op.action==='repair'?'不足結果の補完':op.action==='restore'?'復元':'保留の再確認',counts=op.counts||{},at=op.finishedAt||op.startedAt;
+ const action=op.action==='reference'?'参考検証だけの復元':op.action==='audit'?'保留の差分診断':op.action==='recover'?'クラウド照合情報の回復':op.action==='repair'?'不足結果の補完':op.action==='restore'?'復元':'保留の再確認',counts=op.counts||{},at=op.finishedAt||op.startedAt;
  let text;
  if(op.status==='running')text=`${action}中｜${{fetch:'クラウドへ接続中',validate:'受信内容を確認中',save:'端末へ保存中'}[op.phase]||'処理中'}`;
  else if(op.status==='interrupted')text=`前回の${action}は完了を確認できませんでした。再操作前に保存状態を確認してください。`;
  else if(op.status==='error'){
-  const labels={RESTORE_RESPONSE_INVALID:'復元データの形式が不正です。端末データは変更していません。',MANIFEST_RESPONSE_INVALID:'差分応答の形式が不正です。保留は解除していません。',CLOUD_READ_TIMEOUT:'通信が時間内に完了しませんでした。',LOCAL_SAVE_FAILED:'端末への保存に失敗しました。復元成功にはしていません。',NETWORK_ERROR:'クラウドとの通信に失敗しました。',INVALID_JSON:'クラウドの応答を読み取れませんでした。',HTTP_ERROR:'クラウドがエラーを返しました。',DATABASE_UNAVAILABLE:'クラウドの保存先に接続できませんでした。',DATABASE_READ_FAILED:'クラウドの保存データを読み出せませんでした。',DATABASE_SCHEMA_ERROR:'クラウドの保存形式を確認できませんでした。',CLOUD_SYNC_BUSY:'同期処理中です。終了後に操作してください。'};
+  const labels={REFERENCE_AUDIT_REQUIRED:'先に「保留の差分を確認」を実行してください。',RESTORE_RESPONSE_INVALID:'復元データの形式が不正です。端末データは変更していません。',MANIFEST_RESPONSE_INVALID:'差分応答の形式が不正です。保留は解除していません。',CLOUD_READ_TIMEOUT:'通信が時間内に完了しませんでした。',LOCAL_SAVE_FAILED:'端末への保存に失敗しました。復元成功にはしていません。',NETWORK_ERROR:'クラウドとの通信に失敗しました。',INVALID_JSON:'クラウドの応答を読み取れませんでした。',HTTP_ERROR:'クラウドがエラーを返しました。',DATABASE_UNAVAILABLE:'クラウドの保存先に接続できませんでした。',DATABASE_READ_FAILED:'クラウドの保存データを読み出せませんでした。',DATABASE_SCHEMA_ERROR:'クラウドの保存形式を確認できませんでした。',CLOUD_SYNC_BUSY:'同期処理中です。終了後に操作してください。'};
   text=`${action}失敗｜${labels[op.code]||'処理を完了できませんでした。'}｜${op.code}`;
  }else if(op.code==='RENDER_FAILED')text=`${action}の保存は完了しましたが、画面更新に失敗しました。`;
+ else if(op.action==='reference')text=`参考検証の復元${op.status==='partial'?'は一部完了':'完了'}｜対象 ${counts.total||0}件・確認 ${counts.checked||0}件・参考検証復元 ${counts.referenceAdded||0}件・変更なし ${counts.unchanged||0}件・保留解除 ${counts.cleared||0}件・相違 ${counts.conflicts||0}件・見送り ${counts.deferred||0}件・保留継続 ${counts.remaining||0}件｜元予想・結果・Signal保持／EARLY正式判定の昇格なし／クラウドへの送信なし`;
  else if(op.action==='audit')text=`保留の差分診断${op.status==='partial'?'は一部完了':'完了'}｜確認 ${counts.checked||0}/${counts.total||0}件・一致 ${counts.matched||0}件・Signal相違 ${counts.signalDifferences||0}件・固定確認情報相違 ${counts.integrityDifferences||0}件・直前評価等の相違 ${counts.liveDifferences||0}件・参照検証／処理状態のみ ${counts.referenceOnly||0}件・元予想等の相違 ${counts.originalConflicts||0}件・結果相違 ${counts.resultDifferences||0}件・レース相違 ${counts.raceDifferences||0}件・識別不備 ${counts.identityIssues||0}件・未完了 ${(counts.failed||0)+(counts.deferred||0)}件${op.code?`｜停止理由 ${op.code}`:''}｜クラウドへの送信なし`;
  else if(op.action==='recover')text=`クラウド照合情報の回復${op.status==='partial'?'は一部完了':'完了'}｜確認 ${counts.checked||0}/${counts.total||0}件・照合情報更新 ${counts.metadataRecovered||0}件・一致して解除 ${counts.cleared||0}件・相違 ${counts.conflicts||0}件・見送り ${(counts.skipped||0)+(counts.deferred||0)}件・保留継続 ${counts.remaining||0}件${op.code?`｜停止理由 ${op.code}`:''}｜クラウドの照合情報のみ更新`;
  else if(op.action==='repair')text=`不足結果の補完${op.status==='partial'?'は一部完了':'完了'}｜対象 ${counts.total||0}件・確認 ${counts.checked||0}件・結果補完 ${counts.resultAdded||0}件・不一致 ${counts.conflicts||0}件・端末変更を保持 ${counts.deferred||0}件${op.code?`・停止理由 ${op.code}`:''}｜元予想・Signal・保留は変更なし／クラウドへの送信なし`;
@@ -648,7 +719,7 @@ function renderCloudReadOperation(){
  node.textContent=text+(at?`｜${at}`:'');node.className=['error','interrupted','partial'].includes(op.status)?'muted is-error':'muted';
 }
 async function runCloudReadAction(action){
- try{await (action==='audit'?auditCloudSyncHolds():action==='recover'?recoverCloudFingerprintMetadata():action==='repair'?repairHeldCloudResults():action==='restore'?restoreResearchFromCloud():recheckCloudSyncHolds());try{renderCloudDatasetSummary();renderDashboard();}catch{setCloudReadOperation({status:'partial',phase:'render',code:'RENDER_FAILED'});}}
+ try{await (action==='reference'?restoreCloudReferenceValidation():action==='audit'?auditCloudSyncHolds():action==='recover'?recoverCloudFingerprintMetadata():action==='repair'?repairHeldCloudResults():action==='restore'?restoreResearchFromCloud():recheckCloudSyncHolds());try{renderCloudDatasetSummary();renderDashboard();}catch{setCloudReadOperation({status:'partial',phase:'render',code:'RENDER_FAILED'});}}
  catch{/* Safe diagnostic state is retained independently from sync holds. */}
  finally{renderCloudSyncState();}
 }
@@ -2623,6 +2694,7 @@ if($('cloudRecheckButton'))$('cloudRecheckButton').onclick=()=>runCloudReadActio
 if($('cloudResultRepairButton'))$('cloudResultRepairButton').onclick=()=>runCloudReadAction('repair');
 if($('cloudFingerprintRecoverButton'))$('cloudFingerprintRecoverButton').onclick=()=>runCloudReadAction('recover');
 if($('cloudHoldAuditButton'))$('cloudHoldAuditButton').onclick=()=>runCloudReadAction('audit');
+if($('cloudReferenceRestoreButton'))$('cloudReferenceRestoreButton').onclick=()=>runCloudReadAction('reference');
 if($('quickPredict'))$('quickPredict').onclick=()=>raceTypeOf(state)==='JRA'?(jraNormalizedDraft?$('jraAnalyze')?.click():$('jraOfficialLoad')?.click()):$('autoRaceLoad')?.click();
 if($('quickOdds'))$('quickOdds').onclick=()=>{const card=document.querySelector('.market-card');if(card)card.open=true;$('liveOddsSync')?.click();requestAnimationFrame(()=>card?.scrollIntoView({behavior:'smooth',block:'start'}))};
 if($('quickResult'))$('quickResult').onclick=openResultValidation;
