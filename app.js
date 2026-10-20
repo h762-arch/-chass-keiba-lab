@@ -49,7 +49,8 @@ const MEETING_SELECTOR_TTL_MS=20*60_000,meetingDiscoveryPromises=new Map();
 let meetingSelectorState={date:'',status:'idle',entries:{},source:null,fallback:false,error:null};
 let jraNormalizedDraft=null;
 const AUTO_RESULT_SETTING='chass_auto_result_v1',AUTO_RESULT_RETRY_MINUTES=[5,5,10,15,30],AUTO_RESULT_MAX_ATTEMPTS=6;
-let autoResultRunInProgress=null,autoResultTimer=null;
+let autoResultRunInProgress=null,autoResultTimer=null,autoResultDetailLimit=20;
+let autoResultActionMessage='';
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:null};
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const cloneData=v=>v==null?v:JSON.parse(JSON.stringify(v));
@@ -95,7 +96,7 @@ async function fetchJsonSimple(url,{signal,timeoutMs=10000}={}){
   const res=await fetch(url,{cache:'no-store',signal:activeSignal});
   const text=await res.text();
   let data;try{data=JSON.parse(text)}catch{throw requestError('parse_error','API応答を解析できませんでした。',res.status)}
-  if(!res.ok)throw requestError(data?.errorCode||'http_error',data?.error||`HTTP ${res.status}`,res.status);
+  if(!res.ok)throw requestError(data?.errorCode||(/^JRA_[A-Z_]+$/.test(data?.error||'')?data.error:'http_error'),data?.error||`HTTP ${res.status}`,res.status);
   return {res,data};
  }catch(error){
   if(error?.name==='AbortError')throw requestError('timeout','取得がタイムアウトしました。');
@@ -137,6 +138,63 @@ function errorLabel(e){
  if(e?.code==='nar_temporary'||e?.status===429||e?.status>=500)return 'NAR公式または取得サーバーで一時エラーが発生しました。';
  if(e?.code==='network_error'||e instanceof TypeError)return '通信に失敗しました。ネットワークを確認してください。';
  return String(e?.message||'取得に失敗しました。');
+}
+// One presentation policy for manual result reads and the automatic JRA/NAR queue.
+// Raw server messages remain in diagnostics, never in the user-facing explanation.
+function resultFetchFeedback({code='',status=0,hasResult=false}={}){
+ const key=String(code),http=Number(status)||Number(/^http_(\d{3})$/.exec(key)?.[1])||0;let reason='取得に失敗しました。原因は確認できません。',action='取得診断を確認し、時間をおいて再確認してください。',kind='unknown';
+ const set=(k,r,a)=>{kind=k;reason=r;action=a;};
+ if(['JRA_RESULT_BEFORE_POST'].includes(key))set('waiting','発走前のため結果を取得していません。','発走後、公式結果の掲載を待ってください。');
+ else if(['result_unpublished','result_rows_insufficient','JRA_RESULT_UNPUBLISHED'].includes(key))set('waiting','公式結果はまだ掲載されていないか、着順が揃っていません。','公式結果の掲載後に再確認してください。');
+ else if(key==='JRA_RESULT_FETCH_DISABLED')set('disabled','JRA結果取得は現在OFFです。','運用設定の確認が必要です。再試行を繰り返す必要はありません。');
+ else if(http===401||http===403)set('access','結果APIへのアクセスが拒否されました。','接続先や運用設定の確認が必要です。');
+ else if(http===429||key==='rate_limited')set('limited','取得先からアクセス回数を制限されています。','連続操作を避け、時間をおいて再確認してください。');
+ else if(['timeout','nar_timeout','fetch_timeout','JRA_FETCH_TIMEOUT'].includes(key))set('timeout','結果の取得が制限時間を超えました。','通信状態を確認し、時間をおいて再確認してください。');
+ else if(['network_error','fetch_failed','network_connection_lost','safari_load_failed','JRA_OFFICIAL_UNAVAILABLE','response_body_failed'].includes(key))set('network','結果の通信に失敗しました。','通信状態を確認してから再確認してください。');
+ else if(['parse_error','parser_error','json_parse_failed','empty_payload','empty_response','invalid_payload','AUTO_RESULT_INVALID','JRA_RESULT_PARSE_ERROR'].includes(key))set('invalid','応答を読み取れないか、結果データを安全に照合できませんでした。','結果の保存・上書きはせず、時間をおいて再確認してください。');
+ else if(http===404||key==='race_not_found')set('selection','指定レースを見つけられませんでした。','日付・競馬場・レース番号を確認してください。');
+ else if(http>=500||key==='nar_temporary')set('server','取得先で一時的なエラーが発生しました。','時間をおいて再確認してください。');
+ else if(['aborted','fetch_aborted','stale_request'].includes(key))set('cancelled','結果取得を中止しました。','現在選択しているレースを確認してください。');
+ const prefix=hasResult?'保存済み結果は保持しています。':'予想データは保持しています。';
+ return {kind,reason,action,text:`${reason} ${action} ${prefix}`};
+}
+function resultQueueTime(value){const time=Date.parse(value);return Number.isFinite(time)?new Date(time).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})+' JST':'未設定';}
+function resultRetryAvailability(id,record,now=Date.now()){
+ const q=record?.resultQueue;
+ if(!record?.predictionSnapshot||!q||!autoResultSelectionMatches(id,record,q))return {allowed:false,reason:'レース識別情報を確認してください。'};
+ if((record.resultSnapshot?.finishOrder||record.result?.finishOrder||[]).length>=3)return {allowed:false,reason:'結果は取得済みです。'};
+ if(!autoResultEnabled()||q.enabled===false||q.status==='paused')return {allowed:false,reason:'自動取得を停止中です。'};
+ if(!['result_waiting','result_pending','result_retry'].includes(q.status))return {allowed:false,reason:'再確認の対象ではありません。'};
+ const first=Date.parse(postRaceFirstCheckAt(record.race||{}));
+ if(!Number.isFinite(first))return {allowed:false,reason:'発走日時を確認してください。'};
+ if(now<first)return {allowed:false,reason:'発走時刻+10分から確認できます。'};
+ const last=Date.parse(q.lastResultCheckAt);
+ if(Number.isFinite(last)&&now-last<60000)return {allowed:false,reason:'前回確認から1分以上あけてください。'};
+ return {allowed:true,reason:''};
+}
+function resultQueueDetails(records=raceCache,now=Date.now()){
+ return Object.entries(records||{}).filter(([,r])=>r?.resultQueue&&(r.resultSnapshot?.finishOrder||r.result?.finishOrder||[]).length<3&&['result_waiting','result_pending','result_retry','paused'].includes(r.resultQueue.status)).map(([id,record])=>{
+  const q=record.resultQueue,availability=resultRetryAvailability(id,record,now),feedback=q.lastResultError?resultFetchFeedback({code:q.lastResultError}):null;
+  const stopped=q.retryLimitReached===true||Number(q.attempts)>=AUTO_RESULT_MAX_ATTEMPTS;
+  const schedule=q.enabled===false||q.status==='paused'?'自動取得を停止中':stopped?'自動再試行は上限に到達':q.nextCheckAt?'次回確認 '+resultQueueTime(q.nextCheckAt):'次回確認時刻は未設定';
+  return {id,organization:raceTypeOf(record),code:q.lastResultError||'',reason:feedback?.reason||'結果の確認待ちです。',action:feedback?.action||'',schedule,lastCheck:q.lastResultCheckAt?resultQueueTime(q.lastResultCheckAt):'未確認',attempts:Number(q.attempts)||0,stopped,allowed:availability.allowed,blockedReason:availability.reason};
+ }).sort((a,b)=>Number(b.stopped)-Number(a.stopped)||Number(!!b.code)-Number(!!a.code)||a.id.localeCompare(b.id));
+}
+function renderAutoResultDetails(){
+ const box=$('autoResultDetails'),body=$('autoResultDetailsBody'),summary=$('autoResultDetailsSummary'),more=$('autoResultMore'),notice=$('autoResultActionStatus');if(!box||!body)return;
+ const rows=resultQueueDetails();box.hidden=!rows.length;if(summary)summary.textContent=`未取得レースの理由・再確認 ${rows.length}件`;
+ body.innerHTML=rows.slice(0,autoResultDetailLimit).map(r=>`<li class="auto-result-detail"><strong>${esc(r.id)}（${esc(r.organization)}）</strong><p>${esc(r.reason)} ${esc(r.action)}</p><small>${esc(r.schedule)}｜確認 ${r.attempts}回｜前回 ${esc(r.lastCheck)}</small>${r.code?`<small>診断コード：${esc(r.code)}</small>`:''}<button type="button" class="ghost wide" data-result-retry="${esc(r.id)}" ${!r.allowed||autoResultRunInProgress?'disabled':''}>このレースだけ再確認</button>${!r.allowed?`<small>${esc(r.blockedReason)}</small>`:''}</li>`).join('');
+ if(more){more.hidden=rows.length<=autoResultDetailLimit;more.textContent=`さらに表示（残り${Math.max(0,rows.length-autoResultDetailLimit)}件）`;}
+ if(notice)notice.textContent=autoResultActionMessage;
+}
+async function retryAutoResultFromUi(id){
+ if(autoResultRunInProgress){autoResultActionMessage='別の結果確認が進行中です。完了を待ってください。';renderAutoResultDetails();return;}
+ const availability=resultRetryAvailability(id,raceCache[id]);
+ if(!availability.allowed){autoResultActionMessage=availability.reason;renderAutoResultDetails();return;}
+ autoResultActionMessage=`${id} を確認中…`;renderAutoResultDetails();
+ try{const result=await runAutoResultQueue({retryId:id});autoResultActionMessage=result.busy?'他の取得処理が進行中です。完了後に再確認してください。':result.completed?`${id}：結果を取得・保存しました。`:result.deferred||!result.processed?`${id}：記録の変更などにより確認を見送りました。`:`${id}：確認しました。下の理由・次回確認予定をご覧ください。`;}
+ catch{autoResultActionMessage=`${id}：確認処理に失敗しました。保存状態と取得診断を確認してください。`;}
+ renderAutoResultQueue();
 }
 function currentSelectionId(){return raceId({raceDate:$('autoRaceDate')?.value,track:$('autoTrack')?.value,raceNo:Number($('autoRaceNo')?.value)})}
 function setButtonBusy(id,busy,label=''){const b=$(id);if(!b)return;if(busy){b.dataset.idleText=b.textContent;b.disabled=true;b.setAttribute('aria-busy','true');if(label)b.textContent=label}else{b.disabled=false;b.removeAttribute('aria-busy');if(b.dataset.idleText)b.textContent=b.dataset.idleText;delete b.dataset.idleText}}
@@ -1112,7 +1170,7 @@ function renderResultDisplayState(){
  if($('resultState'))$('resultState').textContent=resultState.label;
  if($('narSync'))$('narSync').textContent=resultState.done?'結果を再取得・再検証':resultState.status==='error'||resultState.status==='retry'?'結果を再取得':'結果を確認・検証';renderResultDiagnostics();
  if($('narStatus')&&!$('narStatus').textContent){
-   $('narStatus').textContent=resultState.done?(resultState.manual?'結果データ：🟠 手動入力｜公式照合なし':'結果データ：🟢 公式自動取得'):resultState.status==='error'||resultState.status==='retry'?'再取得待ち｜一時的に公式結果を確認できませんでした。':'結果待ち｜レース終了後に公式結果を取得できます。';
+   $('narStatus').textContent=resultState.done?(resultState.manual?'結果データ：🟠 手動入力｜公式照合なし':'結果データ：🟢 公式自動取得'):resultState.status==='error'||resultState.status==='retry'?resultFetchFeedback({code:state.resultErrorType||state.resultQueue?.lastResultError}).text:'結果待ち｜レース終了後に公式結果を取得できます。';
  }
  restoreSavedResultFields(resultState);
 }
@@ -1576,14 +1634,14 @@ function resultFetchReadiness(race={},now=Date.now()){const date=String(race.rac
 function autoResultEnabled(){return localStore.get(AUTO_RESULT_SETTING,true)!==false}
 function registerResultWaiting(record,id=raceId(record?.race),now=new Date().toISOString()){
  if(!id||!record?.predictionSnapshot||(record?.resultSnapshot?.finishOrder||record?.result?.finishOrder||[]).length>=3)return record;
- const enabled=autoResultEnabled(),existing=record.resultQueue||{},nextCheckAt=existing.nextCheckAt||postRaceFirstCheckAt(record.race||record.predictionSnapshot?.race||{});
- record.resultQueue={schemaVersion:1,organization:raceTypeOf(record),raceId:id,raceDate:record.race?.raceDate||record.predictionSnapshot?.race?.raceDate||'',track:record.race?.track||record.predictionSnapshot?.race?.track||'',raceNo:Number(record.race?.raceNo||record.predictionSnapshot?.race?.raceNo)||null,postTime:record.race?.postTime||record.predictionSnapshot?.race?.postTime||'',modelVersion:record.predictionSnapshot?.modelVersion||record.modelVersion||APP_VERSION,predictionSaved:true,enabled,resultStatus:enabled?(existing.resultStatus||'waiting'):'paused',status:enabled?(existing.status||'result_waiting'):'paused',nextCheckAt,attempts:Number(existing.attempts)||0,createdAt:existing.createdAt||now,lastResultCheckAt:existing.lastResultCheckAt||null,lastResultError:existing.lastResultError||null,history:Array.isArray(existing.history)?existing.history.slice(-9):[]};
+ const enabled=autoResultEnabled(),existing=record.resultQueue||{},nextCheckAt=existing.retryLimitReached||Number(existing.attempts)>=AUTO_RESULT_MAX_ATTEMPTS?null:existing.nextCheckAt||postRaceFirstCheckAt(record.race||record.predictionSnapshot?.race||{});
+ record.resultQueue={schemaVersion:1,organization:raceTypeOf(record),raceId:id,raceDate:record.race?.raceDate||record.predictionSnapshot?.race?.raceDate||'',track:record.race?.track||record.predictionSnapshot?.race?.track||'',raceNo:Number(record.race?.raceNo||record.predictionSnapshot?.race?.raceNo)||null,postTime:record.race?.postTime||record.predictionSnapshot?.race?.postTime||'',modelVersion:record.predictionSnapshot?.modelVersion||record.modelVersion||APP_VERSION,predictionSaved:true,enabled,resultStatus:enabled?(existing.resultStatus||'waiting'):'paused',status:enabled?(existing.status||'result_waiting'):'paused',nextCheckAt,attempts:Number(existing.attempts)||0,retryLimitReached:existing.retryLimitReached===true||Number(existing.attempts)>=AUTO_RESULT_MAX_ATTEMPTS,createdAt:existing.createdAt||now,lastResultCheckAt:existing.lastResultCheckAt||null,lastResultError:existing.lastResultError||null,history:Array.isArray(existing.history)?existing.history.slice(-9):[]};
  return record;
 }
 function nextResultCheckAt(attempts,now=Date.now()){const index=Math.max(0,Math.min(AUTO_RESULT_RETRY_MINUTES.length-1,Number(attempts)-1));return new Date(now+AUTO_RESULT_RETRY_MINUTES[index]*60000).toISOString()}
 function resultQueueRetryPatch(record,{kind='network',errorCode='network_error',now=Date.now()}={}){const attempts=(Number(record?.resultQueue?.attempts)||0)+1,exhausted=attempts>=AUTO_RESULT_MAX_ATTEMPTS,waiting=kind==='unpublished';return {status:waiting?'result_pending':'result_retry',resultStatus:waiting?'pending':'retry',attempts,nextCheckAt:exhausted?null:nextResultCheckAt(attempts,now),retryLimitReached:exhausted,lastResultError:errorCode}}
 function resultQueueSummary(records=raceCache){const values=Object.values(records||{}),queued=values.map(x=>x?.resultQueue).filter(Boolean);return {waiting:queued.filter(q=>q.enabled!==false&&['result_waiting','result_pending'].includes(q.status)).length,retry:queued.filter(q=>q.enabled!==false&&q.status==='result_retry').length,done:queued.filter(q=>['result_fetched','validated'].includes(q.status)).length,paused:queued.filter(q=>q.enabled===false||q.status==='paused').length}}
-function renderAutoResultQueue(){if(typeof document==='undefined')return;const s=resultQueueSummary();if($('autoResultWaiting'))$('autoResultWaiting').textContent=String(s.waiting);if($('autoResultDone'))$('autoResultDone').textContent=String(s.done);if($('autoResultRetry'))$('autoResultRetry').textContent=String(s.retry);if($('autoResultToggle'))$('autoResultToggle').checked=autoResultEnabled();if($('autoResultStatus'))$('autoResultStatus').textContent=autoResultRunInProgress?'結果確認中…':autoResultEnabled()?'発走時刻+10分から低頻度で確認':'自動回収は停止中'}
+function renderAutoResultQueue(){if(typeof document==='undefined')return;const s=resultQueueSummary();if($('autoResultWaiting'))$('autoResultWaiting').textContent=String(s.waiting);if($('autoResultDone'))$('autoResultDone').textContent=String(s.done);if($('autoResultRetry'))$('autoResultRetry').textContent=String(s.retry);if($('autoResultToggle'))$('autoResultToggle').checked=autoResultEnabled();if($('autoResultStatus'))$('autoResultStatus').textContent=autoResultRunInProgress?'結果確認中…':autoResultEnabled()?'発走時刻+10分から低頻度で確認':'自動回収は停止中';renderAutoResultDetails()}
 function dueResultQueue(now=Date.now()){return Object.entries(raceCache).filter(([,record])=>{const q=record?.resultQueue;if(!q||q.enabled===false||!['result_waiting','result_pending','result_retry'].includes(q.status))return false;if((record?.resultSnapshot?.finishOrder||record?.result?.finishOrder||[]).length>=3)return false;return q.nextCheckAt&&Date.parse(q.nextCheckAt)<=now}).sort((a,b)=>Date.parse(a[1].resultQueue.nextCheckAt)-Date.parse(b[1].resultQueue.nextCheckAt))}
 function updateQueuedRecord(id,record,patch,now=new Date().toISOString()){const q={...(record.resultQueue||{}),...patch,lastResultCheckAt:now,history:[...((record.resultQueue?.history)||[]).slice(-8),{checkedAt:now,status:patch.status||record.resultQueue?.status||'',attempt:patch.attempts??record.resultQueue?.attempts??0,errorCode:patch.lastResultError||null}]};const updated={...record,resultQueue:q,updatedAt:now};saveRaceRecord(id,updated);renderAutoResultQueue();return updated}
 function autoResultSelectionMatches(id,record,selection={}){
@@ -1613,12 +1671,13 @@ function applyAutoFetchedResult(id,record,data,now=new Date().toISOString()){
 }
 const applyAutoFetchedResultBase=applyAutoFetchedResult;
 applyAutoFetchedResult=function(id,record,data,now=new Date().toISOString()){if(raceCache[id]&&stableStringify(raceCache[id])!==stableStringify(record))return null;const saved=applyAutoFetchedResultBase(id,cloneData(record),data,now);if(saved){const horses=saved.resultSnapshot?.horses||[],at=saved.resultSnapshot?.fetchedAt||now,jra=raceTypeOf(saved)==='JRA',source=jra?'JRA_RESULT':'NAR_RESULT';applyScratchStatuses(saved,horses,at,{source:`${source}_STATUS`});applyScratchStatuses(saved,horses.filter(h=>Number(h?.position??h?.finish)>0||!!h?.time||!!h?.actualTime||!!h?.cornerPositions),at,{source,resultAuthority:true});if(saved.validationSnapshot)saved.validationSnapshot.scratchEvaluation=buildScratchValidation(saved);saveRaceRecord(id,saved)}return saved};
-async function runAutoResultQueue({limit=1,allowHistoricalBoundary=false}={}){
- if(autoResultRunInProgress)return autoResultRunInProgress;
+async function runAutoResultQueue({limit=1,allowHistoricalBoundary=false,retryId=null}={}){
+ if(autoResultRunInProgress)return retryId?{processed:0,busy:true}:autoResultRunInProgress;
+ if(retryId&&!resultRetryAvailability(retryId,raceCache[retryId]).allowed)return {processed:0,deferred:1};
  if(!autoResultEnabled()||resultFetchInProgress||raceLoadController||liveOddsController||historyCollectorRunning&&!allowHistoricalBoundary)return {processed:0,busy:true};
  autoResultRunInProgress=(async()=>{
   let processed=0,completed=0,retry=0,deferred=0;renderAutoResultQueue();
-  for(const [id,original] of dueResultQueue().slice(0,limit)){
+  for(const [id,original] of (retryId?[[retryId,raceCache[retryId]]]:dueResultQueue().slice(0,limit))){
    if(resultFetchInProgress||raceLoadController||liveOddsController||!autoResultEnabled())break;
    const record=raceCache[id],q=record?.resultQueue;
    if(!record||stableStringify(record)!==stableStringify(original)||!q||q.enabled===false||!['result_waiting','result_pending','result_retry'].includes(q.status)||!autoResultSelectionMatches(id,record,q)){deferred++;continue;}
@@ -1635,12 +1694,12 @@ async function runAutoResultQueue({limit=1,allowHistoricalBoundary=false}={}){
    }catch(error){
     if(!unchanged()){deferred++;continue;}
     const pending=['JRA_RESULT_UNPUBLISHED','JRA_RESULT_BEFORE_POST','result_unpublished'].includes(error?.code);
-    updateQueuedRecord(id,record,resultQueueRetryPatch(record,{kind:pending?'unpublished':'network',errorCode:error?.code||'network_error'}));retry++;
+    updateQueuedRecord(id,record,resultQueueRetryPatch(record,{kind:pending?'unpublished':'network',errorCode:error?.code==='http_error'&&Number(error?.status)>=400&&Number(error?.status)<=599?`http_${Number(error.status)}`:error?.code||'network_error'}));retry++;
    }
    await new Promise(resolve=>setTimeout(resolve,250));
   }
   return {processed,completed,retry,deferred};
- })().finally(()=>{autoResultRunInProgress=null;renderAutoResultQueue()});return autoResultRunInProgress
+ })().finally(()=>{autoResultRunInProgress=null;renderAutoResultQueue()});renderAutoResultQueue();return autoResultRunInProgress
 }
 function setAutoResult(on){localStore.set(AUTO_RESULT_SETTING,!!on);for(const [id,record] of Object.entries(raceCache)){const complete=(record?.resultSnapshot?.finishOrder||record?.result?.finishOrder||[]).length>=3;if(!record?.predictionSnapshot||complete)continue;registerResultWaiting(record,id);record.resultQueue.enabled=!!on;record.resultQueue.status=on?(record.resultQueue.lastResultError?'result_retry':'result_waiting'):'paused';record.resultQueue.resultStatus=on?'waiting':'paused';record.updatedAt=new Date().toISOString();saveRaceRecord(id,record)}renderAutoResultQueue();if(on)runAutoResultQueue().catch(()=>{})}
 function startAutoResultScheduler(){if(autoResultTimer)clearInterval(autoResultTimer);autoResultTimer=setInterval(()=>runAutoResultQueue().catch(()=>{}),60000);renderAutoResultQueue();setTimeout(()=>runAutoResultQueue().catch(()=>{}),1500)}
@@ -2034,7 +2093,7 @@ async function performResultFetch(options={},flight){
    if(!alreadyComplete){registerResultWaiting(state,requestedId);state.resultQueue={...state.resultQueue,...resultQueueRetryPatch(state,{kind:'network',errorCode:state.resultErrorType}),lastResultCheckAt:new Date().toISOString()}}
    persist(existingValidated(raceId(r)));
    renderResultDisplayState();renderResultDiagnostics();
-   $('narStatus').textContent=alreadyComplete?`結果取得済：${((state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).slice(0,3)).join('-')}｜最新データ更新のみ失敗（保存済み結果は維持）`:`再取得待ち｜一時的に取得できませんでした。予想データは保存されています。`;
+   $('narStatus').textContent=alreadyComplete?`結果取得済：${((state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).slice(0,3)).join('-')}｜${resultFetchFeedback({code:state.resultErrorType,status:e?.status,hasResult:true}).text}`:resultFetchFeedback({code:state.resultErrorType,status:e?.status}).text;
    return {complete:alreadyComplete,pending:false,status:alreadyComplete?'success':'retry',error:e};
  }finally{}
 }
@@ -2708,7 +2767,7 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
-   APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    historicalRecord,buildNarEarlyResearchRecord,acquireNarEarlyResearchRecord,normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,PREODDS_POLICY_VERSION,preOddsFrozen,preOddsStats,preOddsStamp,schedulePreOddsFallback,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
  };
  return;
@@ -2717,7 +2776,7 @@ initAutoRaceControls();
 jraMeetingSelector=window.CHASS_JRA_MEETING?.create({isActive:()=>raceTypeOf(state)==='JRA',getGeneration:()=>activeRaceGeneration,onSelection:()=>{ensureJraRaceSelectionState({renderNow:true});$('jraRaceNo')?.dispatchEvent(new Event('input',{bubbles:true}));jraRaceClient?.selectionChanged();jraOddsClient?.cancel();jraResultClient?.cancel();}});
 jraRaceClient=window.CHASS_JRA_RACE_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,commit:commitJraOfficial});
 jraOddsClient=window.CHASS_JRA_ODDS_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,apply:commitJraOdds});
-jraResultClient=window.CHASS_JRA_RESULT_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,apply:commitJraResult});
+jraResultClient=window.CHASS_JRA_RESULT_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,apply:commitJraResult,formatFailure:error=>resultFetchFeedback({...error,hasResult:(state.resultSnapshot?.finishOrder||state.result?.finishOrder||[]).length>=3}).text});
 for(const id of ['jraDate','jraCourse','jraRaceNo']){
   const el=$(id);
   if(!el)continue;
@@ -2757,6 +2816,8 @@ bindHistoricalCollector();
 $('narSync').onclick=syncNar;$('liveOddsSync').onclick=()=>syncLiveOdds(false);$('autoOdds').onchange=e=>setAutoOdds(e.target.checked);setAutoOdds(false);if($('autoResultToggle'))$('autoResultToggle').onchange=e=>setAutoResult(e.target.checked);$('saveValidation').onclick=saveValidation;$('recalcDash').onclick=async()=>{if(cloudState.available)await refreshCloudResearchDataset({persist:true,render:false});renderDashboard()};
 if($('exportResearch'))$('exportResearch').onclick=()=>{try{const counts=downloadResearchBackup();$('backupStatus').textContent=`書き出し完了｜保存レース ${counts.races}件・オッズ履歴 ${counts.oddsHistories}件・照合資料 ${counts.holdEvidence}件`}catch(e){$('backupStatus').textContent='書き出し失敗｜'+e.message}};
 if($('researchImportFile'))$('researchImportFile').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{setButtonBusy('exportResearch',true,'復元中');const result=await importResearchBackup(file);$('backupStatus').textContent=`復元完了｜追加・更新 ${result.imported}件 / 既存保持 ${result.skipped}件 / 不正 ${result.invalid}件`}catch(err){$('backupStatus').textContent='復元失敗｜'+err.message}finally{setButtonBusy('exportResearch',false);e.target.value=''}};
+if($('autoResultDetailsBody'))$('autoResultDetailsBody').onclick=event=>{const button=event.target.closest?.('[data-result-retry]');if(button&&!button.disabled)retryAutoResultFromUi(button.dataset.resultRetry)};
+if($('autoResultMore'))$('autoResultMore').onclick=()=>{autoResultDetailLimit+=20;renderAutoResultDetails()};
 if($('cloudSyncButton'))$('cloudSyncButton').onclick=async()=>{if(cloudState.status==='syncing')return;setButtonBusy('cloudSyncButton',true,'差分確認中');try{await syncAllResearchToCloud();renderCloudSyncState();renderDashboard()}catch(e){cloudState.status='error';cloudState.error=e.code||e.message;renderCloudSyncState()}finally{setButtonBusy('cloudSyncButton',false)} };
 if($('publicApiCheck'))$('publicApiCheck').onclick=checkPublicApi;
 if($('publicApiCopy'))$('publicApiCopy').onclick=copyCurrentPublicApiUrl;
@@ -2783,7 +2844,7 @@ async function bootApp(){
  await initResearchStorage();
  await initCloudResearch();
  migrateLegacy();
- for(const [id,record] of Object.entries(raceCache)){if(!record?.predictionSnapshot||(record?.resultSnapshot?.finishOrder||record?.result?.finishOrder||[]).length)continue;if(!record.resultQueue)registerResultWaiting(record,id);else if(record.resultQueue.retryLimitReached){record.resultQueue={...record.resultQueue,attempts:0,retryLimitReached:false,nextCheckAt:new Date().toISOString(),status:record.resultQueue.lastResultError==='result_unpublished'?'result_pending':'result_retry'};record.updatedAt=new Date().toISOString()}if(record.resultQueue?.nextCheckAt)saveRaceRecord(id,{...record,updatedAt:record.updatedAt||new Date().toISOString()})}
+ for(const [id,record] of Object.entries(raceCache)){if(!record?.predictionSnapshot||(record?.resultSnapshot?.finishOrder||record?.result?.finishOrder||[]).length)continue;if(!record.resultQueue)registerResultWaiting(record,id);if(record.resultQueue?.nextCheckAt)saveRaceRecord(id,{...record,updatedAt:record.updatedAt||new Date().toISOString()})}
  storageReady=true;setVersion();
  ['autoRaceLoad','narSync','liveOddsSync'].forEach(id=>{const button=$(id);if(button)button.disabled=false});
  const last=store.get(CURRENT,'')||store.get(LEGACY_CURRENT,''),db=store.get(KEY,{});

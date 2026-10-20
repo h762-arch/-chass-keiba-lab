@@ -498,3 +498,6 @@ body{padding-bottom:max(18px,env(safe-area-inset-bottom))}
 .cloud-audit-paths summary{min-height:36px;display:flex;align-items:center;cursor:pointer}
 .cloud-audit-paths ul{margin:4px 0;padding-left:18px}
 .cloud-audit-paths li,#cloudHoldAuditSummary{overflow-wrap:anywhere}
+
+/* Keep result failure guidance readable on narrow phone screens. */
+.auto-result-details-list{list-style:none;padding:0;margin:8px 0}.auto-result-detail{display:grid;min-width:0;gap:8px;padding:14px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}.auto-result-detail p{margin:0;font-size:13px;line-height:1.6}.auto-result-detail strong{font-size:13px}.auto-result-detail button{min-height:44px;white-space:normal}.auto-result-card details summary{cursor:pointer;line-height:1.6}.auto-result-card [role="status"]{overflow-wrap:anywhere}
