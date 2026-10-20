@@ -75,14 +75,15 @@ async function serviceAccessToken(raw,{fetchImpl,signal,now}){
   signature=await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,new TextEncoder().encode(unsigned));
  }catch{reject('DRIVE_CREDENTIALS_INVALID',503);}
  const bodyText=new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:unsigned+'.'+b64url(new Uint8Array(signature))});
- const r=await fetchImpl(OAUTH,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','accept':'application/json'},body:bodyText.toString(),redirect:'error',signal});
+ // workerd rejects redirect:error before I/O; manual plus !ok below rejects every 3xx.
+ const r=await fetchImpl(OAUTH,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','accept':'application/json'},body:bodyText.toString(),redirect:'manual',signal});
  if(!r.ok)reject(r.status===401||r.status===403?'DRIVE_GOOGLE_AUTH_REJECTED':'DRIVE_GOOGLE_TOKEN_FAILED',502);
  const data=await jsonRead(r,16384);
  if(typeof data.access_token!=='string'||!/^[\x21-\x7e]{1,4096}$/.test(data.access_token)||data.token_type?.toLowerCase()!=='bearer'||!Number.isFinite(data.expires_in)||data.expires_in<=0)reject('DRIVE_GOOGLE_TOKEN_INVALID',502);
  return data.access_token;
 }
 async function googleGet(url,{fetchImpl,signal,token}){
- const r=await fetchImpl(url,{method:'GET',headers:{authorization:'Bearer '+token,accept:'application/json','cache-control':'no-cache'},redirect:'error',signal});
+ const r=await fetchImpl(url,{method:'GET',headers:{authorization:'Bearer '+token,accept:'application/json','cache-control':'no-cache'},redirect:'manual',signal});
  if(!r.ok)reject(r.status===403||r.status===404?'DRIVE_FILE_NOT_READABLE':r.status===429?'DRIVE_GOOGLE_RATE_LIMITED':'DRIVE_GOOGLE_READ_FAILED',r.status===429?429:502);
  return r;
 }
