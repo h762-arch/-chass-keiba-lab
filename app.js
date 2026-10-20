@@ -285,13 +285,13 @@ function cpsiDriveSelection(){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(raceDate||'')||!track||!Number.isInteger(raceNo)||raceNo<1||raceNo>12)throw Error('DRIVE_SELECTION_INVALID');
  return {organization,raceId:`${raceDate}|${track}|${raceNo}`};
 }
-function cpsiDriveMessage(code){
- return ({DRIVE_NOT_CONFIGURED:'本番のDrive接続設定が未完了です。',DRIVE_CONFIG_INVALID:'本番のDrive接続設定を確認してください。',DRIVE_CREDENTIALS_INVALID:'Worker側のGoogle認証設定を確認してください。',DRIVE_READER_UNAUTHORIZED:'接続キーが未入力か一致しません。',DRIVE_SOURCE_NOT_FOUND:'選択したレース・Runの正規PRE元資料がありません。',DRIVE_SOURCE_PRE_EVIDENCE_INVALID:'元資料のRun・Snapshot・馬ID・発走前証跡を確認できません。',DRIVE_SOURCE_RUN_AMBIGUOUS:'複数のRun・固定単位があり、自動選択できません。',DRIVE_SOURCE_CONFLICT:'元資料の内容が相違しています。回復を中止しました。',DRIVE_SOURCE_CHANGED_DURING_READ:'取得中に元資料が更新されました。再取得してください。',DRIVE_SOURCE_FEED_REQUIRED:'Sheetsに正規CPSI元資料の配信表がありません。',DRIVE_SOURCE_FORMAT_REQUIRED:'Driveファイルが正規CPSI元資料の形式ではありません。',DRIVE_FILE_NOT_READABLE:'登録元資料へのGoogle読み取り権限を確認してください。',DRIVE_GOOGLE_AUTH_REJECTED:'GoogleがWorkerの認証を拒否しました。',DRIVE_SELECTION_INVALID:'日付・競馬種別・競馬場・レースを選択してください。',DRIVE_REQUEST_ABORTED:'Drive取得を中断しました。',DRIVE_GOOGLE_RATE_LIMITED:'Googleの取得上限です。時間をおいて再実行してください。',DRIVE_CONTEXT_MISMATCH:'現在の入力と元資料の固定単位・馬IDが一致しません。',DRIVE_RESPONSE_INVALID:'Drive取得応答を確認できません。'})[code]||'Drive元資料を取得・確認できません。端末保存の失敗も含め、成功扱いにはしていません。';
-}
+const CPSI_DRIVE_MESSAGES={DRIVE_GOOGLE_TOKEN_FAILED:'Googleの認証トークン交換に失敗しました。Workerの鍵・サービスアカウントの状態を確認してください。',DRIVE_GOOGLE_TOKEN_INVALID:'Googleの認証トークン応答を確認できません。',DRIVE_GOOGLE_READ_FAILED:'Googleから元資料を読み取れません。',DRIVE_FILE_METADATA_INVALID:'元資料ファイルの識別情報を確認できません。',DRIVE_SOURCE_TYPE_MISMATCH:'登録した元資料のファイル種別が一致しません。',DRIVE_SOURCE_FEED_INVALID:'配信表の行形式を確認してください。',DRIVE_SOURCE_FEED_IDENTITY_MISMATCH:'配信表と元資料本文のレース識別情報が一致しません。',DRIVE_SOURCE_COUNT_EXCEEDED:'対象元資料の件数が上限を超えています。',DRIVE_PAYLOAD_TOO_LARGE:'元資料または取得応答がサイズ上限を超えています。',DRIVE_ORIGIN_FORBIDDEN:'同じ本番アプリ画面から取得してください。',DRIVE_METHOD_NOT_ALLOWED:'読取りAPIの要求方式を確認してください。',DRIVE_TRANSPORT_FAILED:'WorkerからGoogleへの通信が完了しませんでした。',DRIVE_CLIENT_NETWORK_FAILED:'端末から読取りAPIへの通信が完了しませんでした。',DRIVE_CLIENT_INPUT_INVALID:'取得前の入力資料を検証できません。',DRIVE_DEVICE_READBACK_FAILED:'端末への保存・読戻確認が完了しませんでした。',DRIVE_CLIENT_UNKNOWN:'取得処理を完了できません。',DRIVE_NOT_CONFIGURED:'本番のDrive接続設定が未完了です。',DRIVE_CONFIG_INVALID:'本番のDrive接続設定を確認してください。',DRIVE_CREDENTIALS_INVALID:'Worker側のGoogle認証設定を確認してください。',DRIVE_READER_UNAUTHORIZED:'接続キーが未入力か一致しません。',DRIVE_SOURCE_NOT_FOUND:'選択したレース・Runの正規PRE元資料がありません。',DRIVE_SOURCE_PRE_EVIDENCE_INVALID:'元資料のRun・Snapshot・馬ID・発走前証跡を確認できません。',DRIVE_SOURCE_RUN_AMBIGUOUS:'複数のRun・固定単位があり、自動選択できません。',DRIVE_SOURCE_CONFLICT:'元資料の内容が相違しています。回復を中止しました。',DRIVE_SOURCE_CHANGED_DURING_READ:'取得中に元資料が更新されました。再取得してください。',DRIVE_SOURCE_FEED_REQUIRED:'Sheetsに正規CPSI元資料の配信表がありません。',DRIVE_SOURCE_FORMAT_REQUIRED:'Driveファイルが正規CPSI元資料の形式ではありません。',DRIVE_FILE_NOT_READABLE:'登録元資料へのGoogle読み取り権限を確認してください。',DRIVE_GOOGLE_AUTH_REJECTED:'GoogleがWorkerの認証を拒否しました。',DRIVE_SELECTION_INVALID:'日付・競馬種別・競馬場・レースを選択してください。',DRIVE_REQUEST_ABORTED:'Drive取得を中断しました。',DRIVE_GOOGLE_RATE_LIMITED:'Googleの取得上限です。時間をおいて再実行してください。',DRIVE_CONTEXT_MISMATCH:'現在の入力と元資料の固定単位・馬IDが一致しません。',DRIVE_RESPONSE_INVALID:'Drive取得応答を確認できません。'};
+function cpsiDriveKnownCode(code){return typeof code==='string'&&Object.prototype.hasOwnProperty.call(CPSI_DRIVE_MESSAGES,code)?code:null;}
+function cpsiDriveMessage(code){return CPSI_DRIVE_MESSAGES[cpsiDriveKnownCode(code)||'DRIVE_CLIENT_UNKNOWN'];}
 async function loadCpsiFromDrive(){
  if(cpsiSourceBusy)return null;
  const generation=cpsiSourceGeneration,source=window.CHASS_CPSI_SOURCE_RECOVERY;
- let store,selection,controller,timer,completed=0;cpsiSourceBusy=true;
+ let store,selection,controller,timer,completed=0,phase='入力確認',httpStatus=null;cpsiSourceBusy=true;
  const message=text=>{if($('cpsiDriveStatus'))$('cpsiDriveStatus').textContent=text;};
  const fresh=()=>generation===cpsiSourceGeneration&&!controller?.signal.aborted&&JSON.stringify(selection)===JSON.stringify(cpsiDriveSelection());
  for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,true);
@@ -302,13 +302,16 @@ async function loadCpsiFromDrive(){
   if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';
   if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken))throw Error('DRIVE_READER_UNAUTHORIZED');
   controller=new AbortController();cpsiDriveController=controller;timer=setTimeout(()=>controller.abort(),20000);
+  phase='固定単位確認';
   let target=null;
   if(cpsiSourceRoot){const input=source.sourceInputFromRoot(cpsiSourceRoot);if(input.organization===selection.organization&&input.raceId===selection.raceId)target=cloneData(cpsiSourceRoot);}
   const params=new URLSearchParams(selection);
   if(target)for(const k of ['runId','inputSnapshotId','indexSnapshotId'])params.set(k,target.race.metricInputFreeze[k]);
   message(`${selection.raceId}（${selection.organization}）のDrive元資料を取得中…`);
+  phase='API通信';
   const r=await fetch('/api/cpsi/sources/drive?'+params.toString(),{method:'GET',credentials:'same-origin',cache:'no-store',headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},signal:controller.signal});
   if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
+  httpStatus=Number.isInteger(r.status)&&r.status>=100&&r.status<=599?r.status:null;phase='API応答確認';
   const length=Number(r.headers.get('content-length'));if(length>2097152)throw Error('DRIVE_RESPONSE_INVALID');
   // Bound decoded response too; Content-Length alone is not trusted.
   if(!r.body)throw Error('DRIVE_RESPONSE_INVALID');
@@ -320,6 +323,7 @@ async function loadCpsiFromDrive(){
   let data;try{data=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw Error('DRIVE_RESPONSE_INVALID');}
   if(!r.ok||data.ok!==true)throw Error(typeof data.code==='string'?data.code:'DRIVE_RESPONSE_INVALID');
   if(data.status!=='DRIVE_SOURCE_READY'||data.organization!==selection.organization||data.raceId!==selection.raceId||data.format!==source.BUNDLE_FORMAT||data.transportAuthenticated!==true||data.sourceOriginAuthenticated!==false)throw Error('DRIVE_RESPONSE_INVALID');
+  phase='元資料検証';
   const artifacts=await source.artifactsFromSourceFile(JSON.stringify({format:data.format,sources:data.sources}),{sourceRef:'drive-read'});
   if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
   if(artifacts.some(a=>a.input.organization!==selection.organization||a.input.raceId!==selection.raceId))throw Error('DRIVE_CONTEXT_MISMATCH');
@@ -327,10 +331,11 @@ async function loadCpsiFromDrive(){
   if(artifacts.some(a=>a.contextKey!==context))throw Error('DRIVE_CONTEXT_MISMATCH');
   const recovery=await source.recoverCpsiSources(seed,artifacts);
   if(recovery.status==='SOURCE_CONFLICT')throw Error('DRIVE_SOURCE_CONFLICT');
-  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}store=await source.openDeviceSourceStore();
+  if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}phase='端末保存・読戻';store=await source.openDeviceSourceStore();
   for(const a of artifacts){if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}await source.saveSourceAndReadback(store,a);completed++;}
   if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
   // Time is checked again after physical storage/readback, never backdated to request start.
+  phase='発走前再確認';
   source.sourceInputFromRoot(recovery.root);
   previewCpsiFirst(recovery.root);
   const rows=cpsiFirstPreview?.result?.cpsi;
@@ -338,7 +343,13 @@ async function loadCpsiFromDrive(){
   if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent=`元資料${completed}件の件数・馬ID・SHA-256を読戻確認済み。元EARLY・Signal・D1は変更していません。`;
   return {status:'DRIVE_DEVICE_READBACK_VERIFIED',completed,recovery};
  }catch(e){
-  if(generation===cpsiSourceGeneration){const code=controller?.signal.aborted||e.name==='AbortError'?'DRIVE_REQUEST_ABORTED':e.message;message(`Drive取得未完了｜${cpsiDriveMessage(code)}${completed?` 読戻確認済み${completed}資料。`:''}`);}
+  if(generation===cpsiSourceGeneration){
+   // Only app-owned labels/codes and numeric HTTP status may reach the UI.
+   // Never display unknown exception messages or arbitrary provider response codes.
+   const fallback=phase==='API通信'?'DRIVE_CLIENT_NETWORK_FAILED':phase==='固定単位確認'?'DRIVE_CLIENT_INPUT_INVALID':phase==='端末保存・読戻'?'DRIVE_DEVICE_READBACK_FAILED':'DRIVE_CLIENT_UNKNOWN';
+   const code=controller?.signal.aborted||e?.name==='AbortError'?'DRIVE_REQUEST_ABORTED':cpsiDriveKnownCode(e?.message)||fallback;
+   message(`Drive取得未完了｜${cpsiDriveMessage(code)} 確認コード：${code}／${phase}${httpStatus?`／HTTP ${httpStatus}`:''}${completed?` 読戻確認済み${completed}資料。`:''}`);
+  }
   return null;
  }finally{clearTimeout(timer);store?.close();if(cpsiDriveController===controller)cpsiDriveController=null;cpsiSourceBusy=false;for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,false);}
 }
