@@ -5,6 +5,7 @@ import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/na
 import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summarizeNarTimeTheoryRace} from './src/nar/nar-time-theory.mjs';
 import {NAR_RACE_CONTEXT_POLICY_VERSION,classifyAbilityAvailability} from './src/nar/nar-race-context-policy.mjs';
 import {handleFavoriteRiskResearchRequest,runFavoriteRiskCollector} from './src/research/favorite-risk-snapshot.mjs';
+import {handleCpsiDriveRequest,CPSI_DRIVE_PATH} from './src/prediction/cpsi-drive-reader-v1.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -217,6 +218,7 @@ async function buildNarRaceContext(request,env,ctx){
 export default {
   async fetch(request,env,ctx){
     const u=new URL(request.url);
+    if(u.pathname===CPSI_DRIVE_PATH)return handleCpsiDriveRequest(request,env);
     if(u.pathname==='/api/chass/v1/research/favorite-risk'){
       const response=await handleFavoriteRiskResearchRequest(request,env);
       if(response)return response;

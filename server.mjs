@@ -4,6 +4,7 @@ import {handleJraMeetingRequest} from './jra-meeting-discovery.mjs';
 import {handleJraRaceRequest} from './jra-race-fetch.mjs';
 import {handleJraOddsRequest} from './jra-odds-fetch.mjs';
 import {handleJraResultRequest} from './jra-result-fetch.mjs';
+import {handleCpsiDriveRequest,CPSI_DRIVE_PATH} from './src/prediction/cpsi-drive-reader-v1.mjs';
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -210,6 +211,13 @@ async function staticFile(u,res){
 
 http.createServer(async(req,res)=>{
   const u=new URL(req.url,`http://${req.headers.host||"localhost"}`);
+  if(u.pathname===CPSI_DRIVE_PATH){
+    const controller=new AbortController();
+    req.once('aborted',()=>controller.abort());res.once('close',()=>{if(!res.writableFinished)controller.abort();});
+    const headers=new Headers();for(const key of ['authorization','origin','sec-fetch-site'])if(typeof req.headers[key]==='string')headers.set(key,req.headers[key]);
+    const response=await handleCpsiDriveRequest(new Request(u,{method:req.method,headers,signal:controller.signal}),process.env);
+    res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());
+  }
   if(u.pathname==='/api/jra/meeting'){const response=await handleJraMeetingRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}
   if(u.pathname==='/api/jra/race'){const response=await handleJraRaceRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}
   if(u.pathname==='/api/jra/odds'){const response=await handleJraOddsRequest(new Request(u,{method:req.method}),process.env);res.writeHead(response.status,Object.fromEntries(response.headers));return res.end(await response.text());}

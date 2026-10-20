@@ -32,14 +32,14 @@ const forbidden=[
 
 async function text(path){return readFile(new URL(path,root),'utf8')}
 
-test('production Worker and active runtime configuration contain no Google API runtime',async()=>{
+test('removed legacy Google API runtime stays absent with a separate opt-in CPSI reader',async()=>{
   const sources=await Promise.all(runtimeFiles.map(async path=>[path,await text(path)]));
   for(const [path,source] of sources){
     for(const token of forbidden)assert.equal(source.includes(token),false,`${path}: ${token}`);
   }
 });
 
-test('Drive and Sheets runtime modules and reactivation workflow are absent',async()=>{
+test('legacy Drive and Sheets runtime modules and reactivation workflow remain absent',async()=>{
   for(const path of removedFiles){
     await assert.rejects(access(new URL(path,root)),undefined,path);
   }
