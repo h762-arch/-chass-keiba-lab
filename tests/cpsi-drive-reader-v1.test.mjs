@@ -82,3 +82,26 @@ test('app misbound race response cannot be saved or displayed',async()=>{const {
 test('app quota failure cannot report cloud retrieval as saved/readback success',async()=>{const {data:p}=await run(),h=appClient({saveFail:true,fetchImpl:async()=>Response.json(p)});await h.app.loadCpsiFromDrive();assert.equal(h.app.getCpsiFirstPreview(),null);assert.match(h.el('cpsiDriveStatus').textContent,/未完了/);assert.doesNotMatch(h.el('cpsiDriveStatus').textContent,/読戻完了/);});
 test('app source arriving after selector changes cannot replace current preview or write source cache',async()=>{let finish;const gate=new Promise(r=>finish=r),{data:p}=await run(),h=appClient({fetchImpl:async()=>{await gate;return Response.json(p);}});h.app.previewCpsiFirst(input('JRA'));const pending=h.app.loadCpsiFromDrive();h.el('autoRaceNo').value='2';finish();await pending;assert.equal(h.writes.length,0);assert.equal(h.app.getCpsiFirstPreview().organization,'JRA');});
 test('app rechecks actual current PRE boundary after storage commit',async()=>{const {data:p}=await run(),h=appClient({postDuringWrite:true,fetchImpl:async()=>Response.json(p)});await h.app.loadCpsiFromDrive();assert.equal(h.writes.length,1);assert.equal(h.app.getCpsiFirstPreview(),null);assert.match(h.el('cpsiDriveStatus').textContent,/未完了/);});
+
+test('app reports token exchange failure with a safe reason code and HTTP status, without provider details',async()=>{
+ const h=appClient({fetchImpl:async()=>Response.json({ok:false,code:'DRIVE_GOOGLE_TOKEN_FAILED',detail:'PRIVATE_PROVIDER_DETAIL'},{status:502})});
+ await h.app.loadCpsiFromDrive();const text=h.el('cpsiDriveStatus').textContent;
+ assert.match(text,/DRIVE_GOOGLE_TOKEN_FAILED／API応答確認／HTTP 502/);assert.match(text,/トークン交換/);
+ assert.doesNotMatch(text,/PRIVATE_PROVIDER_DETAIL|SYNTHETIC_CPSI_READER_TOKEN/);assert.equal(h.writes.length,0);
+});
+test('app distinguishes a network exception from a non-JSON response and never echoes arbitrary text',async()=>{
+ for(const [fetchImpl,expected] of [
+  [async()=>{throw Error('PRIVATE_KEY_OR_URL');},/DRIVE_CLIENT_NETWORK_FAILED／API通信/],
+  [async()=>new Response('<html>PRIVATE_HTML</html>',{status:403}),/DRIVE_RESPONSE_INVALID／API応答確認／HTTP 403/]
+ ]){const h=appClient({fetchImpl});await h.app.loadCpsiFromDrive();const text=h.el('cpsiDriveStatus').textContent;assert.match(text,expected);assert.doesNotMatch(text,/PRIVATE_|SYNTHETIC_CPSI_READER_TOKEN/);assert.equal(h.writes.length,0);}
+});
+test('app never displays unknown or prototype-named server codes',async()=>{
+ for(const code of ['SECRET_TOKEN_IN_CODE','constructor','__proto__']){
+  const h=appClient({fetchImpl:async()=>Response.json({ok:false,code},{status:502})});await h.app.loadCpsiFromDrive();
+  const text=h.el('cpsiDriveStatus').textContent;assert.match(text,/DRIVE_CLIENT_UNKNOWN／API応答確認／HTTP 502/);assert.ok(!text.includes(code));assert.equal(h.writes.length,0);
+ }
+});
+test('app empty-feed response identifies missing source without reporting a successful retrieval',async()=>{
+ const h=appClient({fetchImpl:async()=>Response.json({ok:false,code:'DRIVE_SOURCE_NOT_FOUND'},{status:404})});await h.app.loadCpsiFromDrive();
+ const text=h.el('cpsiDriveStatus').textContent;assert.match(text,/DRIVE_SOURCE_NOT_FOUND／API応答確認／HTTP 404/);assert.doesNotMatch(text,/端末読戻完了/);assert.equal(h.writes.length,0);
+});
