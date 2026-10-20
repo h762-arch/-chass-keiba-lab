@@ -242,8 +242,32 @@ const CLOUD_READ_OPERATION_KEY='chass_cloud_read_operation_v1';
 const CLOUD_HOLD_AUDIT_KEY='chass_cloud_hold_audit_v1';
 const cloudAuditFields=['race','predictionSnapshot','marketSnapshot','finalSnapshot','resultSnapshot','validationSnapshot','resultQueue','liveAdjustedPrediction','scratchAudit','snapshotIntegrity','validated','validationCompleted','status'];
 const cloudAuditFieldLabels={race:'レース情報',predictionSnapshot:'元予想',marketSnapshot:'市場・確定シグナル',finalSnapshot:'FINAL',resultSnapshot:'結果',validationSnapshot:'参考検証',resultQueue:'結果取得の処理状態',liveAdjustedPrediction:'直前評価',scratchAudit:'出走取消の検証',snapshotIntegrity:'保存内容の照合',validated:'検証済み状態',validationCompleted:'検証完了状態',status:'処理状態'};
-const cloudAuditLabels={identityIssues:'識別情報に不備',originalConflicts:'元予想・市場・FINALに相違',resultDifferences:'結果に相違',raceDifferences:'レース情報に相違',referenceOnly:'参照検証・処理状態のみ相違',matched:'本文・状態は一致',failed:'取得・診断未完了',deferred:'端末変更のため見送り'};
-function sanitizeCloudHoldAudit(value){if(value?.schemaVersion!==1||!Array.isArray(value.entries))return null;return {schemaVersion:1,generatedAt:typeof value.generatedAt==='string'?value.generatedAt.slice(0,40):'',entries:value.entries.slice(0,100).filter(x=>x&&typeof x.raceId==='string'&&typeof x.modelVersion==='string'&&Object.hasOwn(cloudAuditLabels,x.category)).map(x=>({raceId:x.raceId.slice(0,512),modelVersion:x.modelVersion.slice(0,128),category:x.category,differences:Array.isArray(x.differences)?x.differences.filter(k=>cloudAuditFields.includes(k)):[]}))};}
+const cloudAuditLabels={signalDifferences:'Signalに相違（凍結分を含む）',integrityDifferences:'固定確認情報に相違',liveDifferences:'直前評価・取消情報に相違',identityIssues:'識別情報に不備',originalConflicts:'元予想・市場・FINALに相違',resultDifferences:'結果に相違',raceDifferences:'レース情報に相違',referenceOnly:'参照検証・処理状態のみ相違',matched:'本文・状態は一致',failed:'取得・診断未完了',deferred:'端末変更のため見送り'};
+function cloudAuditCategory(differences,{identityIssue=false,signalDifference=false}={}){
+ return identityIssue?'identityIssues':differences.includes('predictionSnapshot')?'originalConflicts':signalDifference?'signalDifferences':differences.some(k=>['marketSnapshot','finalSnapshot'].includes(k))?'originalConflicts':differences.includes('resultSnapshot')?'resultDifferences':differences.includes('race')?'raceDifferences':differences.includes('snapshotIntegrity')?'integrityDifferences':differences.some(k=>['liveAdjustedPrediction','scratchAudit'].includes(k))?'liveDifferences':differences.length?'referenceOnly':'matched';
+}
+function cloudAuditChangedPaths(a,b){
+ const paths=[];
+ const walk=(x,y,path,depth)=>{if(paths.length>=24||path.length>180||stableStringify(x)===stableStringify(y))return;if(depth>=6||x===null||y===null||typeof x!=='object'||typeof y!=='object'||Array.isArray(x)!==Array.isArray(y)){paths.push(path);return;}
+  if(Array.isArray(x)){for(let i=0;i<Math.max(x.length,y.length)&&paths.length<24;i++)walk(x[i],y[i],`${path}[${i}]`,depth+1);}
+  else for(const k of [...new Set([...Object.keys(x),...Object.keys(y)])].sort()){if(paths.length>=24)break;if(/^[a-zA-Z][a-zA-Z0-9_]*$/.test(k))walk(x[k],y[k],`${path}.${k}`,depth+1);}
+ };
+ for(const k of cloudAuditFields)walk(a[k],b[k],k,0);return paths;
+}
+function sanitizeCloudHoldAudit(value){
+ if(value?.schemaVersion!==1||!Array.isArray(value.entries))return null;
+ const pathPattern=/^(?:race|predictionSnapshot|marketSnapshot|finalSnapshot|resultSnapshot|validationSnapshot|resultQueue|snapshotIntegrity|liveAdjustedPrediction|scratchAudit|validated|validationCompleted|status)(?:\.[a-zA-Z][a-zA-Z0-9_]*|\[\d+\])*$/;
+ const integrityStates=['verified','legacy','invalid'];
+ return {schemaVersion:1,generatedAt:typeof value.generatedAt==='string'?value.generatedAt.slice(0,40):'',entries:value.entries.slice(0,100).filter(x=>x&&typeof x.raceId==='string'&&typeof x.modelVersion==='string'&&Object.hasOwn(cloudAuditLabels,x.category)).map(x=>{
+  const differences=Array.isArray(x.differences)?[...new Set(x.differences.filter(k=>cloudAuditFields.includes(k)))]:[];
+  // Older audits included seal/live differences in referenceOnly. Preserve their timestamp and correct that label.
+  const category=x.category==='referenceOnly'?cloudAuditCategory(differences):x.category;
+  return {raceId:x.raceId.slice(0,512),modelVersion:x.modelVersion.slice(0,128),category,differences,
+   changedPaths:Array.isArray(x.changedPaths)?x.changedPaths.filter(p=>typeof p==='string'&&p.length<=180&&pathPattern.test(p)).slice(0,24):[],
+   ...(x.integrity&&integrityStates.includes(x.integrity.local)&&integrityStates.includes(x.integrity.remote)?{integrity:{local:x.integrity.local,remote:x.integrity.remote}}:{}),
+   ...(x.identityIssue&&['local','remote'].includes(x.identityIssue.side)&&['CLOUD_RACE_MISMATCH','CLOUD_LAYER_BINDING_MISMATCH','CLOUD_MODEL_MISMATCH','CLOUD_IDENTITY_MISSING'].includes(x.identityIssue.code)?{identityIssue:{side:x.identityIssue.side,code:x.identityIssue.code}}:{})};
+ })};
+}
 let cloudHoldAudit=sanitizeCloudHoldAudit(localStore.get(CLOUD_HOLD_AUDIT_KEY,null));
 let cloudReadFlight=null,cloudReadOperation=readCloudOperation(localStore.get(CLOUD_READ_OPERATION_KEY,null));
 function readCloudOperation(value){
@@ -316,8 +340,10 @@ function compareCloudHoldRecord(local,item,id,model){
  if(!local||item?.raceId!==id||item?.modelVersion!==model||!item?.record||Array.isArray(item.record)||!item.record.race||!item.record.predictionSnapshot||typeof item.status!=='string')throw Object.assign(new Error('manifest_response_invalid'),{code:'MANIFEST_RESPONSE_INVALID'});
  const a=cloudAuditParts(local,queueCloudStatus(local)),b=cloudAuditParts(item.record,item.status),differences=cloudAuditFields.filter(k=>stableStringify(a[k])!==stableStringify(b[k]));
  const identityIssue=cloudMergeBindingIssue(local,id)||cloudMergeBindingIssue(item.record,id)||String(local.predictionSnapshot?.modelVersion||local.modelVersion||'Legacy')!==model||String(item.record.predictionSnapshot?.modelVersion||item.record.modelVersion||'Legacy')!==model;
- const category=identityIssue?'identityIssues':differences.some(k=>['predictionSnapshot','marketSnapshot','finalSnapshot'].includes(k))?'originalConflicts':differences.includes('resultSnapshot')?'resultDifferences':differences.includes('race')?'raceDifferences':differences.length?'referenceOnly':'matched';
- return {raceId:id,modelVersion:model,category,differences};
+ const signalDifference=stableStringify(a.marketSnapshot?.signalSnapshot??null)!==stableStringify(b.marketSnapshot?.signalSnapshot??null);
+ const category=cloudAuditCategory(differences,{identityIssue:!!identityIssue,signalDifference});
+ const localIssue=cloudMergeBindingIssue(local,id),remoteIssue=cloudMergeBindingIssue(item.record,id);
+ return {raceId:id,modelVersion:model,category,differences,changedPaths:cloudAuditChangedPaths(a,b),integrity:{local:verifySnapshotIntegrity(local).status,remote:verifySnapshotIntegrity(item.record).status},...(identityIssue?{identityIssue:{side:localIssue?'local':'remote',code:localIssue||remoteIssue||'CLOUD_MODEL_MISMATCH'}}:{})};
 }
 function auditCloudSyncHolds(){
  if(cloudReadFlight)return cloudReadFlight;
@@ -577,9 +603,10 @@ function renderCloudSyncState(){
  renderCloudReadOperation();
  const readBusy=!!cloudReadFlight||cloudReadOperation?.status==='running';
  for(const id of ['cloudRestoreButton','cloudRecheckButton','cloudResultRepairButton','cloudFingerprintRecoverButton','cloudHoldAuditButton']){const el=$(id);if(el)el.disabled=readBusy||!!cloudBulkFlight||cloudSyncFlights.size>0;}
- const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount');
+ const detail=$('cloudSyncHolds'),list=$('cloudSyncHoldList'),count=$('cloudSyncHoldCount'),auditSummary=$('cloudHoldAuditSummary');
+ if(auditSummary){const active=new Set(holds.map(manifestKey)),entries=(cloudHoldAudit?.entries||[]).filter(x=>active.has(manifestKey(x))),totals=entries.reduce((out,x)=>(out[x.category]=(out[x.category]||0)+1,out),{});auditSummary.hidden=!entries.length;auditSummary.textContent=entries.length?`診断時点 ${cloudHoldAudit.generatedAt}｜現在の保留のうち ${entries.length}/${holds.length}件｜${Object.entries(totals).map(([k,n])=>`${cloudAuditLabels[k]} ${n}件`).join('・')}｜診断では原本・保留を変更しません。`:'';}
  if(detail)detail.hidden=!holds.length;if(count)count.textContent=`同期保留の詳細 ${holds.length}件`;
- if(list){const audits=new Map((cloudHoldAudit?.entries||[]).map(x=>[manifestKey(x),x]));list.innerHTML=holds.map(h=>{const a=audits.get(manifestKey(h));return `<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}${a?`｜診断時点：${esc(cloudAuditLabels[a.category])}｜差分 ${esc(a.differences.map(k=>cloudAuditFieldLabels[k]).join('・')||'なし')}｜${esc(cloudHoldAudit.generatedAt)}`:''}</small></div>`}).join('');}
+ if(list){const audits=new Map((cloudHoldAudit?.entries||[]).map(x=>[manifestKey(x),x]));list.innerHTML=holds.map(h=>{const a=audits.get(manifestKey(h));return `<div class="cloud-exclusion-row"><strong>${esc(h.raceId)}</strong><span>${esc(cloudSyncReasonLabels[h.reason]||'保存内容を要確認')}</span><small>モデル ${esc(h.modelVersion)}${a?`｜診断時点：${esc(cloudAuditLabels[a.category])}｜差分 ${esc(a.differences.map(k=>cloudAuditFieldLabels[k]).join('・')||'なし')}｜${esc(cloudHoldAudit.generatedAt)}`:''}</small>${a?.integrity?`<small>固定確認：端末 ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.local])}／クラウド ${esc({verified:'ハッシュ一致',legacy:'照合印なし',invalid:'改変・時系列要確認'}[a.integrity.remote])}（EARLYの正式性は別判定）</small>`:''}${a?.identityIssue?`<small>識別不備：${a.identityIssue.side==='local'?'端末':'クラウド'}｜${esc(a.identityIssue.code)}</small>`:''}${a?.changedPaths?.length?`<details class="cloud-audit-paths"><summary>差分の項目（最大24件）</summary><ul>${a.changedPaths.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></details>`:''}</div>`}).join('');}
  if(button)button.disabled=readBusy||!!cloudBulkFlight||cloudState.status==='syncing';
 }
 function renderCloudReadOperation(){
@@ -593,7 +620,7 @@ function renderCloudReadOperation(){
   const labels={RESTORE_RESPONSE_INVALID:'復元データの形式が不正です。端末データは変更していません。',MANIFEST_RESPONSE_INVALID:'差分応答の形式が不正です。保留は解除していません。',CLOUD_READ_TIMEOUT:'通信が時間内に完了しませんでした。',LOCAL_SAVE_FAILED:'端末への保存に失敗しました。復元成功にはしていません。',NETWORK_ERROR:'クラウドとの通信に失敗しました。',INVALID_JSON:'クラウドの応答を読み取れませんでした。',HTTP_ERROR:'クラウドがエラーを返しました。',DATABASE_UNAVAILABLE:'クラウドの保存先に接続できませんでした。',DATABASE_READ_FAILED:'クラウドの保存データを読み出せませんでした。',DATABASE_SCHEMA_ERROR:'クラウドの保存形式を確認できませんでした。',CLOUD_SYNC_BUSY:'同期処理中です。終了後に操作してください。'};
   text=`${action}失敗｜${labels[op.code]||'処理を完了できませんでした。'}｜${op.code}`;
  }else if(op.code==='RENDER_FAILED')text=`${action}の保存は完了しましたが、画面更新に失敗しました。`;
- else if(op.action==='audit')text=`保留の差分診断${op.status==='partial'?'は一部完了':'完了'}｜確認 ${counts.checked||0}/${counts.total||0}件・一致 ${counts.matched||0}件・参照検証／処理状態のみ ${counts.referenceOnly||0}件・元予想等の相違 ${counts.originalConflicts||0}件・結果相違 ${counts.resultDifferences||0}件・レース相違 ${counts.raceDifferences||0}件・識別不備 ${counts.identityIssues||0}件・未完了 ${(counts.failed||0)+(counts.deferred||0)}件${op.code?`｜停止理由 ${op.code}`:''}｜クラウドへの送信なし`;
+ else if(op.action==='audit')text=`保留の差分診断${op.status==='partial'?'は一部完了':'完了'}｜確認 ${counts.checked||0}/${counts.total||0}件・一致 ${counts.matched||0}件・Signal相違 ${counts.signalDifferences||0}件・固定確認情報相違 ${counts.integrityDifferences||0}件・直前評価等の相違 ${counts.liveDifferences||0}件・参照検証／処理状態のみ ${counts.referenceOnly||0}件・元予想等の相違 ${counts.originalConflicts||0}件・結果相違 ${counts.resultDifferences||0}件・レース相違 ${counts.raceDifferences||0}件・識別不備 ${counts.identityIssues||0}件・未完了 ${(counts.failed||0)+(counts.deferred||0)}件${op.code?`｜停止理由 ${op.code}`:''}｜クラウドへの送信なし`;
  else if(op.action==='recover')text=`クラウド照合情報の回復${op.status==='partial'?'は一部完了':'完了'}｜確認 ${counts.checked||0}/${counts.total||0}件・照合情報更新 ${counts.metadataRecovered||0}件・一致して解除 ${counts.cleared||0}件・相違 ${counts.conflicts||0}件・見送り ${(counts.skipped||0)+(counts.deferred||0)}件・保留継続 ${counts.remaining||0}件${op.code?`｜停止理由 ${op.code}`:''}｜クラウドの照合情報のみ更新`;
  else if(op.action==='repair')text=`不足結果の補完${op.status==='partial'?'は一部完了':'完了'}｜対象 ${counts.total||0}件・確認 ${counts.checked||0}件・結果補完 ${counts.resultAdded||0}件・不一致 ${counts.conflicts||0}件・端末変更を保持 ${counts.deferred||0}件${op.code?`・停止理由 ${op.code}`:''}｜元予想・Signal・保留は変更なし／クラウドへの送信なし`;
  else if(op.action==='restore')text=`復元完了｜受信 ${counts.received||0}件・追加 ${counts.added||0}件・補完 ${counts.enriched||0}件（結果補完 ${counts.resultAdded||0}件）・変更なし ${counts.unchanged||0}件・今回の競合 ${counts.conflicts||0}件${counts.deferred?`・端末の新しい変更を保持 ${counts.deferred}件`:''}｜同期保留は別途再確認してください。`;
