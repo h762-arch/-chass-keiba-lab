@@ -44,8 +44,9 @@ function provenance(source,input,allowed,idKey='snapshotId'){
  if(source.kind!=='EARLY'||source.isPreResult!==true||!asText(source.authorityRef)||!asText(source[idKey]))return 'SOURCE_AUTHORITY_OR_PRE_MISSING';
  const time=timestamp(source.capturedAt);
  if(!Number.isFinite(time)||time>timestamp(input.freezeAt)||time>input.checkedAt)return 'SOURCE_AFTER_CUTOFF_OR_INVALID_TIME';
- // All sources must be from the same JST race day; older history belongs in an explicitly PRE-built index artifact.
- if(new Date(time+9*3600000).toISOString().slice(0,10)!==input.race.raceDate)return 'SOURCE_RACE_DATE_MISMATCH';
+ // Combined legacy Wave keeps its same-day boundary. CPSI FIRST accepts prior-day
+ // explicit PRE artifacts with exact race/run/snapshot identity and capture <= cutoff.
+ if(!input.preMeetingCpsi&&new Date(time+9*3600000).toISOString().slice(0,10)!==input.race.raceDate)return 'SOURCE_RACE_DATE_MISMATCH';
  return null;
 }
 function guardInput(input){
@@ -61,7 +62,7 @@ function guardInput(input){
  if(!asText(input.runId)||!asText(input.inputSnapshotId))return 'INPUT_FREEZE_ID_MISSING';
  const cutoff=timestamp(input.freezeAt),post=timestamp(input.postAt);
  if(!Number.isFinite(cutoff)||!Number.isFinite(post)||!Number.isFinite(input.checkedAt)||cutoff>input.checkedAt||cutoff>=post||input.checkedAt>=post)return 'CUTOFF_OR_PRESTART_INVALID';
- if(new Date(cutoff+9*3600000).toISOString().slice(0,10)!==r.raceDate||new Date(post+9*3600000).toISOString().slice(0,10)!==r.raceDate)return 'CUTOFF_RACE_DATE_MISMATCH';
+ if((!input.preMeetingCpsi&&new Date(cutoff+9*3600000).toISOString().slice(0,10)!==r.raceDate)||new Date(post+9*3600000).toISOString().slice(0,10)!==r.raceDate)return 'CUTOFF_RACE_DATE_MISMATCH';
  for(const h of input.horses){
   if(!safeObject(h))return 'RUNNER_INPUT_INVALID';
   if(h.canonicalIndex!=null){
@@ -134,7 +135,7 @@ function calcCpsi(input){
     ?component('RESOLVED',round(s.value),s.sourceSnapshotId)
     :component('UNKNOWN',null,null,'AUTHORIZED_PRE_SCORER_MISSING');
   }
-  const coreUsableCount=['A','B','C'].filter(k=>['RESOLVED','RESOLVED_PROXY','PARTIAL_NUMERIC','PARTIAL_NEUTRAL_PRIMITIVE'].includes(comps[k].status)).length;
+  const coreUsableCount=['A','B','C'].filter(k=>['RESOLVED','RESOLVED_PROXY','PARTIAL_NUMERIC'].includes(comps[k].status)).length;
   const resolvedWeight=Object.keys(comps).filter(k=>['RESOLVED','RESOLVED_PROXY'].includes(comps[k].status)).reduce((sum,k)=>sum+CORE_WEIGHTS[k],0);
   const partialWeight=Object.keys(comps).filter(k=>comps[k].status.startsWith('PARTIAL')).reduce((sum,k)=>sum+CORE_WEIGHTS[k],0);
   // Partial C contains a neutral primitive: its 10% overlaps the 20% partial-domain weight.
@@ -248,9 +249,26 @@ export function calculateCpsiWaveShadow(unsafeInput,{now=Date.now()}={}){
   raceId:input.raceId,runId:input.runId,inputSnapshotId:input.inputSnapshotId,indexSnapshotId:input.indexSnapshotId??null,marketSnapshotId:input.marketSnapshotId??null,freezeAt:input.freezeAt,checkedAt:new Date(now).toISOString(),cpsi,wave,...governance()};
 }
 
+/** Independent CPSI path: no market/Wave input is accepted or read. */
+export function calculateCpsiShadow(unsafeInput,{now=Date.now()}={}){
+ let input;try{input=copyData(unsafeInput);}catch(e){return terminal(e.message);}
+ const allowed=['organization','raceId','runId','inputSnapshotId','indexSnapshotId','freezeAt','postAt','race','horses','checkedAt'];
+ if(!safeObject(input)||Object.keys(input).some(k=>!allowed.includes(k)))return terminal('CPSI_ONLY_INPUT_FIELD_FORBIDDEN');
+ if(!safeObject(input.race)||Object.keys(input.race).some(k=>!['raceDate','track','raceNo','raceType','raceName','surface','specialty','waveEligibility'].includes(k)))return terminal('CPSI_ONLY_RACE_FIELD_FORBIDDEN');
+ if(Array.isArray(input.horses)&&input.horses.some(h=>!safeObject(h)||Object.keys(h).some(k=>!['horseNo','canonicalHorseKey','runnerStatus','eligible','canonicalIndex','cpsiDomains'].includes(k))))return terminal('CPSI_ONLY_RUNNER_FIELD_FORBIDDEN');
+ input.checkedAt=now;input.preMeetingCpsi=true;
+ const failure=guardInput(input);if(failure)return terminal(failure);
+ const specialty=population(input);
+ if(specialty&&specialty!=='WAVE_POPULATION_UNVERIFIED')return terminal(specialty);
+ const clean={...input,horses:input.horses.filter(active)};
+ if(clean.horses.length<2)return terminal('FIELD_TOO_SMALL');
+ const cpsi=calcCpsi(clean);
+ return {version:METRIC_RECOVERY_VERSION,status:'SHADOW_TERMINAL',stage:'CPSI_FIRST',organization:input.organization,raceId:input.raceId,runId:input.runId,inputSnapshotId:input.inputSnapshotId,indexSnapshotId:input.indexSnapshotId??null,freezeAt:input.freezeAt,postAt:input.postAt,checkedAt:new Date(now).toISOString(),inputComparisonData:{race:input.race,horses:input.horses},cpsi,wave:null,...governance()};
+}
+
 /** PRE-only projection. Sources are caller-supplied artifacts, never authenticated by their labels. */
 const own=(object,key)=>{if(!safeObject(object))return undefined;const d=Object.getOwnPropertyDescriptor(object,key);if(!d)return undefined;if(!Object.hasOwn(d,'value'))throw Error('INPUT_ACCESSOR_FORBIDDEN');return d.value;};
-export function projectAndCalculateMetricShadow(args={},options={}){
+function projectMetricShadow(args={},options={},cpsiOnly=false){
  try{
   const race=own(args,'race'),horses=own(args,'horses'),organization=own(args,'organization'),raceId=own(args,'raceId');
   if(!safeObject(race)||!Array.isArray(horses))return terminal('RACE_OR_HORSES_MISSING');
@@ -258,11 +276,13 @@ export function projectAndCalculateMetricShadow(args={},options={}){
   for(const k of ['result','RESULT','resultSnapshot','finishOrder','payout','postRace','historicalResearch','actualResult']){
    if(own(race,k)!=null)return terminal('POST_RESULT_FIELD_FORBIDDEN');
   }
-  const freeze=copyData(own(race,'metricInputFreeze'));
+  const freeze=own(race,'metricInputFreeze');
   if(!safeObject(freeze))return terminal('INPUT_FREEZE_ID_MISSING');
   const fields=['runId','inputSnapshotId','indexSnapshotId','marketSnapshotId','freezeAt','postAt'];
   if(Object.keys(freeze).some(k=>!fields.includes(k)))return terminal('INPUT_FREEZE_SCHEMA_INVALID');
-  const input={organization,raceId,...freeze,race:{},checkedAt:options.now??Date.now()};
+  const input={organization,raceId,race:{},checkedAt:options.now??Date.now()};
+  for(const key of fields)if(!cpsiOnly||key!=='marketSnapshotId')input[key]=copyData(own(freeze,key));
+  if(cpsiOnly)input.preMeetingCpsi=true;
   for(const k of ['raceDate','track','raceNo','raceType','raceName','surface','specialty','waveEligibility'])input.race[k]=own(race,k);
   const batchRaw=own(race,'cpsiCanonicalIndexSnapshot'),batch=batchRaw==null?null:copyData(batchRaw);
   let byHorse;
@@ -287,9 +307,33 @@ export function projectAndCalculateMetricShadow(args={},options={}){
    }else if(!batch)canonicalIndex=copyData(own(h,'canonicalIndex'))??null;
    return {horseNo,canonicalHorseKey:own(h,'canonicalHorseKey'),runnerStatus:own(h,'runnerStatus')??own(h,'horseStatus')??'active',eligible:own(h,'eligible'),canonicalIndex,cpsiDomains:copyData(own(h,'cpsiDomains'))??null};
   });
+  if(cpsiOnly){delete input.preMeetingCpsi;return calculateCpsiShadow(input,options);}
   input.market=copyData(own(race,'originalEarlyMarket'))??null;
   input.waveEvidence=copyData(own(race,'waveEvidence'))??null;
   input.narWaveScMc=copyData(own(race,'narWaveScMc'))??null;
   return calculateCpsiWaveShadow(input,options);
  }catch(e){return terminal(e.message?.startsWith('INPUT_')||e.message==='POST_RESULT_FIELD_FORBIDDEN'?e.message:'METRIC_PROJECTION_FAILED');}
+}
+
+export function projectAndCalculateMetricShadow(args={},options={}){return projectMetricShadow(args,options,false);}
+export function projectAndCalculateCpsiShadow(args={},options={}){return projectMetricShadow(args,options,true);}
+
+/** Formula/component comparison only. Never claims a source or storage readback is authenticated. */
+export function auditSavedCpsiShadow(saved,fresh){
+ const out=(status,reasons)=>({status,reasons,sourceOriginAuthenticated:false,physicalReadbackVerified:false,formalKpiEligible:false});
+ try{
+  const a=copyData(saved),b=copyData(fresh);
+  if(!safeObject(a)||!safeObject(b)||!a.cpsi||!b.cpsi)return out('UNVERIFIED',['CPSI_BODY_MISSING']);
+  const keys=['version','organization','raceId','runId','inputSnapshotId','indexSnapshotId','freezeAt'];
+  if(keys.some(k=>!asText(a[k])||a[k]!==b[k]))return out('SOURCE_CONFLICT',['SNAPSHOT_OR_CONTRACT_MISMATCH']);
+  if(!Array.isArray(a.cpsi.rows)||!Array.isArray(b.cpsi.rows))return out('UNVERIFIED',['CPSI_ROWS_MISSING']);
+  const stable=x=>x==null||typeof x!=='object'?JSON.stringify(x):Array.isArray(x)?'['+x.map(stable).join(',')+']':'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+stable(x[k])).join(',')+'}';
+  const rowKey=rows=>rows.map(r=>r.horseNo);
+  if(new Set(rowKey(a.cpsi.rows)).size!==a.cpsi.rows.length||stable(rowKey(a.cpsi.rows).sort((x,y)=>x-y))!==stable(rowKey(b.cpsi.rows).sort((x,y)=>x-y)))return out('SOURCE_CONFLICT',['RUNNER_SET_MISMATCH']);
+  if(!a.inputComparisonData||!b.inputComparisonData)return out('UNVERIFIED',['SOURCE_COMPONENT_BASIS_MISSING']);
+  if(stable(a.inputComparisonData)!==stable(b.inputComparisonData))return out('SOURCE_CONFLICT',['SOURCE_COMPONENT_BASIS_DIFFERENT']);
+  const normalized=cpsi=>({...cpsi,rows:[...cpsi.rows].sort((x,y)=>x.horseNo-y.horseNo)});
+  if(stable(normalized(a.cpsi))!==stable(normalized(b.cpsi)))return out('COMPONENT_MISMATCH',['SAVED_COMPONENT_OR_SCORE_DIFFERENT']);
+  return out('FORMULA_MATCH',['COMPONENTS_AND_INPUT_IDENTIFIERS_MATCH_ONLY']);
+ }catch{return out('UNVERIFIED',['SAVED_COMPARISON_INPUT_INVALID']);}
 }

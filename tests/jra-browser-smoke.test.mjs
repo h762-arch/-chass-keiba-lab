@@ -198,3 +198,29 @@ test('phone result retry guidance uses the real delegated action without bulk fe
  t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
  for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1800)}\n${dom.slice(-2000)}`);}
 });
+
+test('CPSI FIRST file input calculates before prediction and market on phone widths',{timeout:90000},async t=>{
+ const chrome=resolveChrome().executable,port=await freePort(),smokeName=`chass-cpsi-first-smoke-${process.pid}.html`,smokePath=path.join(ROOT,smokeName);
+ const date=new Date(Date.now()+24*3600000+9*3600000).toISOString().slice(0,10),raceId=`${date}|東京|1`,capturedAt=new Date(Date.now()-2*3600000).toISOString(),freezeAt=new Date(Date.now()-3600000).toISOString();
+ const meta={organizer:'JRA',raceId,runId:'BROWSER-SYNTHETIC',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt,authorityRef:'SYNTHETIC-INDEX'};
+ const input={format:'CHASS_CPSI_PRE_INPUT_V1',race:{category:'中央競馬',raceType:'JRA',raceDate:date,track:'東京',raceNo:1,surface:'芝',metricInputFreeze:{runId:meta.runId,inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',freezeAt,postAt:date+'T10:00:00+09:00'}},horses:[1,2,3,4].map(horseNo=>({horseNo,canonicalHorseKey:'JRA|synthetic-'+horseNo,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:100-horseNo,baseline5:90-horseNo,current:80-horseNo,distance:70-horseNo,course:60-horseNo}}))};
+ const probe=`<script>(()=>{
+ localStorage.clear();let marketRequests=0,postRequests=0,loaded=false;const originalFetch=fetch.bind(window),errors=[];
+ window.fetch=(input,options)=>{const url=new URL(String(input),location.href);if(url.pathname.includes('/odds'))marketRequests++;if(options?.method==='POST')postRequests++;if(url.pathname.startsWith('/api/'))return Promise.resolve(Response.json({ok:false,error:'SMOKE_OFFLINE'},{status:503}));return originalFetch(input,options);};
+ addEventListener('error',e=>errors.push(e.message));addEventListener('unhandledrejection',e=>errors.push(String(e.reason)));
+ const started=Date.now(),timer=setInterval(()=>{try{
+  const file=document.getElementById('cpsiFirstFile'),panel=document.getElementById('cpsiFirstPreview');
+  if(file&&typeof file.onchange==='function'&&!document.getElementById('autoRaceLoad').disabled&&!loaded){loaded=true;const transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify(${JSON.stringify(input)})],'cpsi-index.json',{type:'application/json'}));file.files=transfer.files;file.dispatchEvent(new Event('change',{bubbles:true}));}
+  if(panel&&!panel.hidden&&panel.textContent.includes('CPSI 80')){
+   const rows=[...document.querySelectorAll('#cpsiFirstRows li')],fits=rows.every(el=>el.scrollWidth<=el.clientWidth+1)&&document.documentElement.scrollWidth<=innerWidth+1;
+   const unpredicted=document.getElementById('raceTitle').textContent.includes('未入力');
+   const ok=rows.length===4&&panel.textContent.includes('充足 60%')&&panel.textContent.includes('中立補完 40%')&&panel.textContent.includes('不確実性')&&marketRequests===0&&postRequests===0&&unpredicted&&fits&&errors.length===0;
+   clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke=ok?'pass':'fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({marketRequests,postRequests,unpredicted,fits,errors});return;
+  }
+  if(Date.now()-started>9000){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=JSON.stringify({errors,status:panel?.textContent});}
+ }catch(e){clearInterval(timer);document.documentElement.dataset.chassBrowserSmoke='fail';document.documentElement.dataset.chassBrowserSmokeDetail=String(e.stack);}},20);
+})();</script>`;
+ const index=await readFile(path.join(ROOT,'index.html'),'utf8');await writeFile(smokePath,index.replace('<head>','<head>'+probe));
+ const server=spawn(process.execPath,['server.mjs'],{cwd:ROOT,env:{...process.env,PORT:String(port)},stdio:'ignore'});t.after(async()=>{server.kill('SIGTERM');await unlink(smokePath).catch(()=>{});});await waitFor(`http://127.0.0.1:${port}/api/health`);
+ for(const width of [320,390,430]){const dom=await browserDom(chrome,`http://127.0.0.1:${port}/${smokeName}`,width);assert.match(dom,/data-chass-browser-smoke="pass"/,`width=${width}\n${dom.slice(0,1000)}\n${dom.slice(-1500)}`);}
+});
