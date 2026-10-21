@@ -5,6 +5,19 @@
   "branch": "chass-data",
   "snapshots": [
     {
+      "date": "2026-10-21",
+      "track": "浦和",
+      "trackSlug": "urawa",
+      "organization": "NAR",
+      "raceCount": 1,
+      "totalHorseCount": 12,
+      "latestPredictionAt": "2026-10-20T14:39:49.973Z",
+      "latestOddsAt": "2026-10-20T14:39:49.973Z",
+      "abilityOnlyFallback": false,
+      "identityMismatchCount": 0,
+      "path": "chat-snapshot/2026-10-21/urawa/day.json"
+    },
+    {
       "date": "2026-10-19",
       "track": "浦和",
       "trackSlug": "urawa",
@@ -192,14 +205,14 @@
     "latestAttempt": {
       "schemaVersion": "chass-nar-status-snapshot-v1",
       "status": "CAPTURED",
-      "date": "2026-10-20",
-      "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-20&format=compact",
-      "attemptedAt": "2026-10-20T14:06:07.257Z",
-      "capturedAt": "2026-10-20T14:06:08.319Z",
-      "payloadSha256": "37a1d700ce1f6fb307282e1eb064db653ba9253c89b9f49da858d5ddef9ac5b9",
+      "date": "2026-10-21",
+      "sourceUrl": "https://chass-keiba-lab7.h7625421.workers.dev/api/chass/v1/public/nar-precompute-status?date=2026-10-21&format=compact",
+      "attemptedAt": "2026-10-21T01:04:31.400Z",
+      "capturedAt": "2026-10-21T01:04:32.742Z",
+      "payloadSha256": "92b0a95dabac06cd0ae13e010794b39e56397504f534a8adb95f7c6f55dcbfa7",
       "hashBasis": "UTF8_JSON_STRINGIFY_PAYLOAD",
       "readOnlyCapture": true,
-      "snapshotPath": "chat-snapshot/status/2026-10-20/nar-precompute-status.json"
+      "snapshotPath": "chat-snapshot/status/2026-10-21/nar-precompute-status.json"
     }
   }
 }
