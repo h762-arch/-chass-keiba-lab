@@ -71,6 +71,13 @@ export async function handleDailyAnalysisRequest(request,env={}){
   const records=job.status==='RUNNING'?{results:[]}:await env.DB.prepare('SELECT race_id,artifact_json FROM chass_daily_analysis_runs WHERE job_id=? ORDER BY race_id').bind(jobId(date)).all();
   const rows=[];
   for(const record of records.results||[]){if(failed.has(record.race_id))continue;try{const a=JSON.parse(record.artifact_json);await verifyDailyRaceArtifact(a);if(a.body.date!==date||a.body.result.raceId!==record.race_id)throw Error();rows.push({raceId:record.race_id,contentHash:a.contentHash,analyzedAt:a.body.analyzedAt,result:a.body.result});}catch{rows.push({raceId:record.race_id,result:{status:'HOLD',reason:'DAILY_STORED_ARTIFACT_INVALID'}});}}
-  return json({ok:true,date,status:job.status,startedAt:job.started_at,completedAt:job.completed_at,summary,rows,researchOnly:true});
+  let driveArchive={status:'DISABLED'};
+  if(env.ENABLE_DAILY_DRIVE_ARCHIVE_V1==='true'){
+   try{
+    const receipt=await env.DB.prepare('SELECT content_hash,file_id,folder_id,verified_at FROM chass_daily_drive_archives WHERE job_id=?').bind(jobId(date)).first();
+    driveArchive=receipt&&receipt.folder_id===env.CHASS_DAILY_DRIVE_OUTPUT_FOLDER_ID&&/^sha256:[a-f0-9]{64}$/.test(receipt.content_hash)&&/^[A-Za-z0-9_-]{10,160}$/.test(receipt.file_id)&&Number.isFinite(Date.parse(receipt.verified_at))?{status:'PREVIOUSLY_VERIFIED',fileId:receipt.file_id,contentHash:receipt.content_hash,verifiedAt:receipt.verified_at}:{status:'PENDING'};
+   }catch{driveArchive={status:'HOLD'};}
+  }
+  return json({ok:true,date,status:job.status,startedAt:job.started_at,completedAt:job.completed_at,summary,driveArchive,rows,researchOnly:true});
  }catch{return json({ok:false,code:'DAILY_READ_FAILED'},503);}
 }

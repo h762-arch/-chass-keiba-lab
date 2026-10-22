@@ -217,6 +217,7 @@ async function loadDailyAnalysis(){
   if(!response.ok||data.ok!==true||data.date!==date||!Array.isArray(data.rows)||data.rows.length>192)throw Error('DAILY_READ_FAILED');
   const labels={COMPLETE:'登録入力の研究レビュー完了',PARTIAL:'一部計算・不足あり',HOLD:'入力回復待ち',RUNNING:'処理中',NOT_RUN:'定期処理の記録なし'};
   status.textContent=(labels[data.status]||'確認待ち')+'｜当日全開催の網羅・画像自動読取は未接続。正式EARLY・Signalは変更しません。';
+  status.textContent+=' Drive保存：'+({PREVIOUSLY_VERIFIED:'保存・読戻し確認履歴あり（'+data.driveArchive?.verifiedAt+'）',PENDING:'保存確認待ち',HOLD:'保存確認不可',DISABLED:'未有効化'}[data.driveArchive?.status]||'未確認')+'。';
   if(data.summary?.issues?.length)status.textContent+=' 不足・失敗：'+data.summary.issues.map(x=>(x.raceId?x.raceId+' ':'')+x.reason).join(' / ');
   for(const row of data.rows){
    const box=document.createElement('article'),title=document.createElement('h3');title.textContent=row.raceId;box.append(title);
