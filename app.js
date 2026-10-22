@@ -2,7 +2,7 @@
 'use strict';
 let jraMeetingSelector=null,jraRaceClient=null,jraOddsClient=null,jraResultClient=null;
 const APP_VERSION='10.0.1';
-let cpsiFirstPreview=null,cpsiFirstFileGeneration=0;
+let cpsiFirstPreview=null,cpsiFirstFileGeneration=0,waveInputSourceRoot=null;
 let cpsiSourceRoot=null,cpsiSourceGeneration=0,cpsiSourceBusy=false;
 let cpsiDriveReaderToken='',cpsiDriveController=null;
 // CHASS-JRA-AUTO-LOAD-v1.5.2
@@ -201,9 +201,9 @@ async function retryAutoResultFromUi(id){
 }
 // Separate, non-persistent CPSI preview. It never creates or updates an EARLY Snapshot.
 window.CHASS_WAVE_INPUT=()=>{
- const root=cpsiSourceRoot||state;
- // A frozen forecast is not a mutable source for a new PRE analysis.
- if(root===state&&state.predictionSnapshot)return null;
+ // Reading the current source for a separate research artifact does not mutate EARLY.
+ // Prefer the original full input: CPSI's market-blind source projection drops Wave fields.
+ const root=waveInputSourceRoot||cpsiSourceRoot||state;
  return cloneData(root);
 };
 function calculateCpsiFirst(root){
@@ -229,6 +229,7 @@ function renderCpsiFirstPreview(){
  body.innerHTML=(cpsi?.rows||[]).map(row=>`<li><strong>${esc(String(row.horseNo))}番｜CPSI ${row.cpsiMainCompat==null?'【NA】':esc(row.cpsiMainCompat)}${row.rank==null?'':`（${row.rank}位）`}</strong><span>Core ${row.coreUsableCount}/3｜充足 ${esc(row.resolvedWeightPct)}%｜中立補完 ${esc(row.neutralizedWeightPct)}%</span><span>不確実性：${esc(uncertainty[row.uncertainty]||'不明')}｜${row.scoreMode==='CORE_COMPLETE'?'Core完備':row.rankEligible?'部分計算':'算出不足'}</span>${row.components?.B?.status==='RESOLVED_PROXY'?'<small>Currentは未取得。前走指数の代理値を使用。</small>':''}${row.components?.C?.status==='PARTIAL_NEUTRAL_PRIMITIVE'?'<small>距離・コースの片側が不明。中立補完は観測値ではありません。</small>':''}${row.rankEligible?'':'<small>正規指数の不足です。別の能力指数で代用しません。</small>'}</li>`).join('');
 }
 function previewCpsiFirst(root){
+ waveInputSourceRoot=null;try{waveInputSourceRoot=cloneData(root);}catch{/* Unreadable input stays unavailable. */}
  cpsiSourceGeneration++;cpsiSourceRoot=null;
  cpsiFirstPreview=calculateCpsiFirst(root);
  try{const source=window.CHASS_CPSI_SOURCE_RECOVERY;if(source)cpsiSourceRoot=source.sourceRootFromInput(source.sourceInputFromRoot(root));}catch{/* Missing identities remain NA; never manufacture them. */}
@@ -360,9 +361,9 @@ async function loadCpsiFromDrive(){
  }finally{clearTimeout(timer);store?.close();if(cpsiDriveController===controller)cpsiDriveController=null;cpsiSourceBusy=false;for(const id of ['cpsiDriveLoad','cpsiSourceSave','cpsiSourceRecover','cpsiSourceExport'])setButtonBusy(id,false);}
 }
 async function importCpsiFirstFile(file){
- const generation=++cpsiFirstFileGeneration;cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent='指数を読み込み中…';
+ const generation=++cpsiFirstFileGeneration;waveInputSourceRoot=null;cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent='指数を読み込み中…';
  try{if(file.size>2097152)throw Error('入力ファイルは2MiB以下にしてください。');const root=JSON.parse((await file.text()).replace(/^\uFEFF/,''));if(generation!==cpsiFirstFileGeneration)return null;const result=previewCpsiFirst(root);if(cpsiSourceRoot&&window.CHASS_CPSI_SOURCE_RECOVERY)await runCpsiSourceAction('recover');if(generation!==cpsiFirstFileGeneration)return null;if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent='指数の確認が完了しました。予想や結果の保存は行っていません。';return cpsiFirstPreview||result;}
- catch(error){if(generation===cpsiFirstFileGeneration){cpsiSourceRoot=null;cpsiSourceGeneration++;cpsiFirstPreview=null;renderCpsiFirstPreview();if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent=`読込失敗｜${error.message}`;}return null;}
+ catch(error){if(generation===cpsiFirstFileGeneration){waveInputSourceRoot=null;cpsiSourceRoot=null;cpsiSourceGeneration++;cpsiFirstPreview=null;renderCpsiFirstPreview();if($('cpsiFirstInputStatus'))$('cpsiFirstInputStatus').textContent=`読込失敗｜${error.message}`;}return null;}
 }
 function currentSelectionId(){return raceId({raceDate:$('autoRaceDate')?.value,track:$('autoTrack')?.value,raceNo:Number($('autoRaceNo')?.value)})}
 function setButtonBusy(id,busy,label=''){const b=$(id);if(!b)return;if(busy){b.dataset.idleText=b.textContent;b.disabled=true;b.setAttribute('aria-busy','true');if(label)b.textContent=label}else{b.disabled=false;b.removeAttribute('aria-busy');if(b.dataset.idleText)b.textContent=b.dataset.idleText;delete b.dataset.idleText}}
@@ -917,7 +918,7 @@ function layerMatchesActive(record=state,layer,kind='prediction'){
  const active=activeRaceIdentity(record),identity=snapshotIdentity(layer,record,kind);return !!active.raceId&&identity.raceId===active.raceId&&identity.organization===active.organization;
 }
 function activeRaceContext(record=state){const identity=activeRaceIdentity(record),hasPrediction=layerMatchesActive(record,record?.predictionSnapshot,'prediction'),hasResult=hasPrediction&&layerMatchesActive(record,record?.resultSnapshot,'result'),hasValidation=hasResult&&layerMatchesActive(record,record?.validationSnapshot,'validation');return {...identity,generation:activeRaceGeneration,hasPrediction,hasResult,hasValidation}}
-function beginActiveRaceTransition(mode,race=null){window.CHASS_WAVE_RESET?.();cancelCpsiDriveRead();cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料の対象を切り替えました。';cpsiFirstPreview=null;cpsiFirstFileGeneration++;if(typeof document!=='undefined')renderCpsiFirstPreview();activeRaceGeneration++;lastRaceFetchAudit=null;predictionViewMode='original';jraNormalizedDraft=null;state=emptyRaceState(mode);if(race)state.race={...state.race,...cloneData(race),raceType:mode,category:mode==='JRA'?'中央競馬':'地方競馬'};clearValidationTransient(state);renderRaceFetchDiagnostics(null);return state}
+function beginActiveRaceTransition(mode,race=null){waveInputSourceRoot=null;window.CHASS_WAVE_RESET?.();cancelCpsiDriveRead();cpsiSourceRoot=null;cpsiSourceGeneration++;if($('cpsiSourceStatus'))$('cpsiSourceStatus').textContent='元資料の対象を切り替えました。';cpsiFirstPreview=null;cpsiFirstFileGeneration++;if(typeof document!=='undefined')renderCpsiFirstPreview();activeRaceGeneration++;lastRaceFetchAudit=null;predictionViewMode='original';jraNormalizedDraft=null;state=emptyRaceState(mode);if(race)state.race={...state.race,...cloneData(race),raceType:mode,category:mode==='JRA'?'中央競馬':'地方競馬'};clearValidationTransient(state);renderRaceFetchDiagnostics(null);return state}
 function activeRequestMatches(request){const active=activeRaceIdentity();return request?.generation===activeRaceGeneration&&request?.raceId===active.raceId&&request?.organization===active.organization}
 function restoreSavedRace(record,expected=null){const next=cloneData(record||emptyRaceState()),identity=activeRaceIdentity(next);if(expected&&(identity.raceId!==expected.raceId||identity.organization!==expected.organization))return emptyRaceState(expected.organization||'NAR');const unidentifiedLegacy=!identity.raceId&&!expected,resultValid=unidentifiedLegacy?!!next.resultSnapshot:layerMatchesActive(next,next.resultSnapshot,'result'),validationValid=resultValid&&(unidentifiedLegacy?!!next.validationSnapshot:layerMatchesActive(next,next.validationSnapshot,'validation'));if(!resultValid){next.result=null;next.resultSnapshot=null;next.actualTimes={};next.resultStatus='waiting';next.validationCompleted=false;next.validated=false}else next.actualTimes=next.resultSnapshot?.actualTimes||next.result?.actualTimes||{};if(!validationValid){next.validationSnapshot=null;next.validationCompleted=false;next.validated=false}if(next.predictionSnapshot?.horses?.length)next.horses=restoredHorseView(next);return next}
 
