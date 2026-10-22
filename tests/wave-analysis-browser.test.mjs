@@ -88,7 +88,11 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  const now=Date.now(),date=new Date(now+9*3600000).toISOString().slice(0,10),at=new Date(now-10000).toISOString(),freeze=new Date(now-5000).toISOString(),post=new Date(now+3600000).toISOString(),id=date+'|浦和|1';
  const meta={organizer:'NAR',raceId:id,runId:'BROWSER_RUN',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt:at,authorityRef:'INDEX'};
  const root={race:{raceDate:date,track:'浦和',raceNo:1,raceType:'NAR',surface:'ダート',waveEligibility:'NAR_FLAT',metricInputFreeze:{runId:'BROWSER_RUN',inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',marketSnapshotId:'MARKET',freezeAt:freeze,postAt:post},originalEarlyMarket:{...meta,snapshotId:'MARKET',authorityRef:'MARKET_AUTH',sourceRef:'browser-fixture',sourceClass:'PREDICTED_ODDS',horses:[1,2,3].map(n=>({horseNo:n,popularity:n,odds:n+1}))},waveEvidence:{...meta,snapshotId:'EV',indexSnapshotId:'INDEX',marketSnapshotId:'MARKET',indexAuthorityRef:'INDEX',favoriteHighestIndexRank:1,multiClusterCount:0,clusterAuthorityRef:'CL',marketGapCount:0,marketGapAuthorityRef:'MG'}},horses:[1,2,3].map(n=>({horseNo:n,horseName:'馬'+n,canonicalHorseKey:'NAR:'+n,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:80-n,baseline5:60-n,current:null,prev:50-n,distance:40-n,course:30-n},win:33,valueMark:'💎',abilityMark:'◎'}))};
- const before=JSON.stringify(window.CHASS_TEST.getState());window.CHASS_WAVE_INPUT=()=>root;
+ root.predictionSnapshot={createdAt:freeze,race:structuredClone(root.race),horses:structuredClone(root.horses)};
+ window.CHASS_TEST.setState(root);
+ const before=JSON.stringify(window.CHASS_TEST.getState());
+ // Exercise the real app source getter, with an already saved prediction.
+ if(!window.CHASS_WAVE_INPUT())throw Error('saved prediction incorrectly blocks read-only Wave input');
  document.getElementById('waveAnalyze').click();
  const until=Date.now()+8000;while(!document.getElementById('waveAnalysisStatus').dataset.artifactKey&&Date.now()<until)await new Promise(r=>setTimeout(r,30));
  const key=document.getElementById('waveAnalysisStatus').dataset.artifactKey;

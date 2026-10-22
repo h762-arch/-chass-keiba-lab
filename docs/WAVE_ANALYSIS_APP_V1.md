@@ -11,9 +11,10 @@ as a legacy research score; it is not used as a Haran fallback.
 ## Use
 
 Choose **事前入力・分析JSONを読み込む**, supplying `{race,horses}` or
-`{input:{race,horses},priors:[...]}`. The current-input button uses an unfrozen
-app input or loaded CPSI source only. A frozen prediction is not reconstructed
-as a new PRE input. Missing prerequisite metadata is rejected, not invented.
+`{input:{race,horses},priors:[...]}`. The current-input button reads a detached copy of the current source, even
+when a prediction is already saved. Full loaded input is retained separately
+from CPSI's market-blind source projection. This never overwrites EARLY or
+reconstructs a historical PRE; the existing real-clock/source guards still apply. Missing prerequisite metadata is rejected, not invented.
 The input uses the existing `race.metricInputFreeze`, `originalEarlyMarket`,
 `waveEvidence`, `narWaveScMc`, canonical horse keys and index snapshot contract.
 Population must explicitly declare `NAR_FLAT` or `JRA_STANDARD_INDEX`.
@@ -80,3 +81,14 @@ claim that the proposed server API/schema has been fully implemented.
 Tests exercise circuit isolation, all six modes, invalid markets/metadata/POST,
 unknown priors, no source mutation, hash/recompute/tamper/idempotency, public
 asset closure and a 390px real-browser analyze/save/restore/export interaction.
+
+## Current-input connection repair
+
+The first UI blocked every saved prediction before the engine ran. Its browser
+smoke substituted CHASS_WAVE_INPUT, so it missed that actual app integration.
+The repair removes that unconditional block and tests the real getter with a
+saved prediction. It preserves the original full imported source before CPSI's
+market-blind projection, rather than inventing lost Wave input fields.
+Missing Run/Freeze/market/identity data still cannot produce a canonical score;
+Japanese error guidance now distinguishes those cases from the UI connection bug.
+No dates, IDs, market data or source authentication are fabricated by this repair.

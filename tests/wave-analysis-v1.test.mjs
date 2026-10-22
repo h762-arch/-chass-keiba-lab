@@ -65,3 +65,32 @@ test('batch isolates rejected race and caps input without forecast writes',async
  assert.ok(rows[0].artifact);assert.equal(rows[1].artifact,null);assert.match(rows[1].error,/POST_RESULT/);
  await assert.rejects(createWaveBatch(Array(25).fill(fixture()),{now}),/COUNT_INVALID/);
 });
+
+// App source integration: do not replace the getter under test.
+async function appSourceHarness(){
+ const vm=await import('node:vm'),{readFile}=await import('node:fs/promises');
+ const window={__CHASS_TEST__:true,CHASS_CPSI_SOURCE_RECOVERY:{sourceInputFromRoot:r=>r,sourceRootFromInput:r=>({race:{raceDate:r.race.raceDate},horses:r.horses})}};
+ const context=vm.createContext({window,console,Date,JSON,Math,Number,String,Array,Object,Map,Set,RegExp,parseFloat,document:{getElementById:()=>null},localStorage:{getItem:()=>null,setItem(){throw Error('unexpected write');}}});
+ vm.runInContext(await readFile(new URL('../app.js',import.meta.url),'utf8'),context);
+ return {window,app:window.CHASS_TEST};
+}
+test('real current-input getter accepts a saved prediction and returns an isolated copy',async()=>{
+ const {window,app}=await appSourceHarness(),f=fixture();f.predictionSnapshot={createdAt:f.race.metricInputFreeze.freezeAt,horses:structuredClone(f.horses),race:structuredClone(f.race)};app.setState(f);
+ const before=JSON.stringify(f),input=window.CHASS_WAVE_INPUT();assert.ok(input);assert.equal(calc(input).operational.mode,'FULL_CANONICAL');input.horses[0].canonicalIndex.peak=999;assert.equal(JSON.stringify(app.getState()),before);
+});
+test('CPSI preview retains full imported Wave source before market-blind projection',async()=>{
+ const {window,app}=await appSourceHarness(),f=fixture();app.previewCpsiFirst(f);
+ const input=window.CHASS_WAVE_INPUT();assert.ok(input.race.originalEarlyMarket);assert.ok(input.race.waveEvidence);assert.equal(calc(input).status,'ANALYSIS_TERMINAL');
+ assert.equal(JSON.stringify(input),JSON.stringify(f));
+});
+test('saved legacy forecast without freeze is diagnosed, never assigned invented Run/time',async()=>{
+ const {window,app}=await appSourceHarness(),f=fixture();delete f.race.metricInputFreeze;f.predictionSnapshot={createdAt:'2026-10-22T09:50:00+09:00'};app.setState(f);
+ const input=window.CHASS_WAVE_INPUT();assert.equal(input.race.metricInputFreeze,undefined);assert.equal(calc(input).reasons[0],'INPUT_FREEZE_ID_MISSING');
+});
+test('saved result is still rejected when the current-input button reads a saved forecast',async()=>{
+ const {window,app}=await appSourceHarness(),f=fixture();f.predictionSnapshot={};f.result={finishOrder:[1,2,3]};app.setState(f);assert.equal(calc(window.CHASS_WAVE_INPUT()).reasons[0],'POST_RESULT_FIELD_FORBIDDEN');
+});
+test('missing freeze and post-start errors have specific actionable Japanese guidance',async()=>{
+ const {waveFailureMessage}=await import('../src/prediction/wave-analysis-ui-v1.mjs');
+ assert.match(waveFailureMessage('INPUT_FREEZE_ID_MISSING'),/取得・固定情報/);assert.match(waveFailureMessage('CUTOFF_OR_PRESTART_INVALID'),/発走後/);assert.match(waveFailureMessage('POST_RESULT_FIELD_FORBIDDEN'),/保存済み分析/);
+});
