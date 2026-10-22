@@ -216,7 +216,8 @@ async function loadDailyAnalysis(){
   const data=await response.json();if(generation!==dailyAnalysisGeneration)return;
   if(!response.ok||data.ok!==true||data.date!==date||!Array.isArray(data.rows)||data.rows.length>192)throw Error('DAILY_READ_FAILED');
   const labels={COMPLETE:'登録入力の研究レビュー完了',PARTIAL:'一部計算・不足あり',HOLD:'入力回復待ち',RUNNING:'処理中',NOT_RUN:'定期処理の記録なし'};
-  status.textContent=(labels[data.status]||'確認待ち')+'｜当日全開催の網羅・画像自動読取は未接続。正式EARLY・Signalは変更しません。';
+  const image=data.summary?.imageIntake;
+  status.textContent=(labels[data.status]||'確認待ち')+'｜'+(image?`画像OCR ${image.readbackVerifiedCount}/${image.expectedRaceCount}レース確認。`:'画像自動読取は未接続。')+'当日全開催の網羅は未確認。正式EARLY・Signalは変更しません。';
   status.textContent+=' Drive保存：'+({PREVIOUSLY_VERIFIED:'保存・読戻し確認履歴あり（'+data.driveArchive?.verifiedAt+'）',PENDING:'保存確認待ち',HOLD:'保存確認不可',DISABLED:'未有効化'}[data.driveArchive?.status]||'未確認')+'。';
   if(data.summary?.issues?.length)status.textContent+=' 不足・失敗：'+data.summary.issues.map(x=>(x.raceId?x.raceId+' ':'')+x.reason).join(' / ');
   for(const row of data.rows){
@@ -239,6 +240,20 @@ function installDailyAnalysisUi(){
  if(!$('dailyAnalysisRefresh'))return;
  $('dailyAnalysisDate').value=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
  $('dailyAnalysisRefresh').onclick=loadDailyAnalysis;
+ if($('dailyAnalysisSetup'))$('dailyAnalysisSetup').onclick=async()=>{
+  const generation=++dailyAnalysisGeneration,status=$('dailyAnalysisStatus'),out=$('dailyAnalysisOutput');out.replaceChildren();
+  const entered=$('cpsiDriveReaderKey')?.value||'';if(entered){cpsiDriveReaderToken=entered;$('cpsiDriveReaderKey').value='';}
+  if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを入力してから確認してください。';return;}
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);status.textContent='接続設定を確認中…';
+  try{
+   const response=await fetch('/api/chass/v1/research/daily/setup',{headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},credentials:'same-origin',cache:'no-store',signal:controller.signal}),data=await response.json();
+   if(generation!==dailyAnalysisGeneration)return;
+   if(!response.ok||data.ok!==true||!Array.isArray(data.missing)||data.missing.length>20)throw Error();
+   status.textContent=data.missing.length?'未設定・未確認：'+data.missing.map(c=>c.label).join(' / '):'必要な設定と保存テーブルはあります。';
+   status.textContent+=' 設定の有無の確認です。実画像の読取精度・Googleへの保存成功は別途確認が必要です。';
+  }catch{if(generation===dailyAnalysisGeneration)status.textContent='接続設定を確認できません。接続キーとアプリの反映状態を確認してください。';}
+  finally{clearTimeout(timer);}
+ };
  $('dailyAnalysisDate').addEventListener('change',loadDailyAnalysis);
  $('cpsiDriveReaderKey')?.addEventListener('change',loadDailyAnalysis);
 }
