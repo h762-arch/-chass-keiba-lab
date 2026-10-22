@@ -200,6 +200,47 @@ async function retryAutoResultFromUi(id){
  catch{autoResultActionMessage=`${id}：確認処理に失敗しました。保存状態と取得診断を確認してください。`;}
  renderAutoResultQueue();
 }
+// Daily results are authenticated read-only views of separate research records.
+let dailyAnalysisGeneration=0;
+async function loadDailyAnalysis(){
+ const status=$('dailyAnalysisStatus'),out=$('dailyAnalysisOutput');if(!status||!out)return;
+ const generation=++dailyAnalysisGeneration,date=$('dailyAnalysisDate')?.value;
+ out.replaceChildren();
+ const entered=$('cpsiDriveReaderKey')?.value||'';
+ if(entered){cpsiDriveReaderToken=entered;$('cpsiDriveReaderKey').value='';}
+ if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを一度入力すると、保存済み日次分析を表示できます。';return;}
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+ status.textContent='保存済み日次分析を読込中…';out.replaceChildren();
+ try{
+  const response=await fetch('/api/chass/v1/research/daily?date='+encodeURIComponent(date),{headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},credentials:'same-origin',cache:'no-store',signal:controller.signal});
+  const data=await response.json();if(generation!==dailyAnalysisGeneration)return;
+  if(!response.ok||data.ok!==true||data.date!==date||!Array.isArray(data.rows)||data.rows.length>192)throw Error('DAILY_READ_FAILED');
+  const labels={COMPLETE:'登録入力の研究レビュー完了',PARTIAL:'一部計算・不足あり',HOLD:'入力回復待ち',RUNNING:'処理中',NOT_RUN:'定期処理の記録なし'};
+  status.textContent=(labels[data.status]||'確認待ち')+'｜当日全開催の網羅・画像自動読取は未接続。正式EARLY・Signalは変更しません。';
+  if(data.summary?.issues?.length)status.textContent+=' 不足・失敗：'+data.summary.issues.map(x=>(x.raceId?x.raceId+' ':'')+x.reason).join(' / ');
+  for(const row of data.rows){
+   const box=document.createElement('article'),title=document.createElement('h3');title.textContent=row.raceId;box.append(title);
+   const r=row.result||{},lines=[
+    'CPSI：'+(r.cpsi?.cpsi?`${r.cpsi.cpsi.numericMaterializedCount}/${r.cpsi.cpsi.activeRunnerCount}頭`:'保留 '+(r.reason||r.cpsi?.reasons?.join(' / ')||'')),
+    '1番人気：'+(r.favorite?.review?.label||'保留 '+(r.favorite?.reason||''))+'｜'+({PREDICTED_ODDS:'予想人気',REAL_PRE_ODDS:'事前実人気'}[r.favorite?.sourceClass]||'市場未確認')+'（校正済み信頼確率は未実装）',
+    '6番人気以下：'+(r.longshots?.rows?`${r.longshots.rows.length}頭の記録`:'対象未確認'),
+    '波乱度：'+(r.wave?.operational?.score!=null?`${r.wave.operational.score}/100 ${r.wave.operational.mode}`:'保留 '+(r.wave?.reason||r.wave?.reasons?.join(' / ')||''))
+   ];
+   for(const line of lines){const p=document.createElement('p');p.textContent=line;box.append(p);}
+   for(const h of r.longshots?.rows||[]){const p=document.createElement('p');p.textContent=`${h.horseNo}番｜人気 ${h.popularity??'未確認'}｜CPSI ${h.cpsi??'NA'}｜${h.diamondCandidate?'研究候補 '+h.diamondCandidate:'保留 '+(h.reason||'')}`;box.append(p);}
+   if(r.cpsi?.cpsi?.rows){const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='CPSI全頭を表示';details.append(summary);for(const h of r.cpsi.cpsi.rows){const p=document.createElement('p');p.textContent=`${h.horseNo}番｜CPSI ${h.cpsiMainCompat??'NA'}｜順位 ${h.rank??'—'}｜Core ${h.coreUsableCount}/3`;details.append(p);}box.append(details);}
+   out.append(box);
+  }
+ }catch{if(generation===dailyAnalysisGeneration){out.replaceChildren();status.textContent='日次分析を取得できません。接続キー・サーバーの有効化・保存テーブルを確認してください。';}}
+ finally{clearTimeout(timer);}
+}
+function installDailyAnalysisUi(){
+ if(!$('dailyAnalysisRefresh'))return;
+ $('dailyAnalysisDate').value=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+ $('dailyAnalysisRefresh').onclick=loadDailyAnalysis;
+ $('dailyAnalysisDate').addEventListener('change',loadDailyAnalysis);
+ $('cpsiDriveReaderKey')?.addEventListener('change',loadDailyAnalysis);
+}
 // Separate, non-persistent CPSI preview. It never creates or updates an EARLY Snapshot.
 window.CHASS_WAVE_INPUT=()=>{
  // Reading the current source for a separate research artifact does not mutate EARLY.
@@ -2975,11 +3016,13 @@ function migrateLegacy(){
 }
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
+   installDailyAnalysisUi,loadDailyAnalysis,
    buildAbilityRoot,snapshotRace,predictionHorse,APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,calculateCpsiFirst,previewCpsiFirst,runCpsiSourceAction,loadCpsiFromDrive,runAutoCpsiRead,scheduleAutoCpsiRead,installCpsiAutoControls,cpsiDriveSelection,cancelCpsiDriveRead,importCpsiFirstFile,renderCpsiFirstPreview,getCpsiFirstPreview(){return cloneData(cpsiFirstPreview)},resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    historicalRecord,buildNarEarlyResearchRecord,acquireNarEarlyResearchRecord,normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,PREODDS_POLICY_VERSION,preOddsFrozen,preOddsStats,preOddsStamp,schedulePreOddsFallback,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
  };
  return;
 }
+installDailyAnalysisUi();
 initAutoRaceControls();
 jraMeetingSelector=window.CHASS_JRA_MEETING?.create({isActive:()=>raceTypeOf(state)==='JRA',getGeneration:()=>activeRaceGeneration,onSelection:()=>{ensureJraRaceSelectionState({renderNow:true});$('jraRaceNo')?.dispatchEvent(new Event('input',{bubbles:true}));jraRaceClient?.selectionChanged();jraOddsClient?.cancel();jraResultClient?.cancel();}});
 jraRaceClient=window.CHASS_JRA_RACE_CLIENT?.create({isActive:()=>raceTypeOf(state)==='JRA',getSelection:()=>({date:$('jraDate')?.value||'',track:$('jraCourse')?.value||'',race:Number($('jraRaceNo')?.value)}),getGeneration:()=>activeRaceGeneration,commit:commitJraOfficial});
