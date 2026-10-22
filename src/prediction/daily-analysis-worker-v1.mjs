@@ -1,11 +1,13 @@
 import {readDailyCpsiDriveInputs,cpsiDriveReaderAuthorized} from './cpsi-drive-reader-v1.mjs';
 import {createDailyRaceArtifact,verifyDailyRaceArtifact,jstDate} from './daily-analysis-v1.mjs';
 import {stableSourceJson} from './cpsi-source-recovery-v1.mjs';
+import {dailyReadiness} from './daily-readiness-v1.mjs';
 export const DAILY_PATH='/api/chass/v1/research/daily';
+export const DAILY_SETUP_PATH=DAILY_PATH+'/setup';
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'private, no-store','vary':'Authorization, Origin','x-content-type-options':'nosniff'}});
 const safeDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(s||'')&&Number.isFinite(Date.parse(s+'T00:00:00Z'))&&new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const jobId=date=>'DAILY_0900_JST:'+date;
-const safeCode=e=>/^(DRIVE|DAILY|INPUT|SOURCE|CUTOFF|POST|INDEX|CANONICAL)_[A-Z0-9_]{1,100}$/.test(e?.code||e?.message||'')?(e.code||e.message):'DAILY_PROCESS_FAILED';
+const safeCode=e=>/^(IMAGE|DRIVE|DAILY|INPUT|SOURCE|CUTOFF|POST|INDEX|CANONICAL)_[A-Z0-9_]{1,100}$/.test(e?.code||e?.message||'')?(e.code||e.message):'DAILY_PROCESS_FAILED';
 export function dailyScheduleDue(scheduledTime,now){
  const at=new Date(scheduledTime+9*3600000);
  return Number.isFinite(scheduledTime)&&Number.isFinite(now)&&at.getUTCHours()===9&&at.getUTCMinutes()===0&&now>=scheduledTime&&now-scheduledTime<=5*60000;
@@ -22,6 +24,7 @@ export async function runDailyAnalysis(env={},options={}){
  const issues=[],counts={inputCount:0,savedCount:0,completeCount:0,partialCount:0,heldCount:0};
  try{
   const rows=await (options.readInputs||readDailyCpsiDriveInputs)(env,{date,clock});
+  if(options.intakeReport)for(const issue of (options.intakeReport.issues||[]).slice(0,192))issues.push({...(typeof issue.raceId==='string'?{raceId:issue.raceId}:{}),reason:safeCode({code:issue.reason})});
   if(!Array.isArray(rows)||rows.length>192)throw Error('DAILY_INPUT_COUNT_INVALID');
   counts.inputCount=rows.length;
   if(!rows.length)issues.push({reason:'DAILY_NO_REGISTERED_INPUTS'});
@@ -51,15 +54,17 @@ export async function runDailyAnalysis(env={},options={}){
   }
  }catch(e){issues.push({reason:safeCode(e)});}
  const status=counts.completeCount>0&&counts.partialCount===0&&counts.heldCount===0&&issues.length===0?'COMPLETE':counts.savedCount?'PARTIAL':'HOLD';
- const summary={...counts,issues,inputScope:'REGISTERED_DRIVE_FEEDS_ONLY',allScheduledRacesConfirmed:false,imageOcrConnected:false,driveOutputSync:false,researchOnly:true,formalKpiEligible:false};
+ const imageIntake=options.intakeReport?{status:options.intakeReport.status,scope:options.intakeReport.scope,expectedRaceCount:options.intakeReport.expectedRaceCount||0,imageFileCount:options.intakeReport.imageFileCount||0,readbackVerifiedCount:options.intakeReport.readbackVerifiedCount||0,imageOcrAttempted:options.intakeReport.imageOcrAttempted===true}:null;
+ const summary={...counts,issues,inputScope:imageIntake?'REGISTERED_DRIVE_FEEDS_AND_NAR_IMAGE_FOLDERS':'REGISTERED_DRIVE_FEEDS_ONLY',allScheduledRacesConfirmed:false,imageOcrConnected:!!imageIntake?.readbackVerifiedCount,...(imageIntake?{imageIntake}:{}),driveOutputSync:false,researchOnly:true,formalKpiEligible:false};
  await db.prepare('UPDATE chass_daily_analysis_jobs SET completed_at=?,status=?,summary_json=? WHERE job_id=? AND status=?').bind(new Date(clock()).toISOString(),status,JSON.stringify(summary),id,'RUNNING').run();
  const readback=await db.prepare('SELECT status,summary_json FROM chass_daily_analysis_jobs WHERE job_id=?').bind(id).first();
  if(readback?.status!==status||readback.summary_json!==JSON.stringify(summary))throw Error('DAILY_JOB_READBACK_MISMATCH');
  return {status,jobId:id,...summary};
 }
 export async function handleDailyAnalysisRequest(request,env={}){
- const u=new URL(request.url);if(u.pathname!==DAILY_PATH)return null;
+ const u=new URL(request.url);if(![DAILY_PATH,DAILY_SETUP_PATH].includes(u.pathname))return null;
  if(request.method!=='GET')return json({ok:false,code:'DAILY_METHOD_NOT_ALLOWED'},405);
+ if(u.pathname===DAILY_SETUP_PATH){try{if(!await cpsiDriveReaderAuthorized(request,env))return json({ok:false,code:'DAILY_UNAUTHORIZED'},401);if(u.search) return json({ok:false,code:'DAILY_SELECTION_INVALID'},400);return json({ok:true,...await dailyReadiness(env)});}catch{return json({ok:false,code:'DAILY_SETUP_READ_FAILED'},503);}}
  if(env.ENABLE_DAILY_ANALYSIS_V1!=='true')return json({ok:false,code:'DAILY_DISABLED'},503);
  try{
   if(!await cpsiDriveReaderAuthorized(request,env))return json({ok:false,code:'DAILY_UNAUTHORIZED'},401);

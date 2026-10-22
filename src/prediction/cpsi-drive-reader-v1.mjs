@@ -140,6 +140,12 @@ async function readSource(source,selection,ctx){
  }
  return artifacts;
 }
+/** Server-only shared read session. Scope is fixed to drive.readonly. */
+export async function createCpsiDriveReadSession(env,{fetchImpl=fetch,signal,clock=Date.now}={}){
+ if(env.ENABLE_CPSI_DRIVE_READ!=='true')throw Error('DRIVE_NOT_CONFIGURED');
+ const ctx={fetchImpl,signal,now:clock(),clock};
+ return {...ctx,token:await serviceAccessToken(env.CHASS_CPSI_DRIVE_SERVICE_ACCOUNT_JSON,ctx)};
+}
 /** Server-only day read. Retain full PRE input; the CPSI artifact itself is market-blind. */
 export async function readDailyCpsiDriveInputs(env={},options={}){
  if(env.ENABLE_CPSI_DRIVE_READ!=='true')throw Error('DRIVE_NOT_CONFIGURED');

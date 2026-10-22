@@ -39,8 +39,9 @@ Baseline main: cd5c4ad7e5b5736f8c757d1a6d60432059ec9966.
 This is NOT the complete image-to-app daily operation requested by the user.
 Do not enable it and describe the full automation as complete.
 
-1. Image OCR, ambiguous-cell review, symbol handling and image-to-identity
-   evidence generation are not connected. Saving PNGs alone does not feed it.
+1. A separately disabled strict NAR phone-image adapter is described in
+   DAILY_IMAGE_INTAKE_V1.md. Its live OCR accuracy and Google setup are not
+   verified. Saving arbitrary PNGs alone does not make an accepted input.
 2. Discovery of all scheduled races, automatic day roster and official market
    acquisition are not added. Scope is registered feeds, maximum 8 sources with
    24 inputs per source; do not claim complete nationwide JRA/NAR coverage.

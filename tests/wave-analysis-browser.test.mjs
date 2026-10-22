@@ -151,13 +151,16 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  window.fetch=async(url,options)=>{
   if(String(url).startsWith('/api/chass/v1/research/daily?')){
    dayCalls++;if(!options.headers.authorization.startsWith('Bearer '))throw Error('daily auth missing');
-   return Response.json({ok:true,date,status:'PARTIAL',driveArchive:{status:'PREVIOUSLY_VERIFIED',verifiedAt:'2026-10-23T00:01:00Z'},rows:[{raceId:id,result:{cpsi:window.CHASS_TEST.calculateCpsiFirst(root).result,favorite:{status:'HOLD',reason:'FAVORITE_SCENARIO_EVIDENCE_MISSING'},longshots:{rows:[{horseNo:6,popularity:6,cpsi:null,reason:'SCENARIO_MISSING'}]},wave:JSON.parse(localStorage.getItem(key)).body.result}}]});
+   return Response.json({ok:true,date,status:'PARTIAL',summary:{imageIntake:{readbackVerifiedCount:1,expectedRaceCount:12}},driveArchive:{status:'PREVIOUSLY_VERIFIED',verifiedAt:'2026-10-23T00:01:00Z'},rows:[{raceId:id,result:{cpsi:window.CHASS_TEST.calculateCpsiFirst(root).result,favorite:{status:'HOLD',reason:'FAVORITE_SCENARIO_EVIDENCE_MISSING'},longshots:{rows:[{horseNo:6,popularity:6,cpsi:null,reason:'SCENARIO_MISSING'}]},wave:JSON.parse(localStorage.getItem(key)).body.result}}]});
   }return realFetch(url,options);
  };
  await document.getElementById('dailyAnalysisRefresh').onclick();
  const day=document.getElementById('dailyAnalysisOutput').textContent;
  if(dayCalls!==1||!day.includes('CPSI')||!day.includes('1番人気')||!day.includes('6番人気以下')||!day.includes('波乱度')||!day.includes('6番｜人気 6'))throw Error('daily render missing');
  if(!document.getElementById('dailyAnalysisStatus').textContent.includes('保存・読戻し確認履歴あり'))throw Error('archive history missing');
+ if(!document.getElementById('dailyAnalysisStatus').textContent.includes('画像OCR 1/12'))throw Error('image coverage missing');
+ window.fetch=async(url,options)=>{if(String(url)==='/api/chass/v1/research/daily/setup'){if(!options.headers.authorization.startsWith('Bearer '))throw Error('setup auth missing');return Response.json({ok:true,missing:[{key:'SYNTHETIC',label:'Google Visionの接続設定'}]});}return realFetch(url,options);};
+ await document.getElementById('dailyAnalysisSetup').onclick();if(!document.getElementById('dailyAnalysisStatus').textContent.includes('Google Visionの接続設定'))throw Error('setup status missing');
  if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('daily view mutated EARLY');
  window.fetch=realFetch;
  finish(true,'NAR_ANALYZE_SAVE_RESTORE_EXPORT_FORECAST_UNCHANGED');
