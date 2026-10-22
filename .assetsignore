@@ -42,3 +42,6 @@ d1-schema.sql
 *.md
 *.txt
 JRA_*_SHA256.json
+
+!/src/prediction/wave-analysis-v1.mjs
+!/src/prediction/wave-analysis-ui-v1.mjs
