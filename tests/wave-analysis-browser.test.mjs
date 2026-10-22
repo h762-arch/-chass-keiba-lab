@@ -7,7 +7,28 @@ import {createServer} from 'node:net';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
+import vm from 'node:vm';
 const ROOT=fileURLToPath(new URL('..',import.meta.url));
+// Synthetic research fixture clock, scoped to this test page only. Keep
+// elapsed wall time for async polling, but never cross midnight by using
+// real current time + 1h for a race with today's JST date.
+const SMOKE_CLOCK=`
+const WallDate=Date,wallStarted=WallDate.now(),syntheticStart=WallDate.parse('2026-10-23T12:00:00+09:00');
+function SmokeDate(...args){if(!new.target)return new WallDate(SmokeDate.now()).toString();return args.length?new WallDate(...args):new WallDate(SmokeDate.now());}
+Object.setPrototypeOf(SmokeDate,WallDate);SmokeDate.prototype=WallDate.prototype;
+SmokeDate.now=()=>syntheticStart+WallDate.now()-wallStarted;
+globalThis.Date=SmokeDate;
+`;
+test('browser synthetic PRE clock stays date-consistent across actual JST midnight and keeps polling time moving',()=>{
+ for(const at of ['2026-10-22T23:59:59+09:00','2026-10-23T00:00:01+09:00']){
+  let wall=Date.parse(at);class WallDate extends Date{static now(){return wall;}}
+  const context=vm.createContext({Date:WallDate});vm.runInContext(SMOKE_CLOCK,context);
+  assert.equal(vm.runInContext('new Date().toISOString()',context),'2026-10-23T03:00:00.000Z');
+  wall+=2000;assert.equal(vm.runInContext('Date.now()',context),Date.parse('2026-10-23T12:00:02+09:00'));
+  const dates=vm.runInContext('[Date.now()-10000,Date.now()-5000,Date.now()+3600000].map(t=>new Date(t+9*3600000).toISOString().slice(0,10))',context);
+  assert.ok(dates.every(d=>d==='2026-10-23'));assert.equal(vm.runInContext("Date.parse('2026-10-23T00:00:00Z')",context),Date.parse('2026-10-23T00:00:00Z'));
+ }
+});
 async function freePort(){
   return await new Promise((resolve,reject)=>{
     const server=createServer();
@@ -80,6 +101,7 @@ async function browserDom(chrome,url,width=390){
 test('390px real browser analyzes NAR, saves, restores and exports without touching forecasts',{timeout:60000},async()=>{
  const port=await freePort(),name=`wave-ui-smoke-${process.pid}.html`,fixturePath=path.join(ROOT,name),index=await readFile(path.join(ROOT,'index.html'),'utf8');
  const probe=`<script>
+ ${SMOKE_CLOCK}
  window.__CHASS_TEST__=true;
  const finish=(ok,text)=>{document.documentElement.setAttribute('data-chass-browser-smoke',ok?'pass':'fail');document.documentElement.setAttribute('data-detail',text)};
  let started=false;const timer=setInterval(async()=>{
@@ -129,12 +151,13 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  window.fetch=async(url,options)=>{
   if(String(url).startsWith('/api/chass/v1/research/daily?')){
    dayCalls++;if(!options.headers.authorization.startsWith('Bearer '))throw Error('daily auth missing');
-   return Response.json({ok:true,date,status:'PARTIAL',rows:[{raceId:id,result:{cpsi:window.CHASS_TEST.calculateCpsiFirst(root).result,favorite:{status:'HOLD',reason:'FAVORITE_SCENARIO_EVIDENCE_MISSING'},longshots:{rows:[{horseNo:6,popularity:6,cpsi:null,reason:'SCENARIO_MISSING'}]},wave:JSON.parse(localStorage.getItem(key)).body.result}}]});
+   return Response.json({ok:true,date,status:'PARTIAL',driveArchive:{status:'PREVIOUSLY_VERIFIED',verifiedAt:'2026-10-23T00:01:00Z'},rows:[{raceId:id,result:{cpsi:window.CHASS_TEST.calculateCpsiFirst(root).result,favorite:{status:'HOLD',reason:'FAVORITE_SCENARIO_EVIDENCE_MISSING'},longshots:{rows:[{horseNo:6,popularity:6,cpsi:null,reason:'SCENARIO_MISSING'}]},wave:JSON.parse(localStorage.getItem(key)).body.result}}]});
   }return realFetch(url,options);
  };
  await document.getElementById('dailyAnalysisRefresh').onclick();
  const day=document.getElementById('dailyAnalysisOutput').textContent;
  if(dayCalls!==1||!day.includes('CPSI')||!day.includes('1番人気')||!day.includes('6番人気以下')||!day.includes('波乱度')||!day.includes('6番｜人気 6'))throw Error('daily render missing');
+ if(!document.getElementById('dailyAnalysisStatus').textContent.includes('保存・読戻し確認履歴あり'))throw Error('archive history missing');
  if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('daily view mutated EARLY');
  window.fetch=realFetch;
  finish(true,'NAR_ANALYZE_SAVE_RESTORE_EXPORT_FORECAST_UNCHANGED');

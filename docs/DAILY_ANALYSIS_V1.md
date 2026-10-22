@@ -48,8 +48,9 @@ Do not enable it and describe the full automation as complete.
    from screenshots. Missing evidence is HOLD, not automatically synthesized.
 4. No calibrated favorite win/top3 trust probability, provider authentication,
    full Role scorer, Formal KPI promotion or prediction-prompt rewrite.
-5. Output is isolated D1 research storage. Automatic Google Drive output archive
-   and reference-catalog publication are not connected.
+5. Output is isolated D1 research storage. A separately disabled Drive archive
+   adapter is described in DAILY_DRIVE_ARCHIVE_V1.md. Live OAuth, output sync
+   and reference-catalog publication have not been configured or verified.
 6. A claimed job that crashes stays RUNNING for operator inspection. There is
    no silent retry/replacement of the 09:00 record or automatic late promotion.
 7. Missing prior history is NOT_READ, never zero records or a fabricated 50.
