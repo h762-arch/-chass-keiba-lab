@@ -8,7 +8,7 @@
   "freshness": {
     "latestPredictionAt": "2026-10-22T05:21:26.337Z",
     "latestOddsAt": "2026-10-22T05:21:26.193Z",
-    "latestResultAt": "2026-10-22T05:03:30.163Z"
+    "latestResultAt": "2026-10-22T11:56:22.899Z"
   },
   "diagnostics": {
     "marketTextAvailable": true,
@@ -33,7 +33,7 @@
     "timestamps": {
       "predictionAt": "2026-10-22T05:21:26.337Z",
       "oddsAt": "2026-10-22T05:21:26.193Z",
-      "resultAt": null
+      "resultAt": "2026-10-22T09:30:21.087Z"
     },
     "horses": [
       {
