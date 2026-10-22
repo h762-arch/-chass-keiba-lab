@@ -88,6 +88,27 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  const now=Date.now(),date=new Date(now+9*3600000).toISOString().slice(0,10),at=new Date(now-10000).toISOString(),freeze=new Date(now-5000).toISOString(),post=new Date(now+3600000).toISOString(),id=date+'|浦和|1';
  const meta={organizer:'NAR',raceId:id,runId:'BROWSER_RUN',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt:at,authorityRef:'INDEX'};
  const root={race:{raceDate:date,track:'浦和',raceNo:1,raceType:'NAR',surface:'ダート',waveEligibility:'NAR_FLAT',metricInputFreeze:{runId:'BROWSER_RUN',inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',marketSnapshotId:'MARKET',freezeAt:freeze,postAt:post},originalEarlyMarket:{...meta,snapshotId:'MARKET',authorityRef:'MARKET_AUTH',sourceRef:'browser-fixture',sourceClass:'PREDICTED_ODDS',horses:[1,2,3].map(n=>({horseNo:n,popularity:n,odds:n+1}))},waveEvidence:{...meta,snapshotId:'EV',indexSnapshotId:'INDEX',marketSnapshotId:'MARKET',indexAuthorityRef:'INDEX',favoriteHighestIndexRank:1,multiClusterCount:0,clusterAuthorityRef:'CL',marketGapCount:0,marketGapAuthorityRef:'MG'}},horses:[1,2,3].map(n=>({horseNo:n,horseName:'馬'+n,canonicalHorseKey:'NAR:'+n,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:80-n,baseline5:60-n,current:null,prev:50-n,distance:40-n,course:30-n},win:33,valueMark:'💎',abilityMark:'◎'}))};
+ // Real auto UI event -> mocked network transport -> real IndexedDB readback and CPSI core.
+ window.CHASS_TEST.installCpsiAutoControls();
+ const source=window.CHASS_CPSI_SOURCE_RECOVERY;
+ const sourceArtifact=await source.createSourceArtifact(root,{sourceRef:'synthetic-browser-auto'});
+ const realFetch=window.fetch;let autoCalls=0;
+ window.fetch=async(url,options)=>{
+  if(String(url).startsWith('/api/cpsi/sources/drive?')){
+   autoCalls++;if(options.headers.authorization!=='Bearer SYNTHETIC_CPSI_READER_TOKEN_0123456789')throw Error('auto auth');
+   return Response.json({ok:true,status:'DRIVE_SOURCE_READY',organization:'NAR',raceId:id,format:source.BUNDLE_FORMAT,transportAuthenticated:true,sourceOriginAuthenticated:false,sources:[sourceArtifact]});
+  }return realFetch(url,options);
+ };
+ for(const [key,value] of Object.entries({raceMode:'NAR',autoRaceDate:date,autoTrack:'浦和',autoRaceNo:'1',cpsiDriveReaderKey:'SYNTHETIC_CPSI_READER_TOKEN_0123456789'})){const el=document.getElementById(key);if(el.tagName==='SELECT'&&![...el.options].some(o=>o.value===value))el.add(new Option(value,value));el.value=value;}
+ document.getElementById('cpsiDriveReaderKey').dispatchEvent(new Event('change'));
+ const autoUntil=Date.now()+6000;
+ while(!document.getElementById('cpsiDriveStatus').textContent.includes('端末読戻完了')&&Date.now()<autoUntil)await new Promise(r=>setTimeout(r,30));
+ if(autoCalls!==1||!window.CHASS_TEST.getCpsiFirstPreview()?.result?.cpsi)throw Error('auto CPSI:'+document.getElementById('cpsiDriveStatus').textContent);
+ if(document.getElementById('cpsiDriveReaderKey').value)throw Error('credential remained in form');
+ document.getElementById('cpsiAutoRead').checked=false;
+ document.getElementById('cpsiAutoRead').dispatchEvent(new Event('change'));
+ window.fetch=realFetch;
+ window.CHASS_TEST.previewCpsiFirst(root);
  root.predictionSnapshot={createdAt:freeze,race:structuredClone(root.race),horses:structuredClone(root.horses)};
  window.CHASS_TEST.setState(root);
  const before=JSON.stringify(window.CHASS_TEST.getState());

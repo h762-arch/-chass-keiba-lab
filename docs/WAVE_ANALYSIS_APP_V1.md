@@ -92,3 +92,30 @@ market-blind projection, rather than inventing lost Wave input fields.
 Missing Run/Freeze/market/identity data still cannot produce a canonical score;
 Japanese error guidance now distinguishes those cases from the UI connection bug.
 No dates, IDs, market data or source authentication are fabricated by this repair.
+
+
+## Automatic CPSI acquisition (selected race)
+
+The CPSI card enables automatic Drive acquisition by default. Enter the reader
+key once per open page; it is kept in memory, cleared from the password field,
+and never saved in localStorage or an artifact. Selection changes are debounced
+400ms. Each selected circuit/date/track/race is attempted once; ordinary renders
+do not poll a missing feed. Manual Drive read remains the explicit retry.
+A new key or selection permits another attempt. Disable the checkbox to cancel.
+The same existing GET authorization, PRE clock, identity, source hash,
+IndexedDB write/readback and CPSI engine checks apply. Old imported Runs cannot
+constrain an automatic read of a new selected feed. Stale responses cannot be
+saved/displayed. EARLY, signals, probabilities and D1 are not modified.
+
+This is foreground selected-race automation, not an overnight server scheduler
+or a new source Producer. Valid registered PRE material must already exist in
+Drive. Missing/ambiguous/auth-failed/expired sources retain their existing error
+and NA; no ID/time or numeric replacement is manufactured. CPSI recovery's
+market-blind projection does not make it a full Wave source, so automatic Wave
+calculation remains separate. No new provider scraping or cloud write is added.
+
+Validation includes the actual password-field change event and debounced auto
+path in the 390px browser, a synthetic authenticated Drive response, real
+IndexedDB source readback and actual CPSI computation. Live Google acquisition,
+provider source authentication and Worker rollout are not established by those
+tests.
