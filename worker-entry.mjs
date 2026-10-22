@@ -5,7 +5,7 @@ import {handleNarPrefetchSchedulerRequest,runNarTomorrowPrefetch} from './src/na
 import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summarizeNarTimeTheoryRace} from './src/nar/nar-time-theory.mjs';
 import {NAR_RACE_CONTEXT_POLICY_VERSION,classifyAbilityAvailability} from './src/nar/nar-race-context-policy.mjs';
 import {handleFavoriteRiskResearchRequest,runFavoriteRiskCollector} from './src/research/favorite-risk-snapshot.mjs';
-import {handleCpsiDriveRequest,CPSI_DRIVE_PATH} from './src/prediction/cpsi-drive-reader-v1.mjs';
+import {handleCpsiDriveRequest,CPSI_DRIVE_PATH,handleReaderSessionRequest} from './src/prediction/cpsi-drive-reader-v1.mjs';
 import {handleDailyAnalysisRequest,DAILY_PATH,DAILY_SETUP_PATH} from './src/prediction/daily-analysis-worker-v1.mjs';
 import {runDailyResearchCycle} from './src/prediction/daily-research-cycle-v1.mjs';
 
@@ -220,6 +220,7 @@ async function buildNarRaceContext(request,env,ctx){
 export default {
   async fetch(request,env,ctx){
     const u=new URL(request.url);
+    if(u.pathname==='/api/chass/v1/reader-session')return handleReaderSessionRequest(request,env);
     if(u.pathname===DAILY_PATH||u.pathname===DAILY_SETUP_PATH)return handleDailyAnalysisRequest(request,env);
     if(u.pathname===CPSI_DRIVE_PATH)return handleCpsiDriveRequest(request,env);
     if(u.pathname==='/api/chass/v1/research/favorite-risk'){

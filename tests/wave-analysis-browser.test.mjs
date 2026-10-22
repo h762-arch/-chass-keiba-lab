@@ -162,6 +162,32 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  window.fetch=async(url,options)=>{if(String(url)==='/api/chass/v1/research/daily/setup'){if(!options.headers.authorization.startsWith('Bearer '))throw Error('setup auth missing');return Response.json({ok:true,missing:[{key:'SYNTHETIC',label:'Google Visionの接続設定'}]});}return realFetch(url,options);};
  await document.getElementById('dailyAnalysisSetup').onclick();if(!document.getElementById('dailyAnalysisStatus').textContent.includes('Google Visionの接続設定'))throw Error('setup status missing');
  if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('daily view mutated EARLY');
+ // Exercise real phone controls with a synthetic same-origin session server.
+ let remembered=false,sessionPosts=0;
+ window.fetch=async(url,options)=>{
+  if(String(url)==='/api/chass/v1/reader-session'){
+   if(options.credentials!=='same-origin'||options.cache!=='no-store')throw Error('session request options');
+   if(options.method==='POST'){if(!options.headers.authorization?.startsWith('Bearer '))throw Error('remember missing key');remembered=true;sessionPosts++;}
+   if(options.method==='DELETE')remembered=false;
+   return Response.json({ok:true,connected:remembered});
+  }
+  if(String(url)==='/api/chass/v1/research/daily/setup'){
+   if(!remembered||options.headers.authorization)throw Error('cookie-only setup not used');
+   return Response.json({ok:true,missing:[]});
+  }
+  return realFetch(url,options);
+ };
+ document.getElementById('cpsiAutoRead').checked=false;
+ window.CHASS_TEST.installCpsiAutoControls();
+ document.getElementById('cpsiDriveReaderKey').value='SYNTHETIC_BROWSER_SESSION_TOKEN_'+ 'a'.repeat(32);
+ await document.getElementById('cpsiReaderRemember').onclick();
+ if(sessionPosts!==1||!document.getElementById('cpsiReaderSessionStatus').textContent.includes('保持中'))throw Error('remember UI failed');
+ if(document.getElementById('cpsiDriveReaderKey').value||window.CHASS_TEST.cpsiReaderHeaders().authorization)throw Error('raw token retained');
+ await document.getElementById('dailyAnalysisSetup').onclick();
+ if(!document.getElementById('dailyAnalysisStatus').textContent.includes('必要な設定と保存テーブルはあります'))throw Error('cookie daily setup failed');
+ await document.getElementById('cpsiReaderForget').onclick();
+ if(remembered||!document.getElementById('cpsiReaderSessionStatus').textContent.includes('解除しました'))throw Error('forget UI failed');
+ if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('session mutated EARLY');
  window.fetch=realFetch;
  finish(true,'NAR_ANALYZE_SAVE_RESTORE_EXPORT_FORECAST_UNCHANGED');
  }catch(e){finish(false,e.stack||e.message)}
