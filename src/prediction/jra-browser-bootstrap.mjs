@@ -1,3 +1,4 @@
+import {installWaveAnalysisUi} from './wave-analysis-ui-v1.mjs';
 import * as abilityCore from './jra-ability-core.mjs';
 import * as abilityResultProjector from './jra-ability-result-projector.mjs';
 import {evaluateWebCourseShadowFromSnapshot} from './course-asset-web-adapter-v1.mjs';
@@ -32,3 +33,5 @@ for(const src of scripts){
   document.body.append(element);
  });
 }
+
+installWaveAnalysisUi();
