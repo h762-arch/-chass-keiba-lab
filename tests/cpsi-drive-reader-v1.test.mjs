@@ -119,3 +119,40 @@ for(const status of [301,302,303,307,308])for(const stage of ['token','metadata'
  assert.equal(calls.length,stage==='token'?1:stage==='metadata'?2:3);assert.ok(calls.every(c=>!c.url.startsWith('https://foreign.example')));
  assert.doesNotMatch(JSON.stringify(x.data),/PRIVATE_|SYNTHETIC_GOOGLE_TOKEN|private_key|assertion/);assert.equal(x.data.sources,undefined);
 });
+
+
+test('auto CPSI uses verified Drive acquisition once per selection without prediction or secret persistence',async()=>{
+ const {data:payload}=await run();let calls=0;
+ const h=appClient({fetchImpl:async()=>{calls++;return Response.json(payload);}});
+ h.el('cpsiAutoRead').checked=true;
+ const before=JSON.stringify(h.app.getState());
+ await h.app.runAutoCpsiRead();await h.app.runAutoCpsiRead();
+ assert.equal(calls,1);assert.equal(h.writes.length,1);
+ assert.equal(h.app.getCpsiFirstPreview().result.cpsi.rows[0].cpsiMainCompat,80);
+ assert.equal(JSON.stringify(h.app.getState()),before);
+ assert.deepEqual(h.storageWrites,[]);assert.equal(h.el('cpsiDriveReaderKey').value,'');
+});
+test('auto CPSI disabled or missing key performs no request and explains the key requirement',async()=>{
+ let calls=0;const h=appClient({fetchImpl:async()=>{calls++;throw Error();}});
+ await h.app.runAutoCpsiRead();h.el('cpsiAutoRead').checked=true;h.el('cpsiDriveReaderKey').value='';
+ await h.app.runAutoCpsiRead();assert.equal(calls,0);assert.match(h.el('cpsiDriveStatus').textContent,/接続キーを一度/);
+});
+test('auto CPSI missing feed is not retried by repeated render triggers or reported as success',async()=>{
+ let calls=0;const h=appClient({fetchImpl:async()=>{calls++;return Response.json({ok:false,code:'DRIVE_SOURCE_NOT_FOUND'},{status:404});}});
+ h.el('cpsiAutoRead').checked=true;await h.app.runAutoCpsiRead();await h.app.runAutoCpsiRead();
+ assert.equal(calls,1);assert.equal(h.writes.length,0);assert.equal(h.app.getCpsiFirstPreview(),null);
+ assert.match(h.el('cpsiDriveStatus').textContent,/DRIVE_SOURCE_NOT_FOUND/);
+ h.el('autoRaceNo').value='2';await h.app.runAutoCpsiRead();assert.equal(calls,2);
+});
+test('auto CPSI refuses a stale selection response before source storage',async()=>{
+ let finish;const gate=new Promise(r=>finish=r),{data:payload}=await run();
+ const h=appClient({fetchImpl:async()=>{await gate;return Response.json(payload);}});
+ h.el('cpsiAutoRead').checked=true;const pending=h.app.runAutoCpsiRead();h.el('autoRaceNo').value='2';finish();await pending;
+ assert.equal(h.writes.length,0);assert.equal(h.app.getCpsiFirstPreview(),null);
+});
+test('auto CPSI reads new feed independently of an imported different-circuit Run',async()=>{
+ const {data:payload}=await run();const urls=[];
+ const h=appClient({fetchImpl:async url=>{urls.push(url);return Response.json(payload);}});
+ h.app.previewCpsiFirst(input('JRA'));h.el('cpsiAutoRead').checked=true;await h.app.runAutoCpsiRead();
+ assert.equal(h.app.getCpsiFirstPreview().organization,'NAR');assert.ok(!urls[0].includes('runId='));
+});
