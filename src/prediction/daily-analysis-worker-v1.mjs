@@ -4,7 +4,7 @@ import {stableSourceJson} from './cpsi-source-recovery-v1.mjs';
 import {dailyReadiness} from './daily-readiness-v1.mjs';
 export const DAILY_PATH='/api/chass/v1/research/daily';
 export const DAILY_SETUP_PATH=DAILY_PATH+'/setup';
-const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'private, no-store','vary':'Authorization, Origin','x-content-type-options':'nosniff'}});
+const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'private, no-store','vary':'Authorization, Cookie, Origin','x-content-type-options':'nosniff'}});
 const safeDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(s||'')&&Number.isFinite(Date.parse(s+'T00:00:00Z'))&&new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const jobId=date=>'DAILY_0900_JST:'+date;
 const safeCode=e=>/^(IMAGE|DRIVE|DAILY|INPUT|SOURCE|CUTOFF|POST|INDEX|CANONICAL)_[A-Z0-9_]{1,100}$/.test(e?.code||e?.message||'')?(e.code||e.message):'DAILY_PROCESS_FAILED';

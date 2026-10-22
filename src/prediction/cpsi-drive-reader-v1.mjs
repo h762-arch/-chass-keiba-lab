@@ -1,5 +1,7 @@
 /** Explicit opt-in, authenticated, read-only CPSI source transport. Server only. */
 import {BUNDLE_FORMAT,SOURCE_FORMAT,createSourceArtifact,verifySourceArtifact,sourceRootFromInput,sourceContextKey,recoverCpsiSources} from './cpsi-source-recovery-v1.mjs';
+import {readerSessionValid,handleReaderSessionRequest} from './reader-session-v1.mjs';
+export {handleReaderSessionRequest};
 export const CPSI_DRIVE_PATH='/api/cpsi/sources/drive';
 const OAUTH='https://oauth2.googleapis.com/token',DRIVE='https://www.googleapis.com/drive/v3/files/';
 const SCOPE='https://www.googleapis.com/auth/drive.readonly';
@@ -9,7 +11,7 @@ const error=(code,status=422)=>Object.assign(new Error(code),{code,status,[INTER
 const reject=(code,status)=>{throw error(code,status);};
 const response=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{
  'content-type':'application/json; charset=utf-8','cache-control':'private, no-store, max-age=0',
- 'pragma':'no-cache','vary':'Authorization, Origin','x-content-type-options':'nosniff','referrer-policy':'no-referrer'
+ 'pragma':'no-cache','vary':'Authorization, Cookie, Origin','x-content-type-options':'nosniff','referrer-policy':'no-referrer'
 }});
 const text=x=>typeof x==='string'&&x.trim()&&x.length<=256;
 const fileId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{10,160}$/.test(x);
@@ -177,7 +179,8 @@ export async function readDailyCpsiDriveInputs(env={},options={}){
 export async function cpsiDriveReaderAuthorized(request,env){
  const url=new URL(request.url),origin=request.headers.get('origin');
  if(origin&&origin!==url.origin||request.headers.get('sec-fetch-site')==='cross-site')return false;
- return bearerValid(request.headers.get('authorization'),env.CHASS_CPSI_DRIVE_READER_TOKEN);
+ if(request.headers.has('authorization'))return bearerValid(request.headers.get('authorization'),env.CHASS_CPSI_DRIVE_READER_TOKEN);
+ return readerSessionValid(request,env.CHASS_CPSI_DRIVE_READER_TOKEN);
 }
 export async function handleCpsiDriveRequest(request,env={},options={}){
  const url=new URL(request.url);if(url.pathname!==CPSI_DRIVE_PATH)return null;
@@ -188,7 +191,7 @@ export async function handleCpsiDriveRequest(request,env={},options={}){
  const timer=setTimeout(abort,Math.min(15000,options.timeoutMs??15000));
  try{
   const origin=request.headers.get('origin');if(origin&&origin!==url.origin||request.headers.get('sec-fetch-site')==='cross-site')reject('DRIVE_ORIGIN_FORBIDDEN',403);
-  if(!await bearerValid(request.headers.get('authorization'),env.CHASS_CPSI_DRIVE_READER_TOKEN))reject('DRIVE_READER_UNAUTHORIZED',401);
+  if(!await cpsiDriveReaderAuthorized(request,env))reject('DRIVE_READER_UNAUTHORIZED',401);
   const selection=parseDriveSelection(url),sources=parseDriveSources(env.CHASS_CPSI_DRIVE_SOURCES_JSON).filter(s=>s.organization===selection.organization);
   if(!sources.length)reject('DRIVE_SOURCE_NOT_FOUND',404);
   const clock=typeof options.now==='function'?options.now:()=>options.now??Date.now();

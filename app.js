@@ -4,7 +4,7 @@ let jraMeetingSelector=null,jraRaceClient=null,jraOddsClient=null,jraResultClien
 const APP_VERSION='10.0.1';
 let cpsiFirstPreview=null,cpsiFirstFileGeneration=0,waveInputSourceRoot=null;
 let cpsiSourceRoot=null,cpsiSourceGeneration=0,cpsiSourceBusy=false;
-let cpsiDriveReaderToken='',cpsiDriveController=null;
+let cpsiDriveReaderToken='',cpsiDriveController=null,cpsiReaderSession=false,cpsiSessionGeneration=0;
 let cpsiAutoTimer=null,cpsiAutoAttempt=null;
 // CHASS-JRA-AUTO-LOAD-v1.5.2
 if(typeof window!=='undefined'){
@@ -208,11 +208,11 @@ async function loadDailyAnalysis(){
  out.replaceChildren();
  const entered=$('cpsiDriveReaderKey')?.value||'';
  if(entered){cpsiDriveReaderToken=entered;$('cpsiDriveReaderKey').value='';}
- if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを一度入力すると、保存済み日次分析を表示できます。';return;}
+ if(!cpsiReaderSession&&!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを一度入力すると、保存済み日次分析を表示できます。';return;}
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
  status.textContent='保存済み日次分析を読込中…';out.replaceChildren();
  try{
-  const response=await fetch('/api/chass/v1/research/daily?date='+encodeURIComponent(date),{headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},credentials:'same-origin',cache:'no-store',signal:controller.signal});
+  const response=await fetch('/api/chass/v1/research/daily?date='+encodeURIComponent(date),{headers:cpsiReaderHeaders(),credentials:'same-origin',cache:'no-store',signal:controller.signal});
   const data=await response.json();if(generation!==dailyAnalysisGeneration)return;
   if(!response.ok||data.ok!==true||data.date!==date||!Array.isArray(data.rows)||data.rows.length>192)throw Error('DAILY_READ_FAILED');
   const labels={COMPLETE:'登録入力の研究レビュー完了',PARTIAL:'一部計算・不足あり',HOLD:'入力回復待ち',RUNNING:'処理中',NOT_RUN:'定期処理の記録なし'};
@@ -243,10 +243,10 @@ function installDailyAnalysisUi(){
  if($('dailyAnalysisSetup'))$('dailyAnalysisSetup').onclick=async()=>{
   const generation=++dailyAnalysisGeneration,status=$('dailyAnalysisStatus'),out=$('dailyAnalysisOutput');out.replaceChildren();
   const entered=$('cpsiDriveReaderKey')?.value||'';if(entered){cpsiDriveReaderToken=entered;$('cpsiDriveReaderKey').value='';}
-  if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを入力してから確認してください。';return;}
+  if(!cpsiReaderSession&&!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){status.textContent='CPSI欄のDrive接続キーを入力してから確認してください。';return;}
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);status.textContent='接続設定を確認中…';
   try{
-   const response=await fetch('/api/chass/v1/research/daily/setup',{headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},credentials:'same-origin',cache:'no-store',signal:controller.signal}),data=await response.json();
+   const response=await fetch('/api/chass/v1/research/daily/setup',{headers:cpsiReaderHeaders(),credentials:'same-origin',cache:'no-store',signal:controller.signal}),data=await response.json();
    if(generation!==dailyAnalysisGeneration)return;
    if(!response.ok||data.ok!==true||!Array.isArray(data.missing)||data.missing.length>20)throw Error();
    status.textContent=data.missing.length?'未設定・未確認：'+data.missing.map(c=>c.label).join(' / '):'必要な設定と保存テーブルはあります。';
@@ -355,7 +355,40 @@ function cpsiDriveKnownCode(code){return typeof code==='string'&&Object.prototyp
 function cpsiDriveMessage(code){return CPSI_DRIVE_MESSAGES[cpsiDriveKnownCode(code)||'DRIVE_CLIENT_UNKNOWN'];}
 // Auto acquisition uses the same authenticated, readback-verified PRE path.
 // One attempt per selected race; no polling, fabricated Freeze, or EARLY writes.
+function cpsiReaderHeaders(){return {...(cpsiDriveReaderToken?{authorization:'Bearer '+cpsiDriveReaderToken}:{}),accept:'application/json'};}
+function renderReaderSession(message){
+ const status=$('cpsiReaderSessionStatus');if(status)status.textContent=message||(cpsiReaderSession?'このブラウザの接続を保持中（最長30日）。':'接続は未保持です。キーを入力して「この端末で接続を保持」を押してください。');
+}
+async function readerSessionAction(method='GET'){
+ const generation=++cpsiSessionGeneration,controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+ try{
+  if(method==='POST'){
+   const entered=$('cpsiDriveReaderKey')?.value||'';if(entered)cpsiDriveReaderToken=entered;
+   if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';
+   if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken))throw Error('KEY_REQUIRED');
+  }
+  if(method==='DELETE'){clearTimeout(cpsiAutoTimer);cancelCpsiDriveRead();++dailyAnalysisGeneration;cpsiReaderSession=false;cpsiDriveReaderToken='';if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';}
+  const response=await fetch('/api/chass/v1/reader-session',{method,credentials:'same-origin',cache:'no-store',headers:method==='POST'?cpsiReaderHeaders():{accept:'application/json'},signal:controller.signal}),data=await response.json();
+  if(method==='POST'&&response.ok&&data.connected===true){const verify=await fetch('/api/chass/v1/reader-session',{method:'GET',credentials:'same-origin',cache:'no-store',headers:{accept:'application/json'},signal:controller.signal});const confirmed=await verify.json();if(!verify.ok||confirmed.ok!==true||confirmed.connected!==true)throw Error('COOKIE_NOT_RETAINED');}
+  if(generation!==cpsiSessionGeneration)return false;
+  if(!response.ok||data.ok!==true||typeof data.connected!=='boolean')throw Error('SESSION_FAILED');
+  cpsiReaderSession=data.connected;
+  if(method==='POST'&&!cpsiReaderSession)throw Error('SESSION_FAILED');
+  if(cpsiReaderSession){cpsiDriveReaderToken='';cpsiAutoAttempt=null;scheduleAutoCpsiRead();}
+  renderReaderSession(method==='DELETE'?'このブラウザの接続を解除しました。':undefined);
+  return cpsiReaderSession;
+ }catch{
+  if(generation===cpsiSessionGeneration)renderReaderSession(method==='DELETE'?'接続解除を確認できません。通信を確認して再度解除してください。':method==='GET'?'接続保持を確認できません。キー入力で接続できます。':'接続を保持できません。正しいキー・Cookieの許可・本番アプリURLを確認してください。');
+  return false;
+ }finally{clearTimeout(timer);}
+}
 function installCpsiAutoControls(){
+if($('cpsiReaderRemember')){
+ $('cpsiReaderRemember').onclick=()=>readerSessionAction('POST');
+ $('cpsiReaderForget').onclick=()=>readerSessionAction('DELETE');
+ readerSessionAction();
+ window.addEventListener('pageshow',event=>{if(event.persisted)readerSessionAction();});
+}
 if($('cpsiDriveLoad'))$('cpsiDriveLoad').onclick=()=>loadCpsiFromDrive();
 for(const id of ['raceMode','autoRaceDate','autoTrack','autoRaceNo','jraDate','jraCourse','jraRaceNo'])$(id)?.addEventListener('change',()=>{cancelCpsiDriveRead();cpsiAutoAttempt=null;scheduleAutoCpsiRead();});
 $('cpsiDriveReaderKey')?.addEventListener('change',scheduleAutoCpsiRead);
@@ -372,8 +405,8 @@ async function runAutoCpsiRead(){
  let selection;try{selection=cpsiDriveSelection();}catch{return null;}
  const entered=$('cpsiDriveReaderKey')?.value||'';
  if(entered){cpsiDriveReaderToken=entered;$('cpsiDriveReaderKey').value='';cpsiAutoAttempt=null;}
- if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){
-  if($('cpsiDriveStatus'))$('cpsiDriveStatus').textContent='自動計算待ち｜Drive接続キーを一度入力してください。この画面内だけで保持します。';
+ if(!cpsiReaderSession&&!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken)){
+  if($('cpsiDriveStatus'))$('cpsiDriveStatus').textContent='自動計算待ち｜Drive接続キーを一度入力してください。「この端末で接続を保持」で次回以降の入力を省けます。';
   return null;
  }
  const key=JSON.stringify(selection);
@@ -394,7 +427,7 @@ async function loadCpsiFromDrive({automatic=false}={}){
   selection=cpsiDriveSelection();cpsiAutoAttempt=JSON.stringify(selection);
   const entered=$('cpsiDriveReaderKey')?.value||'';if(entered)cpsiDriveReaderToken=entered;
   if($('cpsiDriveReaderKey'))$('cpsiDriveReaderKey').value='';
-  if(!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken))throw Error('DRIVE_READER_UNAUTHORIZED');
+  if(!cpsiReaderSession&&!/^[-A-Za-z0-9_]{32,256}$/.test(cpsiDriveReaderToken))throw Error('DRIVE_READER_UNAUTHORIZED');
   controller=new AbortController();cpsiDriveController=controller;timer=setTimeout(()=>controller.abort(),20000);
   phase='固定単位確認';
   let target=null;
@@ -403,7 +436,7 @@ async function loadCpsiFromDrive({automatic=false}={}){
   if(target)for(const k of ['runId','inputSnapshotId','indexSnapshotId'])params.set(k,target.race.metricInputFreeze[k]);
   message(`${selection.raceId}（${selection.organization}）のDrive元資料を取得中…`);
   phase='API通信';
-  const r=await fetch('/api/cpsi/sources/drive?'+params.toString(),{method:'GET',credentials:'same-origin',cache:'no-store',headers:{authorization:'Bearer '+cpsiDriveReaderToken,accept:'application/json'},signal:controller.signal});
+  const r=await fetch('/api/cpsi/sources/drive?'+params.toString(),{method:'GET',credentials:'same-origin',cache:'no-store',headers:cpsiReaderHeaders(),signal:controller.signal});
   if(!fresh()){message('対象が変更されたためDrive取得を中断しました。現在の選択で再取得できます。');return null;}
   httpStatus=Number.isInteger(r.status)&&r.status>=100&&r.status<=599?r.status:null;phase='API応答確認';
   const length=Number(r.headers.get('content-length'));if(length>2097152)throw Error('DRIVE_RESPONSE_INVALID');
@@ -3033,7 +3066,7 @@ function migrateLegacy(){
 if(typeof window!=='undefined'&&window.__CHASS_TEST__){
  window.CHASS_TEST={
    installDailyAnalysisUi,loadDailyAnalysis,
-   buildAbilityRoot,snapshotRace,predictionHorse,APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,calculateCpsiFirst,previewCpsiFirst,runCpsiSourceAction,loadCpsiFromDrive,runAutoCpsiRead,scheduleAutoCpsiRead,installCpsiAutoControls,cpsiDriveSelection,cancelCpsiDriveRead,importCpsiFirstFile,renderCpsiFirstPreview,getCpsiFirstPreview(){return cloneData(cpsiFirstPreview)},resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
+   buildAbilityRoot,snapshotRace,predictionHorse,APP_VERSION,BACKUP_SCHEMA_VERSION,dashboardKpiScope,dashboardBoundaryHtml,raceId,timeToSec,migrateSnapshotRecord,failureReasonsForRace,diagnosticsForRace,validationQuality,aggregateAdvanced,frozenHorses,resultTop3,isTop3,officialPlaceLimit,isOfficialPlace,wilsonInterval,resultHorseByNo,settledWinOdds,modelPerformance,stableStringify,snapshotFingerprint,cloudDescriptor,manifestMatches,researchContentFingerprint,stableRecordUpdatedAt,mergeCloudResearchRecord,restoreResearchFromCloud,refreshCloudResearchDataset,applyCloudResearchDataset,sealSnapshotIntegrity,verifySnapshotIntegrity,createResearchBackup,validateResearchBackup,mergeResearchBackup,initResearchStorage,initCloudResearch,syncRaceToCloud,syncAllResearchToCloud,fetchJsonSimple,evaluateLongshots,buildSignalSnapshot,applyFrozenSignalSnapshot,applyFrozenWarnings,resolveSignalSnapshot,warningScenarioFor,enforceSignalMarkExclusion,marketReadyForSignals,legacyValueCandidates,compareLongshotModels,axisGrade,distanceChangeAxis,transferLevelAxis,conditionProgressAxis,applyPredictionAxisReinforcement,predictionAxisEffectiveness,comparePredictionAxisModels,getResultDisplayState,predictionAvailability,normalizeResultFetchOutcome,postRaceFirstCheckAt,registerResultWaiting,nextResultCheckAt,resultQueueRetryPatch,resultQueueSummary,dueResultQueue,applyAutoFetchedResult,runAutoResultQueue,calculateCpsiFirst,previewCpsiFirst,runCpsiSourceAction,loadCpsiFromDrive,runAutoCpsiRead,scheduleAutoCpsiRead,installCpsiAutoControls,readerSessionAction,cpsiReaderHeaders,cpsiDriveSelection,cancelCpsiDriveRead,importCpsiFirstFile,renderCpsiFirstPreview,getCpsiFirstPreview(){return cloneData(cpsiFirstPreview)},resultFetchFeedback,resultQueueDetails,resultRetryAvailability,retryAutoResultFromUi,renderAutoResultDetails,diagnosticRows,volatilityLabel,volatilityRaceProfile,actualUpsetScore,volatilitySimilarity,volatilityHistoryBefore,calculateVolatilityIndex,volatilityCalibration,meetingSelectorResolution,transform,getStorageMode(){return researchStorageMode},getCloudState(){return {...cloudState,pending:cloudPending.size}},getCloudAudit(){return cloneData(cloudResearchAudit)},
    historicalRecord,buildNarEarlyResearchRecord,acquireNarEarlyResearchRecord,normalizeHorseStatus,horseStatusLabel,isEligibleHorse,applyScratchStatuses,buildScratchValidation,emptyRaceState,clearValidationTransient,restoreSavedRace,activeRaceIdentity,snapshotIdentity,layerMatchesActive,activeRaceContext,beginActiveRaceTransition,activeRequestMatches,resultFetchReadiness,historyDefaultState,migrateHistoryState,historyDateRange,historyMeetingPair,historyRequestMetrics,resetHistoryProgress,meetingEntryFresh,meetingEntriesForDate,selectorRaceNumbers,meetingSelectionValid,refreshMeetingSelector,getMeetingSelectorState(){return cloneData(meetingSelectorState)},setMeetingSelectorState(value){meetingSelectorState=cloneData(value)},raceTypeOf,marketSourceLabel,horseMarketText,horseRankGapText,horseShortComment,makeSnapshot,rankFinalFor,abilityMarks,reconcileMarketDerivedValues,setState(value){state=value},getState(){return state},getActiveRaceGeneration(){return activeRaceGeneration},saveRaceRecord,persistRecordIfChanged,PREODDS_POLICY_VERSION,preOddsFrozen,preOddsStats,preOddsStamp,schedulePreOddsFallback,applyMarketOdds,currentPublicApiUrl,currentPublicDayApiUrl,checkPublicApi,copyCurrentPublicApiUrl,copyCurrentPublicDayApiUrl,getStorageDiagnostics(){return {...storageDiagnostics}},resetStorageDiagnostics(){Object.keys(storageDiagnostics).forEach(key=>storageDiagnostics[key]=0)},getRaceCache(){return raceCache}
  };
  return;
