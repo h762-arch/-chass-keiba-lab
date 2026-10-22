@@ -5,12 +5,23 @@ import * as core from '../src/prediction/chass-cpsi-wave-core-v1.mjs';
 import assert from 'node:assert/strict';
 import {handleCpsiDriveRequest,parseDriveSelection,parseDriveSources,unpackSheetFeed,CPSI_DRIVE_PATH} from '../src/prediction/cpsi-drive-reader-v1.mjs';
 import * as source from '../src/prediction/cpsi-source-recovery-v1.mjs';
+import {readDailyCpsiDriveInputs} from '../src/prediction/cpsi-drive-reader-v1.mjs';
 import worker from '../worker-entry.mjs';
 const NOW=Date.parse('2026-10-21T08:00:00+09:00'),TOKEN='SYNTHETIC_CPSI_READER_TOKEN_0123456789',BASE='https://synthetic.example';
 const copy=x=>JSON.parse(JSON.stringify(x));
 const pair=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
 const pem='-----BEGIN PRIVATE KEY-----\n'+Buffer.from(await crypto.subtle.exportKey('pkcs8',pair.privateKey)).toString('base64')+'\n-----END PRIVATE KEY-----\n';
 const credentials={type:'service_account',client_email:'synthetic@synthetic-project.iam.gserviceaccount.com',private_key:pem,private_key_id:'synthetic-key',token_uri:'https://oauth2.googleapis.com/token'};
+test('daily Drive reader retains complete PRE input and excludes a different date',async()=>{
+ const root=input();root.race.originalEarlyMarket={synthetic:'preserved'};root.dailyEvidence={synthetic:'preserved'};
+ const other=input();other.race.raceDate='2026-10-20';
+ const mock=provider({payload:{format:source.BUNDLE_FORMAT,sources:[root,other]}});
+ const rows=await readDailyCpsiDriveInputs(environment(),{date:'2026-10-21',clock:()=>NOW,fetchImpl:mock.fetch});
+ assert.equal(rows.length,1);assert.deepEqual(rows[0].root,root);assert.equal(rows[0].artifact,null);assert.match(rows[0].sourceRef,/@7$/);
+});
+test('daily Drive reader rejects a changed provider file and never treats it as a complete day',async()=>{
+ const mock=provider({mutate:true});await assert.rejects(()=>readDailyCpsiDriveInputs(environment(),{date:'2026-10-21',clock:()=>NOW,fetchImpl:mock.fetch}),/CHANGED_DURING_READ/);
+});
 function input(org='NAR'){
  const track=org==='NAR'?'浦和':'東京',raceId=`2026-10-21|${track}|1`,meta={organizer:org,raceId,runId:'SYNTHETIC-RUN',inputSnapshotId:'INPUT',kind:'EARLY',isPreResult:true,capturedAt:'2026-10-20T22:00:00+09:00',authorityRef:'SYNTHETIC-AUTH'};
  return {format:'CHASS_CPSI_PRE_INPUT_V1',race:{raceDate:'2026-10-21',track,raceNo:1,raceType:org,category:org==='NAR'?'地方競馬':'中央競馬',surface:'ダート',metricInputFreeze:{runId:'SYNTHETIC-RUN',inputSnapshotId:'INPUT',indexSnapshotId:'INDEX',freezeAt:'2026-10-20T23:00:00+09:00',postAt:'2026-10-21T10:00:00+09:00'}},horses:[1,2,3,4].map(horseNo=>({horseNo,canonicalHorseKey:`${org}|key-${horseNo}`,canonicalIndex:{...meta,sourceClass:'CANONICAL_INDEX_PRE',sourceSnapshotId:'INDEX',peak:100-horseNo,baseline5:90-horseNo,current:80-horseNo,distance:70-horseNo,course:60-horseNo}}))};

@@ -124,6 +124,19 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  if(!document.getElementById('waveAnalysisStatus').textContent.includes('再検証済み'))throw Error('restore not verified');
  let downloaded=false;HTMLAnchorElement.prototype.click=function(){if(this.download.startsWith('CHASS_WAVE_'))downloaded=true};document.getElementById('waveAnalysisExport').click();if(!downloaded)throw Error('export missing');
  if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('forecast mutated');
+ // Daily UI is a read-only consumer of the authenticated server response.
+ window.CHASS_TEST.installDailyAnalysisUi();let dayCalls=0;
+ window.fetch=async(url,options)=>{
+  if(String(url).startsWith('/api/chass/v1/research/daily?')){
+   dayCalls++;if(!options.headers.authorization.startsWith('Bearer '))throw Error('daily auth missing');
+   return Response.json({ok:true,date,status:'PARTIAL',rows:[{raceId:id,result:{cpsi:window.CHASS_TEST.calculateCpsiFirst(root).result,favorite:{status:'HOLD',reason:'FAVORITE_SCENARIO_EVIDENCE_MISSING'},longshots:{rows:[{horseNo:6,popularity:6,cpsi:null,reason:'SCENARIO_MISSING'}]},wave:JSON.parse(localStorage.getItem(key)).body.result}}]});
+  }return realFetch(url,options);
+ };
+ await document.getElementById('dailyAnalysisRefresh').onclick();
+ const day=document.getElementById('dailyAnalysisOutput').textContent;
+ if(dayCalls!==1||!day.includes('CPSI')||!day.includes('1番人気')||!day.includes('6番人気以下')||!day.includes('波乱度')||!day.includes('6番｜人気 6'))throw Error('daily render missing');
+ if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('daily view mutated EARLY');
+ window.fetch=realFetch;
  finish(true,'NAR_ANALYZE_SAVE_RESTORE_EXPORT_FORECAST_UNCHANGED');
  }catch(e){finish(false,e.stack||e.message)}
  },50);

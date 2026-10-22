@@ -6,6 +6,7 @@ import {NAR_TIME_THEORY_VERSION,buildNarTimeTheory,rankNarTimeTheoryHorses,summa
 import {NAR_RACE_CONTEXT_POLICY_VERSION,classifyAbilityAvailability} from './src/nar/nar-race-context-policy.mjs';
 import {handleFavoriteRiskResearchRequest,runFavoriteRiskCollector} from './src/research/favorite-risk-snapshot.mjs';
 import {handleCpsiDriveRequest,CPSI_DRIVE_PATH} from './src/prediction/cpsi-drive-reader-v1.mjs';
+import {runDailyAnalysis,handleDailyAnalysisRequest,DAILY_PATH} from './src/prediction/daily-analysis-worker-v1.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -218,6 +219,7 @@ async function buildNarRaceContext(request,env,ctx){
 export default {
   async fetch(request,env,ctx){
     const u=new URL(request.url);
+    if(u.pathname===DAILY_PATH)return handleDailyAnalysisRequest(request,env);
     if(u.pathname===CPSI_DRIVE_PATH)return handleCpsiDriveRequest(request,env);
     if(u.pathname==='/api/chass/v1/research/favorite-risk'){
       const response=await handleFavoriteRiskResearchRequest(request,env);
@@ -241,6 +243,8 @@ export default {
     return baseWorker.fetch(request,env,ctx);
   },
   async scheduled(controller,env,ctx){
+    const dailyTask=runDailyAnalysis(env,{scheduledTime:controller?.scheduledTime}).catch(()=>({status:'HOLD',reason:'DAILY_SCHEDULE_FAILED'}));
+    if(ctx?.waitUntil)ctx.waitUntil(dailyTask);else await dailyTask;
     const favoriteRiskTask=runFavoriteRiskCollector(env,{now:new Date(controller?.scheduledTime||Date.now())});
     if(ctx?.waitUntil)ctx.waitUntil(favoriteRiskTask);else await favoriteRiskTask;
     if(controller?.cron==='0 11 * * *'||controller?.cron==='30 11 * * *'){

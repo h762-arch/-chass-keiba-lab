@@ -140,6 +140,39 @@ async function readSource(source,selection,ctx){
  }
  return artifacts;
 }
+/** Server-only day read. Retain full PRE input; the CPSI artifact itself is market-blind. */
+export async function readDailyCpsiDriveInputs(env={},options={}){
+ if(env.ENABLE_CPSI_DRIVE_READ!=='true')throw Error('DRIVE_NOT_CONFIGURED');
+ const date=options.date;
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date||''))throw Error('DAILY_DATE_INVALID');
+ const sources=parseDriveSources(env.CHASS_CPSI_DRIVE_SOURCES_JSON),controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),15000),rows=[];
+ try{
+  const clock=options.clock||Date.now,ctx={fetchImpl:options.fetchImpl||fetch,signal:controller.signal,now:clock(),clock};
+  ctx.token=await serviceAccessToken(env.CHASS_CPSI_DRIVE_SERVICE_ACCOUNT_JSON,ctx);
+  for(const source of sources){
+   const before=await metadata(source,ctx);
+   const items=source.kind==='drive_json'
+    ?unpackJson(await jsonRead(await googleGet(DRIVE+encodeURIComponent(source.fileId)+'?alt=media&supportsAllDrives=true',ctx),MAX_BYTES))
+    :unpackSheetFeed(await jsonRead(await googleGet('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(source.fileId)+'/values/'+encodeURIComponent(source.range)+'?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE',ctx),MAX_BYTES));
+   const after=await metadata(source,ctx);
+   if(before.version!==after.version||before.modifiedTime!==after.modifiedTime)throw Error('DRIVE_SOURCE_CHANGED_DURING_READ');
+   for(const item of items){
+    const id=itemIdentity(item);
+    if(id.organization!==source.organization||!id.raceId?.startsWith(date+'|'))continue;
+    rows.push({root:item.format===SOURCE_FORMAT?sourceRootFromInput(item.input):item,
+     artifact:item.format===SOURCE_FORMAT?item:null,sourceRef:`drive:${source.fileId}@${before.version}`});
+   }
+  }
+  return rows;
+ }finally{clearTimeout(timer);}
+}
+/** Reuse the configured reader secret; never expose it to the browser or query string. */
+export async function cpsiDriveReaderAuthorized(request,env){
+ const url=new URL(request.url),origin=request.headers.get('origin');
+ if(origin&&origin!==url.origin||request.headers.get('sec-fetch-site')==='cross-site')return false;
+ return bearerValid(request.headers.get('authorization'),env.CHASS_CPSI_DRIVE_READER_TOKEN);
+}
 export async function handleCpsiDriveRequest(request,env={},options={}){
  const url=new URL(request.url);if(url.pathname!==CPSI_DRIVE_PATH)return null;
  if(request.method!=='GET')return response({ok:false,code:'DRIVE_METHOD_NOT_ALLOWED'},405);
