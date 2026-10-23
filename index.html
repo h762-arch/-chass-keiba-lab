@@ -22,8 +22,9 @@
   <section id="predictionView" class="view active">
     <section class="card daily-analysis" aria-labelledby="dailyAnalysisTitle">
       <p class="eyebrow">DAILY · RESEARCH</p><h2 id="dailyAnalysisTitle">朝9時の日次分析</h2>
-      <p class="muted">サーバーに保存された4分析を表示します。登録済み事前入力が対象です。画像の自動読取・全開催の網羅はまだ接続していません。</p>
+      <p class="muted">サーバーに保存された4分析を表示します。登録済み事前入力・有効化済みの画像読取が対象です。全開催の網羅は未確認です。再試行は当日のHOLD・一部不足を研究用に再取得し、9時の記録と正式EARLY・Signalを保持します。</p>
       <div class="cpsi-source-actions"><label>対象日<input id="dailyAnalysisDate" type="date"></label><button id="dailyAnalysisRefresh" class="ghost" type="button">保存済み日次分析を表示</button><button id="dailyAnalysisSetup" class="ghost" type="button">接続設定を確認</button></div>
+      <button id="dailyAnalysisRetry" class="ghost" type="button">失敗分を再試行（研究用）</button>
       <p id="dailyAnalysisStatus" class="muted" role="status" aria-live="polite">サーバー機能の有効化とCPSI欄のDrive接続キーが必要です。</p>
       <div id="dailyAnalysisOutput"></div>
     </section>

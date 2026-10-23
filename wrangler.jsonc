@@ -7,6 +7,9 @@
     "global_fetch_strictly_public"
   ],
   "vars": {
+    "ENABLE_DAILY_ANALYSIS_V1": "true",
+    "ENABLE_DAILY_IMAGE_INTAKE_V1": "true",
+    "ENABLE_DAILY_DRIVE_ARCHIVE_V1": "false",
     "CHASS_DAILY_IMAGE_ROOT_FOLDER_ID": "1WWjruFmMmOfzJbROMGbudXLmTYKHAOsN",
     "CHASS_DAILY_DRIVE_OUTPUT_FOLDER_ID": "1Wo4DqUbG-oOTq__QHFm4U0czYQ-1KLtB",
     "ENABLE_JRA_MEETING_DISCOVERY": "true",
