@@ -8,6 +8,7 @@ import {handleFavoriteRiskResearchRequest,runFavoriteRiskCollector} from './src/
 import {handleCpsiDriveRequest,CPSI_DRIVE_PATH,handleReaderSessionRequest} from './src/prediction/cpsi-drive-reader-v1.mjs';
 import {handleDailyAnalysisRequest,DAILY_PATH,DAILY_SETUP_PATH} from './src/prediction/daily-analysis-worker-v1.mjs';
 import {runDailyResearchCycle} from './src/prediction/daily-research-cycle-v1.mjs';
+import {handleDailyRetryRequest,DAILY_RETRY_PATH} from './src/prediction/daily-retry-v1.mjs';
 
 const NAR_TRACK_CODES={
   '帯広':'3','盛岡':'10','水沢':'11','浦和':'18','船橋':'19','大井':'20',
@@ -220,6 +221,7 @@ async function buildNarRaceContext(request,env,ctx){
 export default {
   async fetch(request,env,ctx){
     const u=new URL(request.url);
+    if(u.pathname===DAILY_RETRY_PATH)return handleDailyRetryRequest(request,env);
     if(u.pathname==='/api/chass/v1/reader-session')return handleReaderSessionRequest(request,env);
     if(u.pathname===DAILY_PATH||u.pathname===DAILY_SETUP_PATH)return handleDailyAnalysisRequest(request,env);
     if(u.pathname===CPSI_DRIVE_PATH)return handleCpsiDriveRequest(request,env);

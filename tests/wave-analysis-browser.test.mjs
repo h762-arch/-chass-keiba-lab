@@ -188,6 +188,21 @@ test('390px real browser analyzes NAR, saves, restores and exports without touch
  await document.getElementById('cpsiReaderForget').onclick();
  if(remembered||!document.getElementById('cpsiReaderSessionStatus').textContent.includes('解除しました'))throw Error('forget UI failed');
  if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('session mutated EARLY');
+ // The retry button queues research work without modifying frozen predictions.
+ let retryPosts=0;
+ window.fetch=async(url,options)=>{
+  if(String(url).startsWith('/api/chass/v1/research/daily/retry?')){
+   if(options.method!=='POST'||options.credentials!=='same-origin'||options.cache!=='no-store')throw Error('retry request options');
+   if(!options.headers.authorization?.startsWith('Bearer '))throw Error('retry missing auth');retryPosts++;
+   return Response.json({ok:true,status:'QUEUED'},{status:202});
+  }
+  return realFetch(url,options);
+ };
+ document.getElementById('cpsiDriveReaderKey').value='SYNTHETIC_BROWSER_RETRY_TOKEN_'+ 'a'.repeat(32);
+ await document.getElementById('dailyAnalysisRetry').onclick();
+ if(retryPosts!==1||!document.getElementById('dailyAnalysisStatus').textContent.includes('再試行を予約しました'))throw Error('retry UI failed');
+ if(document.getElementById('dailyAnalysisRetry').disabled||document.getElementById('cpsiDriveReaderKey').value)throw Error('retry controls not restored');
+ if(before!==JSON.stringify(window.CHASS_TEST.getState()))throw Error('retry mutated EARLY');
  window.fetch=realFetch;
  finish(true,'NAR_ANALYZE_SAVE_RESTORE_EXPORT_FORECAST_UNCHANGED');
  }catch(e){finish(false,e.stack||e.message)}

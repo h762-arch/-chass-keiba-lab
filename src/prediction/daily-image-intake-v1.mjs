@@ -6,6 +6,7 @@ import {sourceRootFromInput,sourceSha256,stableSourceJson} from './cpsi-source-r
 import {extractNarOfficialHistoryLinks} from './nar-official-history-links.mjs';
 import {parseNarRaceList} from '../../meeting-discovery.mjs';
 import {jstDate} from './daily-analysis-v1.mjs';
+import {validRetryId} from './daily-retry-v1.mjs';
 const DRIVE='https://www.googleapis.com/drive/v3/files/';
 export const IMAGE_INTAKE_FORMAT='CHASS_DAILY_IMAGE_INTAKE_V1';
 const venues={盛岡:'10',水沢:'11',浦和:'18',船橋:'19',大井:'20',川崎:'21',金沢:'22',笠松:'23',名古屋:'24',園田:'27',姫路:'28',高知:'31',佐賀:'32',門別:'36'};
@@ -83,7 +84,8 @@ export async function runDailyImageIntake(env={},options={}){
  if(env.ENABLE_DAILY_ANALYSIS_V1!=='true'||env.ENABLE_DAILY_IMAGE_INTAKE_V1!=='true')return {status:'DISABLED',rows:[],issues:[]};
  const clock=options.clock||Date.now,date=options.date||jstDate(clock()),db=env.DB;
  const report={status:'HOLD',rows:[],issues:[],expectedRaceCount:0,imageFileCount:0,readbackVerifiedCount:0,scope:'NAR_REGISTERED_IMAGE_FOLDERS',allScheduledRacesConfirmed:false,imageOcrAttempted:false};
- const jobId='IMAGE_0900_JST:'+date;
+ if(options.retryId&&!validRetryId(options.retryId,date))return {...report,issues:[{reason:'IMAGE_RETRY_INVALID'}]};
+ const jobId=options.retryId?'IMAGE_'+options.retryId:'IMAGE_0900_JST:'+date;
  let claimed=false;
  const controller=new AbortController(),timeoutMs=options.timeoutMs??210000;
  if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>210000)return {...report,issues:[{reason:'IMAGE_CONFIG_INVALID'}]};

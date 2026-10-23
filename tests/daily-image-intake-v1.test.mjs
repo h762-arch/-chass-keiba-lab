@@ -8,8 +8,14 @@ import {runDailyResearchCycle} from '../src/prediction/daily-research-cycle-v1.m
 import {handleDailyAnalysisRequest} from '../src/prediction/daily-analysis-worker-v1.mjs';
 import {sourceSha256} from '../src/prediction/cpsi-source-recovery-v1.mjs';
 import {dailyReadiness} from '../src/prediction/daily-readiness-v1.mjs';
+import {handleDailyRetryRequest} from '../src/prediction/daily-retry-v1.mjs';
+import worker from '../worker-entry.mjs';
+const pair=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
+const pem='-----BEGIN PRIVATE KEY-----\n'+Buffer.from(await crypto.subtle.exportKey('pkcs8',pair.privateKey)).toString('base64')+'\n-----END PRIVATE KEY-----';
 const DATE='2026-10-23',NOW=Date.parse(DATE+'T09:00:01+09:00'),ROOT='SYNTHETIC_IMAGE_ROOT',FOLDER='SYNTHETIC_DAY_FOLDER',FILE='SYNTHETIC_IMAGE_FILE',KEY='SYNTHETIC_VISION_KEY_0123456789',TOKEN='SYNTHETIC_READER_TOKEN_01234567890123';
 const race={raceDate:DATE,track:'浦和',code:'18',raceNo:1};
+const retryRequest=(date=DATE,headers={})=>new Request('https://synthetic.example/api/chass/v1/research/daily/retry?date='+date,{method:'POST',headers:{origin:'https://synthetic.example',authorization:'Bearer '+TOKEN,...headers}});
+function failedScheduled(d){d.sqlite.prepare('INSERT INTO chass_daily_analysis_jobs (job_id,race_date,started_at,completed_at,status,summary_json) VALUES (?,?,?,?,?,?)').run('DAILY_0900_JST:'+DATE,DATE,new Date(NOW).toISOString(),new Date(NOW).toISOString(),'HOLD',JSON.stringify({issues:[{reason:'IMAGE_DAY_FOLDER_NOT_FOUND'}]}));d.sqlite.prepare('INSERT INTO chass_daily_image_jobs (job_id,race_date,started_at,completed_at,status,report_json) VALUES (?,?,?,?,?,?)').run('IMAGE_0900_JST:'+DATE,DATE,new Date(NOW).toISOString(),new Date(NOW).toISOString(),'HOLD',JSON.stringify({issues:[{reason:'IMAGE_DAY_FOLDER_NOT_FOUND'}]}));}
 const card=(no=1)=>`<h4>2026年10月23日（金） 浦和 第${no}競走 12:20発走</h4><ul><li>ダート 1300ｍ 左</li></ul>`+[1,2].map(n=>`<tr class="tBorder"><td class="horseNum">${n}</td><td><a class="horseName" href="../DataRoom/HorseMarkInfo?k_lineageLoginCode=3009440491${n}">試験${n}</a></td></tr>`).join('');
 function vision(){
  const words=[],add=(text,x,y)=>words.push({text,x,y,confidence:1});
@@ -20,6 +26,48 @@ function vision(){
  return {responses:[{fullTextAnnotation:{pages:[{width:1000,height:2200,blocks:[{paragraphs:[{words:words.map(w=>({symbols:[...w.text].map(text=>({text})),confidence:w.confidence,boundingBox:{vertices:[{x:Math.round((w.x-.002)*1000),y:Math.round((w.y-.002)*2200)},{x:Math.round((w.x+.002)*1000),y:Math.round((w.y-.002)*2200)},{x:Math.round((w.x+.002)*1000),y:Math.round((w.y+.002)*2200)},{x:Math.round((w.x-.002)*1000),y:Math.round((w.y+.002)*2200)}]}}))}]}]}]}}]};
 }
 function parse(v=vision()){return parseNarIndexImage(compactVisionWords(v),{race,expectedHorses:officialRosterForOcr(card())});}
+test('retry is authenticated, same-origin, today-only and never starts OCR in HTTP; duplicate queue is atomic',async()=>{
+ const d=db();try{const e=env(d),opts={clock:()=>NOW};
+  assert.equal((await handleDailyRetryRequest(retryRequest(DATE,{authorization:'Bearer invalid'}),e,opts)).status,401);
+  assert.equal((await handleDailyRetryRequest(retryRequest(DATE,{origin:'https://other.example'}),e,opts)).status,403);
+  assert.equal((await handleDailyRetryRequest(retryRequest('2026-10-22'),e,opts)).status,400);
+  assert.equal((await handleDailyRetryRequest(retryRequest(),e,opts)).status,409);
+  failedScheduled(d);const before=d.sqlite.prepare('SELECT * FROM chass_daily_analysis_jobs').get();
+  const r=await Promise.all([handleDailyRetryRequest(retryRequest(),e,opts),handleDailyRetryRequest(retryRequest(),e,opts)]);assert.deepEqual(r.map(x=>x.status).sort(),[202,409]);
+  assert.deepEqual(d.sqlite.prepare('SELECT * FROM chass_daily_analysis_jobs WHERE job_id=?').get(before.job_id),before);
+  assert.equal(d.sqlite.prepare('SELECT COUNT(*) AS n FROM chass_daily_image_jobs').get().n,1);
+ }finally{d.sqlite.close();}
+});
+test('failed 09:00 images retry through later cron with actual Freeze and separate IDs; original evidence stays byte-identical',async()=>{
+ const d=db();try{const e=env(d),p=provider();failedScheduled(d);const original=JSON.stringify(d.sqlite.prepare('SELECT * FROM chass_daily_analysis_jobs').all()),image=JSON.stringify(d.sqlite.prepare('SELECT * FROM chass_daily_image_jobs').all());
+  const later=NOW+10*60000,queued=await (await handleDailyRetryRequest(retryRequest(),e,{clock:()=>later})).json();assert.equal(queued.status,'QUEUED');
+  let tick=later;const result=await runDailyResearchCycle(e,{clock:()=>++tick,scheduledTime:later-1000,fetchImpl:p.fetch,readInputs:async()=>{throw Error('retry must read fresh images only');}});
+  assert.equal(result.analysis.jobId,queued.jobId);assert.equal(result.analysis.savedCount,1);assert.equal(p.ocrCalls,1);assert.equal(result.archive.status,'DISABLED');
+  assert.equal(JSON.stringify(d.sqlite.prepare('SELECT * FROM chass_daily_analysis_jobs WHERE job_id=?').all('DAILY_0900_JST:'+DATE)),original);
+  assert.equal(JSON.stringify(d.sqlite.prepare('SELECT * FROM chass_daily_image_jobs WHERE job_id=?').all('IMAGE_0900_JST:'+DATE)),image);
+  const packet=JSON.parse(d.sqlite.prepare('SELECT packet_json FROM chass_daily_image_inputs WHERE job_id=?').get('IMAGE_'+queued.jobId).packet_json),start=d.sqlite.prepare('SELECT started_at FROM chass_daily_analysis_jobs WHERE job_id=?').get(queued.jobId).started_at;
+  assert.ok(Date.parse(packet.body.root.race.metricInputFreeze.freezeAt)>later);assert.ok(Date.parse(start)>Date.parse(packet.body.root.race.metricInputFreeze.freezeAt));
+  const data=await (await handleDailyAnalysisRequest(new Request('https://synthetic.example/api/chass/v1/research/daily?date='+DATE,{headers:{authorization:'Bearer '+TOKEN}}),e)).json();assert.equal(data.runMode,'RESEARCH_RETRY');assert.equal(data.originalScheduledStatus,'HOLD');assert.equal(data.rows.length,1);assert.equal(data.jobId,queued.jobId);
+  await runDailyResearchCycle(e,{clock:()=>++tick,scheduledTime:later+300000,fetchImpl:p.fetch});assert.equal(p.ocrCalls,1);
+ }finally{d.sqlite.close();}
+});
+test('retry failure preserves image diagnosis; next attempt has a new ID and eight-attempt limit',async()=>{
+ const d=db();try{const e=env(d);failedScheduled(d);let first;
+  for(let i=0;i<8;i++){
+   const q=await handleDailyRetryRequest(retryRequest(),e,{clock:()=>NOW+600000+i*300000});assert.equal(q.status,202);const body=await q.json();if(first)assert.notEqual(body.jobId,first);else first=body.jobId;
+   const result=await runDailyResearchCycle(e,{clock:()=>NOW+600000+i*300000,scheduledTime:NOW+599000,intake:async()=>({status:'HOLD',rows:[],issues:[{reason:'IMAGE_DAY_FOLDER_NOT_FOUND'}]})});assert.equal(result.status,'HOLD');assert.ok(result.analysis.issues.some(x=>x.reason==='IMAGE_DAY_FOLDER_NOT_FOUND'));
+  }
+  assert.equal((await handleDailyRetryRequest(retryRequest(),e,{clock:()=>NOW+600000})).status,409);
+ }finally{d.sqlite.close();}
+});
+test('post-start retry holds without materializing PRE and next-day cron never backdates queued work',async()=>{
+ const d=db();try{const e=env(d),p=provider();failedScheduled(d);await handleDailyRetryRequest(retryRequest(),e,{clock:()=>NOW});
+  const result=await runDailyResearchCycle(e,{clock:()=>Date.parse(DATE+'T13:00:00+09:00'),scheduledTime:NOW+600000,fetchImpl:p.fetch});assert.equal(result.analysis.savedCount,0);assert.equal(result.status,'HOLD');
+  await handleDailyRetryRequest(retryRequest(),e,{clock:()=>NOW});
+  const next=await runDailyResearchCycle(e,{clock:()=>NOW+86400000,scheduledTime:NOW+86400000+600000,fetchImpl:()=>{throw Error('must not fetch');}});assert.equal(next.status,'NOT_DUE');
+  const route=await worker.fetch(retryRequest(),{...e,ENABLE_DAILY_IMAGE_INTAKE_V1:'false'},{});assert.equal(route.status,503);
+ }finally{d.sqlite.close();}
+});
 test('fixed-layout OCR preserves all seven raw cells, missing symbols, negative values, holds starred baseline and binds names',()=>{
  const out=parse();assert.equal(out.observation.horses[0].baseline5,null);assert.equal(out.observation.horses[1].baseline5,40);assert.equal(out.rawRows[0].indices.baseline5,'22*');assert.equal(out.rawRows[0].indices.previous2,'-69');assert.equal(out.observation.horses[0].distance,null);assert.equal(out.observation.horses[0].current,null);assert.equal(out.predictedMarket[0].popularity,1);
 });
@@ -40,9 +88,7 @@ test('new Producer input binds official IDs and predicted market; recomputing ou
  const bad=structuredClone(p);bad.body.root.race.originalEarlyMarket.sourceClass='REAL_PRE_ODDS';bad.contentHash=await sourceSha256(bad.body);await assert.rejects(()=>verifyImageResearchInput(bad,{now:NOW}),/BINDING_INVALID/);
 });
 function db(){const sqlite=new DatabaseSync(':memory:');for(const f of ['0016_daily_analysis_v1.sql','0017_daily_drive_archive_v1.sql','0018_daily_image_intake_v1.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+f,import.meta.url),'utf8'));return {sqlite,prepare(sql){return {bind(...a){const q=sqlite.prepare(sql);return {async run(){return {meta:{changes:Number(q.run(...a).changes)}};},async first(){return q.get(...a)||null;},async all(){return {results:q.all(...a)};}};}};}};}
-const pair=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
-const pem='-----BEGIN PRIVATE KEY-----\n'+Buffer.from(await crypto.subtle.exportKey('pkcs8',pair.privateKey)).toString('base64')+'\n-----END PRIVATE KEY-----';
-const env=DB=>({DB,ENABLE_DAILY_ANALYSIS_V1:'true',ENABLE_DAILY_IMAGE_INTAKE_V1:'true',ENABLE_CPSI_DRIVE_READ:'true',CHASS_DAILY_IMAGE_ROOT_FOLDER_ID:ROOT,CHASS_DAILY_VISION_API_KEY:KEY,CHASS_CPSI_DRIVE_READER_TOKEN:TOKEN,CHASS_CPSI_DRIVE_SERVICE_ACCOUNT_JSON:JSON.stringify({type:'service_account',client_email:'synthetic@synthetic.iam.gserviceaccount.com',private_key:pem})});
+function env(DB){return {DB,ENABLE_DAILY_ANALYSIS_V1:'true',ENABLE_DAILY_IMAGE_INTAKE_V1:'true',ENABLE_CPSI_DRIVE_READ:'true',CHASS_DAILY_IMAGE_ROOT_FOLDER_ID:ROOT,CHASS_DAILY_VISION_API_KEY:KEY,CHASS_CPSI_DRIVE_READER_TOKEN:TOKEN,CHASS_CPSI_DRIVE_SERVICE_ACCOUNT_JSON:JSON.stringify({type:'service_account',client_email:'synthetic@synthetic.iam.gserviceaccount.com',private_key:pem})};}
 function provider(options={}){
  let ocrCalls=0,metadataCalls=0;const calls=[],png=new Uint8Array(32);png.set([137,80,78,71,13,10,26,10]);const view=new DataView(png.buffer);view.setUint32(16,1000);view.setUint32(20,2200);
  const meta={id:FILE,name:DATE+'_浦和_01R_タイム指数.png',mimeType:'image/png',size:'32',version:'1',modifiedTime:new Date(NOW-60000).toISOString(),parents:[FOLDER]};
